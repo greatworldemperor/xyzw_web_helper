@@ -54,19 +54,25 @@ export function createConnectionManager({ tokenStore, batchSettings, addLog }) {
    * @param {object} tokens - Tokens列表
    * @param {number} maxRetries - 最大重试次数
    */
-  const ensureConnection = async (tokenId, tokens, maxRetries = 2) => {
+  const ensureConnection = async (
+    tokenId,
+    tokens,
+    maxRetries = 2,
+    slotAlreadyAcquired = false,
+  ) => {
     const latestToken = tokens.find((t) => t.id === tokenId);
     if (!latestToken) {
       throw new Error(`Token not found: ${tokenId}`);
+    }
+
+    if (!slotAlreadyAcquired) {
+      await waitForConnectionSlot();
     }
 
     let status = tokenStore.getWebSocketStatus(tokenId);
     let connected = status === "connected";
 
     if (!connected) {
-      // 等待连接槽位，限制并发连接数
-      await waitForConnectionSlot();
-
       addLog({
         time: new Date().toLocaleTimeString(),
         message: `正在连接... (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
@@ -107,8 +113,6 @@ export function createConnectionManager({ tokenStore, batchSettings, addLog }) {
       }
 
       if (!connected) {
-        // 连接失败，释放槽位
-        releaseConnectionSlot();
         throw new Error("连接失败 (重试后仍超时)");
       }
     }
@@ -141,6 +145,7 @@ export function createConnectionManager({ tokenStore, batchSettings, addLog }) {
         message: `初始化数据失败: ${e.message}`,
         type: "warning",
       });
+      throw e;
     }
 
     return true;
