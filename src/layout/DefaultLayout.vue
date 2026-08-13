@@ -200,13 +200,15 @@ import {
 } from "@vicons/ionicons5";
 
 import { useRouter } from 'vue-router'
-import { useMessage } from 'naive-ui'
-import { ref } from 'vue'
+import { useDialog, useMessage } from 'naive-ui'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { isNowInLegionWarTime } from '@/utils/clubBattleUtils'
+import { $emit } from '@/stores/events/index.ts'
 
 const tokenStore = useTokenStore();
 const router = useRouter();
 const message = useMessage();
+const dialog = useDialog();
 
 const isMobileMenuOpen = ref(false);
 
@@ -216,6 +218,22 @@ const userMenuOptions = [
     key: "logout",
   },
 ];
+
+const handleTokenRefreshFailure = ({ tokenName, reason }) => {
+  dialog.error({
+    title: "Token自动刷新失败",
+    content: `账号“${tokenName}”的连接已超时，自动刷新Token失败：${reason}`,
+    positiveText: "知道了",
+  });
+};
+
+onMounted(() => {
+  $emit.on("token:refresh:failed", handleTokenRefreshFailure);
+});
+
+onUnmounted(() => {
+  $emit.off("token:refresh:failed", handleTokenRefreshFailure);
+});
 
 // 方法
 const handleUserAction = async (key) => {

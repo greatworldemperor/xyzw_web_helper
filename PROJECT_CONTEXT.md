@@ -44,6 +44,7 @@
 
 - `gameTokens`、`selectedTokenId`、`tokenGroups` 等本地持久化状态。
 - Token 导入、Base64 解析、校验、选择、更新和删除。
+- 自动 Token 刷新：URL、BIN 和微信扫码来源均由 `attemptTokenRefresh()` 统一处理；刷新结果必须是包含有效 `roleToken` 的 JSON 加密 Token。
 - WebSocket 连接状态、连接锁、跨标签页连接协调。
 - 角色信息、军团信息、活动、塔、队伍、战斗版本和学习状态等 `gameData`。
 - 消息处理、事件分发、任务运行状态和部分连接池逻辑。
@@ -94,6 +95,13 @@
 ```text
 wss://xxz-xyzw.hortorgames.com/agent?p=<encoded-token>&e=x&lang=chinese
 ```
+
+连接超时和 Token 刷新行为：
+
+- 普通角色登录连接默认监控 10 秒握手超时；1006 握手失败也会进入相同的刷新流程。
+- `attemptTokenRefresh()` 从 URL 或 IndexedDB 中的 BIN/WX 数据获取新 Token，并在成功后更新本地存储；失败通过 `token:refresh:failed` 事件通知界面。
+- [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue) 的批处理连接等待超时后，关闭旧连接、刷新 Token，再使用最新 Token 重连；批处理连接关闭了 Store 的重复超时监控，但继续复用同一套刷新逻辑。
+- [src/layout/DefaultLayout.vue](src/layout/DefaultLayout.vue) 和 [src/views/TokenImport/index.vue](src/views/TokenImport/index.vue) 监听刷新失败事件，并使用 Naive UI 对话框提示用户。
 
 ### 任务层
 
@@ -237,6 +245,13 @@ node --test test/helperTaskRunner.test.js test/towerClimbLimit.test.js
 - `pnpm run build` 成功，但有自动路由、`eval` 和大 chunk 警告。
 - `pnpm exec tsc --noEmit -p tsconfig.app.json` 失败，14 个文件共 139 个错误。
 - `pnpm exec eslint src --ext .vue,.js,.ts` 无法执行，找不到 `eslint` 命令。
+
+截至 2026-08-13 的自动 Token 刷新功能验证：
+
+- `pnpm build` 成功；仍有可选 Vite 插件缺失和 Sass legacy API 警告。
+- `pnpm testd` 成功。
+- `node --check src/utils/batch/connectionManager.js` 成功。
+- `pnpm testr` 仍因测试脚本使用未配置的 `@utils/bonProtocol.js` 路径别名失败，与本次改动无关。
 
 ## 8. 部署信息
 

@@ -5680,6 +5680,7 @@ const ensureConnection = async (
       tokenId,
       latestToken.token,
       latestToken.wsUrl,
+      { monitorTimeout: false },
     );
     connected = await waitForConnection(tokenId);
 
@@ -5691,6 +5692,10 @@ const ensureConnection = async (
       });
 
       tokenStore.closeWebSocketConnection(tokenId);
+      const refreshed = await tokenStore.attemptTokenRefresh(tokenId);
+      if (!refreshed) {
+        throw new Error("Token自动刷新失败，无法建立连接");
+      }
       await new Promise((r) => setTimeout(r, batchSettings.reconnectDelay));
 
       addLog({
@@ -5704,6 +5709,7 @@ const ensureConnection = async (
         tokenId,
         refreshedToken.token,
         refreshedToken.wsUrl,
+        { monitorTimeout: false },
       );
 
       connected = await waitForConnection(tokenId);

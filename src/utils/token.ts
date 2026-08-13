@@ -97,6 +97,26 @@ export const scheduleAuthUserRequest = <T>(
   return authUserRateLimiter.schedule(fn);
 };
 
+export const validateEncryptedToken = (token: unknown): token is string => {
+  if (typeof token !== "string") return false;
+
+  const trimmedToken = token.trim();
+  if (trimmedToken.length < 10) return false;
+
+  try {
+    const parsed = JSON.parse(trimmedToken);
+    return (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      typeof parsed.roleToken === "string" &&
+      parsed.roleToken.trim().length >= 10
+    );
+  } catch {
+    return false;
+  }
+};
+
 export const transformToken = async (arrayBuffer: ArrayBuffer) => {
   return authUserRateLimiter.schedule(async () => {
     const res = await axios.post(

@@ -1609,12 +1609,21 @@ const handleRateLimitWaiting = (data) => {
   rateLimitMessage.value = `Token刷新限流等待中，预计等待 ${data.waitSeconds} 秒（队列: ${data.queueSize}）`;
 };
 
+const handleTokenRefreshFailure = ({ tokenName, reason }) => {
+  dialog.error({
+    title: "Token自动刷新失败",
+    content: `账号“${tokenName}”的连接已超时，自动刷新Token失败：${reason}`,
+    positiveText: "知道了",
+  });
+};
+
 // 生命周期
 onMounted(async () => {
   tokenStore.initTokenStore();
 
   // 监听限流等待事件
   $emit.on("token:refresh:waiting", handleRateLimitWaiting);
+  $emit.on("token:refresh:failed", handleTokenRefreshFailure);
 
   // 处理URL参数
   await handleUrlParams();
@@ -1628,6 +1637,7 @@ onMounted(async () => {
 onUnmounted(() => {
   // 移除限流等待事件监听
   $emit.off("token:refresh:waiting", handleRateLimitWaiting);
+  $emit.off("token:refresh:failed", handleTokenRefreshFailure);
 });
 </script>
 
