@@ -1,4 +1,5 @@
 import { useTokenStore } from "@/stores/tokenStore";
+import { isRateLimitError } from "@/utils/helperTaskRunner";
 
 // 辅助函数
 const pickArenaTargetId = (targets) => {
@@ -133,6 +134,10 @@ export class DailyTaskRunner {
       this.log(`成功切换到${formationName}${targetFormation}`, "success");
       return true;
     } catch (error) {
+      if (isRateLimitError(error)) {
+        throw error;
+      }
+
       this.log(`阵容检查失败，尝试强制切换: ${error.message}`, "warning");
       try {
         await this.executeGameCommand(
@@ -175,6 +180,7 @@ export class DailyTaskRunner {
   async run(tokenId, callbacks = {}, customSettings = null) {
     this.callbacks = callbacks;
     const settings = customSettings || this.loadSettings(tokenId); // 优先使用传入的设置
+    const isStopped = () => this.callbacks?.shouldStop?.() === true;
 
     // 获取角色信息以确认 roleId 和 任务状态
     this.log("正在获取角色信息...");
@@ -396,6 +402,10 @@ export class DailyTaskRunner {
                 `获取竞技场目标${i}`,
               );
             } catch (err) {
+              if (isRateLimitError(err)) {
+                throw err;
+              }
+
               this.log(
                 `竞技场战斗${i} - 获取对手失败: ${err.message}`,
                 "error",
@@ -720,17 +730,49 @@ export class DailyTaskRunner {
 
     for (let i = 0; i < taskList.length; i++) {
       const task = taskList[i];
-      try {
-        await task.execute();
-        const progress = Math.floor(((i + 1) / totalTasks) * 100);
-        if (this.callbacks?.onProgress) this.callbacks.onProgress(progress);
-        await new Promise((resolve) => setTimeout(resolve, this.delaySettings.taskDelay));
-      } catch (error) {
-        this.log(`任务执行失败: ${task.name} - ${error.message}`, "error");
+      if (isStopped()) {
+        return { success: false, stopped: true, failedTask: task.name };
+      }
+
+      for (;;) {
+        try {
+          await task.execute();
+          const progress = Math.floor(((i + 1) / totalTasks) * 100);
+          if (this.callbacks?.onProgress) this.callbacks.onProgress(progress);
+          await new Promise((resolve) => setTimeout(resolve, this.delaySettings.taskDelay));
+          break;
+        } catch (error) {
+          if (isStopped()) {
+            return {
+              success: false,
+              stopped: true,
+              failedTask: task.name,
+              error,
+            };
+          }
+
+          if (isRateLimitError(error)) {
+            this.log(
+              `任务执行触发服务器限流: ${task.name}，等待1秒后重试当前任务`,
+              "warning",
+            );
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            continue;
+          }
+
+          this.log(`任务执行失败: ${task.name} - ${error.message}`, "error");
+          return {
+            success: false,
+            stopped: false,
+            failedTask: task.name,
+            error,
+          };
+        }
       }
     }
 
     if (this.callbacks?.onProgress) this.callbacks.onProgress(100);
     this.log("所有任务执行完成", "success");
+    return { success: true, stopped: false };
   }
 }

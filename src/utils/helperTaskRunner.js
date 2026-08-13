@@ -30,7 +30,13 @@ export function getErrorMessage(error) {
 export function isRateLimitError(error) {
   const message = getErrorMessage(error);
 
-  return message.includes("400312") || message.includes("操作过快");
+  return (
+    message.includes("400312") ||
+    message.includes("200400") ||
+    message.includes("操作过快") ||
+    message.includes("操作太快") ||
+    message.includes("过于频繁")
+  );
 }
 
 export function getItemQuantity(roleInfo, itemId) {
