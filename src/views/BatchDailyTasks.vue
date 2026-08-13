@@ -815,6 +815,17 @@
           <strong>{{ batchResult.totalCount }}</strong>
         </div>
         <div class="batch-result-label">完成数量 / 总数量</div>
+        <div v-if="failedBatchTokens.length > 0" class="batch-failed-tokens">
+          <div class="batch-failed-title">失败角色清单</div>
+          <div
+            v-for="token in failedBatchTokens"
+            :key="token.id"
+            class="batch-failed-token"
+          >
+            {{ token.name }}
+          </div>
+        </div>
+        <div v-else class="batch-no-failures">全部角色执行成功</div>
       </div>
       <div class="modal-actions" style="margin-top: 20px; text-align: right">
         <n-button
@@ -3415,6 +3426,12 @@ const batchResult = reactive({
   totalCount: 0,
   failedTokenIds: [],
 });
+const failedBatchTokens = computed(() =>
+  batchResult.failedTokenIds.map((tokenId) => {
+    const token = tokens.value.find((item) => item.id === tokenId);
+    return { id: tokenId, name: token?.name || tokenId };
+  }),
+);
 
 const defaultDreamPurchaseList = [];
 for (const merchantId in goldItemsConfig) {
@@ -5924,12 +5941,27 @@ const startBatch = async () => {
             taskDelay: batchSettings.taskDelay,
           });
 
-          await runner.run(tokenId, {
+          const runResult = await runner.run(tokenId, {
             onLog: (log) => addLog(log),
             onProgress: (p) => {
               // 每个token维护自己的进度
             },
+            shouldStop: () => shouldStop.value,
           });
+
+          if (!runResult.success) {
+            tokenStatus.value[tokenId] = "failed";
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${tokenName} ${
+                runResult.stopped
+                  ? "已停止"
+                  : `任务失败: ${runResult.failedTask || "未知任务"}`
+              }`,
+              type: "error",
+            });
+            break;
+          }
 
           success = true;
           tokenStatus.value[tokenId] = "completed";
@@ -6205,6 +6237,32 @@ const stopBatch = () => {
 .batch-result-label {
   margin-top: 12px;
   color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.batch-failed-tokens {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-color);
+  text-align: left;
+}
+
+.batch-failed-title {
+  margin-bottom: 8px;
+  color: #d03050;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.batch-failed-token {
+  padding: 3px 0;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.batch-no-failures {
+  margin-top: 18px;
+  color: #18a058;
   font-size: 14px;
 }
 

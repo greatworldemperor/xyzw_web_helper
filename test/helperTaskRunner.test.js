@@ -5,9 +5,16 @@ import {
   buildTenBatchPlan,
   getClaimableBoxPoints,
   getItemQuantity,
+  isRateLimitError,
   runInventoryVerifiedGameCommand,
   runBatchedGameCommand,
 } from "../src/utils/helperTaskRunner.js";
+
+test("isRateLimitError recognizes server throttling responses", () => {
+  assert.equal(isRateLimitError(new Error("服务器错误: 200400 - 操作太快")), true);
+  assert.equal(isRateLimitError(new Error("服务器错误: 400312")), true);
+  assert.equal(isRateLimitError(new Error("服务器错误: 200160 - 模块未开启")), false);
+});
 
 test("buildTenBatchPlan splits totals into ten-sized batches plus remainder", () => {
   assert.deepEqual(buildTenBatchPlan(10), [10]);
