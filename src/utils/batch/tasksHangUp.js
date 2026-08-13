@@ -15,6 +15,7 @@ export function createTasksHangUp(deps) {
     tokenStatus,
     isRunning,
     shouldStop,
+    waitForConnectionSlot,
     ensureConnection,
     releaseConnectionSlot,
     connectionQueue,
@@ -23,6 +24,8 @@ export function createTasksHangUp(deps) {
     addLog,
     message,
     currentRunningTokenId,
+    batchResult,
+    showBatchResultModal,
   } = deps;
 
   /**
@@ -122,67 +125,121 @@ export function createTasksHangUp(deps) {
    */
   const batchAddHangUpTime = async () => {
     if (selectedTokens.value.length === 0) return;
+    const batchTokenIds = [...selectedTokens.value];
+
+    batchResult.completedCount = 0;
+    batchResult.totalCount = batchTokenIds.length;
+    batchResult.failedTokenIds = [];
     isRunning.value = true;
     shouldStop.value = false;
 
-    selectedTokens.value.forEach((id) => {
+    batchTokenIds.forEach((id) => {
       tokenStatus.value[id] = "waiting";
     });
 
-    const taskPromises = selectedTokens.value.map(async (tokenId) => {
+    const taskPromises = batchTokenIds.map(async (tokenId) => {
       if (shouldStop.value) return;
       tokenStatus.value[tokenId] = "running";
       const token = tokens.value.find((t) => t.id === tokenId);
+      const tokenName = token?.name || tokenId;
+      let retryCount = 0;
+      let success = false;
+      let slotAcquired = false;
+
       try {
-        addLog({
-          time: new Date().toLocaleTimeString(),
-          message: `=== 开始一键加钟: ${token.name} ===`,
-          type: "info",
-        });
-        await ensureConnection(tokenId);
-        for (let i = 0; i < 4; i++) {
-          if (shouldStop.value) break;
+        await waitForConnectionSlot();
+        slotAcquired = true;
+
+        while (!success && !shouldStop.value) {
+          try {
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message:
+                retryCount === 0
+                  ? `=== 开始一键加钟: ${tokenName} ===`
+                  : `=== 尝试重试加钟: ${tokenName} (第${retryCount}次) ===`,
+              type: "info",
+            });
+
+            await ensureConnection(tokenId, 2, true);
+
+            for (let i = 0; i < 4; i++) {
+              if (shouldStop.value) break;
+              addLog({
+                time: new Date().toLocaleTimeString(),
+                message: `${tokenName} 执行加钟 ${i + 1}/4`,
+                type: "info",
+              });
+              await tokenStore.sendMessageWithPromise(
+                tokenId,
+                "system_mysharecallback",
+                { isSkipShareCard: true, type: 2 },
+                5000,
+              );
+              await new Promise((r) => setTimeout(r, 500));
+            }
+
+            if (shouldStop.value) break;
+
+            success = true;
+            tokenStatus.value[tokenId] = "completed";
+            batchResult.completedCount++;
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `=== ${tokenName} 加钟完成 ===`,
+              type: "success",
+            });
+          } catch (error) {
+            console.error(error);
+            if (shouldStop.value) {
+              tokenStatus.value[tokenId] = "failed";
+              addLog({
+                time: new Date().toLocaleTimeString(),
+                message: `${tokenName} 加钟失败: ${error.message || "未知错误"}`,
+                type: "error",
+              });
+              break;
+            }
+
+            retryCount++;
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${tokenName} 加钟出错: ${error.message || "未知错误"}，等待1秒后重试第${retryCount}次...`,
+              type: "warning",
+            });
+            await new Promise((r) => setTimeout(r, 1000));
+          } finally {
+            tokenStore.closeWebSocketConnection(tokenId);
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${tokenName} 连接已关闭  (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
+              type: "info",
+            });
+          }
+        }
+
+        if (!success && tokenStatus.value[tokenId] === "running") {
+          tokenStatus.value[tokenId] = "failed";
+        }
+      } finally {
+        if (slotAcquired) {
+          releaseConnectionSlot();
           addLog({
             time: new Date().toLocaleTimeString(),
-            message: `${token.name} 执行加钟 ${i + 1}/4`,
+            message: `${tokenName} 任务槽位已释放 (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
             type: "info",
           });
-          await tokenStore.sendMessageWithPromise(
-            tokenId,
-            "system_mysharecallback",
-            { isSkipShareCard: true, type: 2 },
-            5000,
-          );
-          await new Promise((r) => setTimeout(r, 500));
         }
-        tokenStatus.value[tokenId] = "completed";
-        addLog({
-          time: new Date().toLocaleTimeString(),
-          message: `=== ${token.name} 加钟完成 ===`,
-          type: "success",
-        });
-      } catch (error) {
-        console.error(error);
-        tokenStatus.value[tokenId] = "failed";
-        addLog({
-          time: new Date().toLocaleTimeString(),
-          message: `${token.name} 加钟失败: ${error.message || "未知错误"}`,
-          type: "error",
-        });
-      } finally {
-        tokenStore.closeWebSocketConnection(tokenId);
-        releaseConnectionSlot();
-        addLog({
-          time: new Date().toLocaleTimeString(),
-          message: `${token.name} 连接已关闭  (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
-          type: "info",
-        });
       }
     });
 
     await Promise.all(taskPromises);
     isRunning.value = false;
     currentRunningTokenId.value = null;
+    batchResult.failedTokenIds = batchTokenIds.filter(
+      (tokenId) => tokenStatus.value[tokenId] === "failed",
+    );
+    showBatchResultModal.value = true;
     message.success("批量加钟结束");
   };
 

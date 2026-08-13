@@ -801,6 +801,36 @@
       </div>
     </n-modal>
 
+    <!-- Batch Result Modal -->
+    <n-modal
+      v-model:show="showBatchResultModal"
+      preset="card"
+      title="批量任务完成情况"
+      style="width: 90%; max-width: 360px"
+    >
+      <div class="batch-result-content">
+        <div class="batch-result-count">
+          <strong>{{ batchResult.completedCount }}</strong>
+          <span>/</span>
+          <strong>{{ batchResult.totalCount }}</strong>
+        </div>
+        <div class="batch-result-label">完成数量 / 总数量</div>
+      </div>
+      <div class="modal-actions" style="margin-top: 20px; text-align: right">
+        <n-button
+          type="warning"
+          :disabled="batchResult.failedTokenIds.length === 0"
+          @click="selectFailedBatchTokens"
+          style="margin-right: 8px"
+        >
+          选中错误账号
+        </n-button>
+        <n-button type="primary" @click="showBatchResultModal = false">
+          关闭
+        </n-button>
+      </div>
+    </n-modal>
+
     <!-- Task Template Modal -->
     <n-modal
       v-model:show="showTaskTemplateModal"
@@ -3379,6 +3409,12 @@ const helperModalTitle = computed(() => {
 
 // Batch Settings State
 const showBatchSettingsModal = ref(false);
+const showBatchResultModal = ref(false);
+const batchResult = reactive({
+  completedCount: 0,
+  totalCount: 0,
+  failedTokenIds: [],
+});
 
 const defaultDreamPurchaseList = [];
 for (const merchantId in goldItemsConfig) {
@@ -4706,6 +4742,7 @@ const queryRecipientInfo = async () => {
 
   const firstTokenId = selectedTokens.value[0];
   const token = tokens.value.find((t) => t.id === firstTokenId);
+  let querySlotAcquired = false;
 
   // 记录开始查询
   addLog({
@@ -4715,6 +4752,9 @@ const queryRecipientInfo = async () => {
   });
 
   try {
+    await waitForConnectionSlot();
+    querySlotAcquired = true;
+
     // 确保WebSocket连接
     addLog({
       time: new Date().toLocaleTimeString(),
@@ -4723,7 +4763,7 @@ const queryRecipientInfo = async () => {
     });
 
     // 使用现有的ensureConnection函数，它已经包含了重连机制
-    await ensureConnection(firstTokenId);
+    await ensureConnection(firstTokenId, 2, true);
 
     addLog({
       time: new Date().toLocaleTimeString(),
@@ -4842,6 +4882,10 @@ const queryRecipientInfo = async () => {
     // 显示用户友好的错误提示
     message.error(errorMsg);
   } finally {
+    tokenStore.closeWebSocketConnection(firstTokenId);
+    if (querySlotAcquired) {
+      releaseConnectionSlot();
+    }
     isQueryingRecipient.value = false;
 
     // 记录查询完成
@@ -5586,19 +5630,24 @@ const releaseConnectionSlot = () => {
   }
 };
 
-const ensureConnection = async (tokenId, maxRetries = 2) => {
+const ensureConnection = async (
+  tokenId,
+  maxRetries = 2,
+  slotAlreadyAcquired = false,
+) => {
   const latestToken = tokens.value.find((t) => t.id === tokenId);
   if (!latestToken) {
     throw new Error(`Token not found: ${tokenId}`);
+  }
+
+  if (!slotAlreadyAcquired) {
+    await waitForConnectionSlot();
   }
 
   let status = tokenStore.getWebSocketStatus(tokenId);
   let connected = status === "connected";
 
   if (!connected) {
-    // 等待连接槽位，限制并发连接数
-    await waitForConnectionSlot();
-
     addLog({
       time: new Date().toLocaleTimeString(),
       message: `正在连接... (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
@@ -5639,8 +5688,6 @@ const ensureConnection = async (tokenId, maxRetries = 2) => {
     }
 
     if (!connected) {
-      // 连接失败，释放槽位
-      releaseConnectionSlot();
       throw new Error("连接失败 (重试后仍超时)");
     }
   }
@@ -5673,6 +5720,7 @@ const ensureConnection = async (tokenId, maxRetries = 2) => {
       message: `初始化数据失败: ${e.message}`,
       type: "warning",
     });
+    throw e;
   }
 
   return true;
@@ -5684,6 +5732,7 @@ const createTaskDeps = () => ({
   tokenStatus,
   isRunning,
   shouldStop,
+  waitForConnectionSlot,
   ensureConnection,
   releaseConnectionSlot,
   connectionQueue,
@@ -5692,6 +5741,8 @@ const createTaskDeps = () => ({
   addLog,
   message,
   currentRunningTokenId,
+  batchResult,
+  showBatchResultModal,
   // 延迟配置
   delayConfig: {
     command: batchSettings.commandDelay,
@@ -5804,97 +5855,128 @@ const onFootballPickChange = async (val) => {
   await batchFootballBet(val);
 };
 
+const selectFailedBatchTokens = () => {
+  const failedTokenIds = batchResult.failedTokenIds.filter((tokenId) =>
+    tokens.value.some((token) => token.id === tokenId),
+  );
+
+  selectedTokens.value = [...failedTokenIds];
+  showBatchResultModal.value = false;
+
+  if (failedTokenIds.length > 0) {
+    message.success(`已选中 ${failedTokenIds.length} 个错误账号`);
+  }
+};
+
 const startBatch = async () => {
   if (selectedTokens.value.length === 0) return;
 
+  const batchTokenIds = [...selectedTokens.value];
+  batchResult.completedCount = 0;
+  batchResult.totalCount = batchTokenIds.length;
+  batchResult.failedTokenIds = [];
   isRunning.value = true;
   shouldStop.value = false;
   // 不再重置logs数组，保留之前的日志
   // logs.value = [];
 
   // Reset status
-  selectedTokens.value.forEach((id) => {
+  batchTokenIds.forEach((id) => {
     tokenStatus.value[id] = "waiting";
   });
 
-  // 并行执行任务，但通过connectionQueue限制并发连接数
-  const taskPromises = selectedTokens.value.map(async (tokenId) => {
+  // 并行启动任务，但每个账号在整个重试生命周期内持有一个槽位
+  const taskPromises = batchTokenIds.map(async (tokenId) => {
     if (shouldStop.value) return;
 
     tokenStatus.value[tokenId] = "running";
 
     let retryCount = 0;
     let success = false;
+    let slotAcquired = false;
+    const token = tokens.value.find((t) => t.id === tokenId);
+    const tokenName = token?.name || tokenId;
 
-    while (!success && !shouldStop.value) {
-      if (shouldStop.value) break;
+    try {
+      await waitForConnectionSlot();
+      slotAcquired = true;
 
-      const token = tokens.value.find((t) => t.id === tokenId);
+      while (!success && !shouldStop.value) {
+        try {
+          if (retryCount === 0) {
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `=== 开始执行: ${tokenName} ===`,
+              type: "info",
+            });
+          } else {
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `=== 尝试重试: ${tokenName} (第${retryCount}次) ===`,
+              type: "info",
+            });
+          }
 
-      try {
-        if (retryCount === 0) {
-          addLog({
-            time: new Date().toLocaleTimeString(),
-            message: `=== 开始执行: ${token.name} ===`,
-            type: "info",
+          await ensureConnection(tokenId, 2, true);
+
+          const runner = new DailyTaskRunner(tokenStore, {
+            commandDelay: batchSettings.commandDelay,
+            taskDelay: batchSettings.taskDelay,
           });
-        } else {
+
+          await runner.run(tokenId, {
+            onLog: (log) => addLog(log),
+            onProgress: (p) => {
+              // 每个token维护自己的进度
+            },
+          });
+
+          success = true;
+          tokenStatus.value[tokenId] = "completed";
+          batchResult.completedCount++;
           addLog({
             time: new Date().toLocaleTimeString(),
-            message: `=== 尝试重试: ${token.name} (第${retryCount}次) ===`,
+            message: `=== ${tokenName} 执行完成 ===`,
+            type: "success",
+          });
+        } catch (error) {
+          console.error(error);
+          if (shouldStop.value) {
+            tokenStatus.value[tokenId] = "failed";
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${tokenName} 执行失败: ${error.message}`,
+              type: "error",
+            });
+            break;
+          }
+
+          retryCount++;
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${tokenName} 执行出错: ${error.message}，等待1秒后重试第${retryCount}次...`,
+            type: "warning",
+          });
+          await new Promise((r) => setTimeout(r, 1000));
+        } finally {
+          tokenStore.closeWebSocketConnection(tokenId);
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${tokenName} 连接已关闭  (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
             type: "info",
           });
         }
+      }
 
-        await ensureConnection(tokenId);
-
-        // Create runner with delay settings
-        const runner = new DailyTaskRunner(tokenStore, {
-          commandDelay: batchSettings.commandDelay,
-          taskDelay: batchSettings.taskDelay,
-        });
-
-        // Run tasks
-        await runner.run(tokenId, {
-          onLog: (log) => addLog(log),
-          onProgress: (p) => {
-            // 每个token维护自己的进度
-          },
-        });
-
-        success = true;
-        tokenStatus.value[tokenId] = "completed";
-        addLog({
-          time: new Date().toLocaleTimeString(),
-          message: `=== ${token.name} 执行完成 ===`,
-          type: "success",
-        });
-      } catch (error) {
-        console.error(error);
-        if (shouldStop.value) {
-          tokenStatus.value[tokenId] = "failed";
-          addLog({
-            time: new Date().toLocaleTimeString(),
-            message: `${token.name} 执行失败: ${error.message}`,
-            type: "error",
-          });
-          break;
-        }
-
-        retryCount++;
-        addLog({
-          time: new Date().toLocaleTimeString(),
-          message: `${token.name} 执行出错: ${error.message}，等待1秒后重试第${retryCount}次...`,
-          type: "warning",
-        });
-        await new Promise((r) => setTimeout(r, 1000));
-      } finally {
-        // 完成后关闭连接并释放槽位
-        tokenStore.closeWebSocketConnection(tokenId);
+      if (!success && tokenStatus.value[tokenId] === "running") {
+        tokenStatus.value[tokenId] = "failed";
+      }
+    } finally {
+      if (slotAcquired) {
         releaseConnectionSlot();
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `${token.name} 连接已关闭  (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
+          message: `${tokenName} 任务槽位已释放 (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
           type: "info",
         });
       }
@@ -5909,6 +5991,10 @@ const startBatch = async () => {
 
   isRunning.value = false;
   currentRunningTokenId.value = null;
+  batchResult.failedTokenIds = batchTokenIds.filter(
+    (tokenId) => tokenStatus.value[tokenId] === "failed",
+  );
+  showBatchResultModal.value = true;
   message.success("批量任务执行结束");
 };
 
@@ -6094,6 +6180,32 @@ const stopBatch = () => {
   align-items: center;
   justify-content: space-between;
   padding-right: 8px;
+}
+
+.batch-result-content {
+  text-align: center;
+  padding: 12px 0 4px;
+}
+
+.batch-result-count {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-primary);
+  font-size: 36px;
+  line-height: 1;
+}
+
+.batch-result-count span {
+  color: var(--text-secondary);
+  font-size: 24px;
+}
+
+.batch-result-label {
+  margin-top: 12px;
+  color: var(--text-secondary);
+  font-size: 14px;
 }
 
 /* Settings Modal Styles */
