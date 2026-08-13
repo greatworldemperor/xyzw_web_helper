@@ -10,6 +10,7 @@ import useIndexedDB from "@/hooks/useIndexedDB";
 import { generateRandomSeed } from "@/utils/randomSeed";
 import {
   transformToken,
+  validateEncryptedToken,
   setAuthUserRateLimiterCallback,
   scheduleAuthUserRequest,
 } from "@/utils/token";
@@ -45,6 +46,8 @@ declare interface WebSocketConnection {
   randomSeedSynced?: boolean;
   lastRandomSeedSource?: number | null;
   lastRandomSeed?: number | null;
+  connectionTimeoutTimer?: ReturnType<typeof setTimeout>;
+  tokenRefreshInProgress?: boolean;
 }
 
 declare type WebCtx = Record<string, Partial<WebSocketConnection>>;
@@ -323,6 +326,16 @@ export const useTokenStore = defineStore("tokens", () => {
   // Token刷新尝试记录
   const tokenRefreshAttempts = ref<Record<string, number>>({});
 
+  const reportTokenRefreshFailure = (tokenId: string, reason: string) => {
+    const token = gameTokens.value.find((item) => item.id === tokenId);
+    $emit.emit("token:refresh:failed", {
+      tokenId,
+      tokenName: token?.name || tokenId,
+      reason,
+      timestamp: Date.now(),
+    });
+  };
+
   // 尝试自动刷新Token
   const attemptTokenRefresh = async (
     tokenId: string,
@@ -342,6 +355,7 @@ export const useTokenStore = defineStore("tokens", () => {
 
     wsLogger.info(`尝试自动刷新Token [${tokenId}]`);
     let refreshSuccess = false;
+    let failureReason = "未找到可用的Token刷新来源";
 
     try {
       if (gameToken.importMethod === "url" && gameToken.sourceUrl) {
@@ -350,9 +364,12 @@ export const useTokenStore = defineStore("tokens", () => {
           const response = await fetch(gameToken.sourceUrl!);
           if (response.ok) {
             const data = await response.json();
-            if (data.token) {
+            if (validateEncryptedToken(data.token)) {
               return data.token;
             }
+            failureReason = "刷新接口返回的Token不是有效的加密Token";
+          } else {
+            failureReason = `Token刷新接口请求失败: ${response.status}`;
           }
           return null;
         });
@@ -379,6 +396,9 @@ export const useTokenStore = defineStore("tokens", () => {
 
         if (userToken) {
           const token = await transformToken(userToken);
+          if (!validateEncryptedToken(token)) {
+            throw new Error("BIN转换结果不是有效的加密Token");
+          }
           updateToken(tokenId, { ...gameToken, token });
           if (usedOldKey) {
             const saved = await storeArrayBuffer(tokenId, userToken);
@@ -388,10 +408,12 @@ export const useTokenStore = defineStore("tokens", () => {
           }
           refreshSuccess = true;
         } else {
-          wsLogger.error(`Token刷新失败: 未找到BIN数据 [${tokenId}]`);
+          failureReason = "未找到BIN数据";
+          wsLogger.error(`Token刷新失败: ${failureReason} [${tokenId}]`);
         }
       }
     } catch (error) {
+      failureReason = error instanceof Error ? error.message : String(error);
       wsLogger.error(`Token刷新过程出错 [${tokenId}]:`, error);
     }
 
@@ -415,6 +437,7 @@ export const useTokenStore = defineStore("tokens", () => {
       return true;
     } else {
       wsLogger.error(`Token刷新失败，请手动重新导入 [${tokenId}]`);
+      reportTokenRefreshFailure(tokenId, failureReason);
       return false;
     }
   };
@@ -693,6 +716,7 @@ export const useTokenStore = defineStore("tokens", () => {
     tokenId: string,
     base64Token: string,
     customWsUrl = null,
+    options: { monitorTimeout?: boolean; connectionTimeoutMs?: number } = {},
   ) => {
     wsLogger.info(`开始创建连接: ${tokenId}`);
 
@@ -766,10 +790,39 @@ export const useTokenStore = defineStore("tokens", () => {
         lastRandomSeed: null,
       };
 
+      if (options.monitorTimeout !== false) {
+        const connectionTimeoutMs = options.connectionTimeoutMs || 10000;
+        wsConnections.value[tokenId].connectionTimeoutTimer = setTimeout(
+          async () => {
+            const connection = wsConnections.value[tokenId];
+            if (!connection || connection.status !== "connecting") return;
+
+            connection.connectionTimeoutTimer = undefined;
+            connection.status = "error";
+            connection.tokenRefreshInProgress = true;
+            wsLogger.warn(`连接超时，尝试刷新Token [${tokenId}]`);
+
+            try {
+              const refreshed = await attemptTokenRefresh(tokenId, true);
+              if (!refreshed) {
+                await closeWebSocketConnectionAsync(tokenId);
+              }
+            } finally {
+              connection.tokenRefreshInProgress = false;
+            }
+          },
+          connectionTimeoutMs,
+        );
+      }
+
       // 9. 设置事件监听（增强版）
       wsClient.onConnect = () => {
         wsLogger.wsConnect(tokenId);
         if (wsConnections.value[tokenId]) {
+          if (wsConnections.value[tokenId].connectionTimeoutTimer) {
+            clearTimeout(wsConnections.value[tokenId].connectionTimeoutTimer);
+            wsConnections.value[tokenId].connectionTimeoutTimer = undefined;
+          }
           wsConnections.value[tokenId].status = "connected";
           wsConnections.value[tokenId].connectedAt = new Date().toISOString();
           wsConnections.value[tokenId].reconnectAttempts = 0;
@@ -792,15 +845,28 @@ export const useTokenStore = defineStore("tokens", () => {
         wsLogger.wsDisconnect(tokenId, reason);
         if (wsConnections.value[tokenId]) {
           const conn = wsConnections.value[tokenId];
+          if (conn.connectionTimeoutTimer) {
+            clearTimeout(conn.connectionTimeoutTimer);
+            conn.connectionTimeoutTimer = undefined;
+          }
           conn.status = "disconnected";
           conn.randomSeedSynced = false;
 
           // 如果连接异常断开(1006)且从未连接成功(握手失败)，尝试刷新Token
           // connectedAt 为 null 表示 socket.onopen 还没触发就断开了，通常意味着握手失败（如403 Forbidden）
-          if (event.code === 1006 && !conn.connectedAt) {
+          if (
+            event.code === 1006 &&
+            !conn.connectedAt &&
+            !conn.tokenRefreshInProgress
+          ) {
             wsLogger.warn(`检测到握手失败(1006)，尝试刷新Token [${tokenId}]`);
             // 强制刷新并重连
-            await attemptTokenRefresh(tokenId, true);
+            conn.tokenRefreshInProgress = true;
+            try {
+              await attemptTokenRefresh(tokenId, true);
+            } finally {
+              conn.tokenRefreshInProgress = false;
+            }
           }
         }
         updateCrossTabConnectionState(tokenId, "disconnected");
@@ -859,6 +925,11 @@ export const useTokenStore = defineStore("tokens", () => {
       const connection = wsConnections.value[tokenId];
       if (connection && connection.client) {
         wsLogger.debug(`开始优雅关闭连接: ${tokenId}`);
+
+        if (connection.connectionTimeoutTimer) {
+          clearTimeout(connection.connectionTimeoutTimer);
+          connection.connectionTimeoutTimer = undefined;
+        }
 
         connection.status = "disconnecting";
         updateCrossTabConnectionState(tokenId, "disconnecting");
@@ -1572,6 +1643,7 @@ export const useTokenStore = defineStore("tokens", () => {
     updateToken,
     removeToken,
     selectToken,
+    attemptTokenRefresh,
 
     // Base64解析方法
     parseBase64Token,
