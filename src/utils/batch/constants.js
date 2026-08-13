@@ -149,7 +149,7 @@ export const defaultBatchSettings = {
   smartDepartureRecruitThreshold: 0,
   smartDepartureJadeThreshold: 0,
   smartDepartureTicketThreshold: 0,
-  smartDepartureMatchAll: false,
+  smartDepartureMode: "A",
 };
 
 // 默认模板

@@ -163,7 +163,7 @@ const checkRewardConditions = (rewards, conditions, matchAll = false) => {
  * @param {number} minColor - 最小颜色等级
  * @param {object} customConditions - 自定义条件 { gold, recruit, jade, ticket }
  * @param {boolean} useGoldRefreshFallback - 是否启用金砖刷新保底
- * @param {boolean} matchAll - 是否需要满足所有自定义条件
+ * @param {boolean} matchAll - 保留参数兼容旧调用，奖励条件始终使用 OR
  * @returns {boolean} - 是否应该发车
  */
 export const shouldSendCar = (car, tickets, minColor = 4, customConditions = {}, useGoldRefreshFallback = false, matchAll = false) => {
@@ -171,27 +171,24 @@ export const shouldSendCar = (car, tickets, minColor = 4, customConditions = {},
   const rewards = Array.isArray(car?.rewards) ? car.rewards : [];
   
   // 检查自定义条件
-  const customConditionsMet = checkRewardConditions(rewards, customConditions, matchAll);
+  const customConditionsMet = checkRewardConditions(rewards, customConditions, false);
+  const hasConditions =
+    customConditions.gold > 0 ||
+    customConditions.recruit > 0 ||
+    customConditions.jade > 0 ||
+    customConditions.ticket > 0;
 
-  // 如果开启了保底（严格模式），必须同时满足车辆颜色要求和自定义条件
-  if (useGoldRefreshFallback) {
-    // 1. 必须达到保底颜色
-    if (color < minColor) {
-      return false;
-    }
-    // 2. 如果设置了自定义条件，必须满足
-    const hasConditions = (customConditions.gold > 0 || customConditions.recruit > 0 || customConditions.jade > 0 || customConditions.ticket > 0);
-    
-    if (hasConditions) {
-      return customConditionsMet;
-    }
-    
-    // 如果没有设置自定义条件，只要颜色满足即可
-    return true;
+  // 车辆颜色是基础门槛，奖励条件之间使用 OR
+  if (color < minColor) {
+    return false;
   }
 
-  // 非严格模式：只要满足自定义条件，直接发车（视作大奖）
-  if (customConditionsMet) {
+  if (hasConditions) {
+    return customConditionsMet;
+  }
+
+  // 金砖保底且未设置奖励条件时，只要颜色达到门槛即可发车
+  if (useGoldRefreshFallback) {
     return true;
   }
 
@@ -297,7 +294,7 @@ export function createCarManager({ tokenStore, connectionManager, batchSettings,
             ticket: batchSettings.smartDepartureTicketThreshold,
           };
 
-          if (shouldSendCar(car, effectiveTickets, batchSettings.carMinColor, customConditions, batchSettings.useGoldRefreshFallback, batchSettings.smartDepartureMatchAll)) {
+          if (shouldSendCar(car, effectiveTickets, batchSettings.carMinColor, customConditions, batchSettings.useGoldRefreshFallback)) {
             addLog({
               time: new Date().toLocaleTimeString(),
               message: `${token.name} 车辆[${gradeLabel(car.color)}]满足条件，直接发车`,
@@ -393,7 +390,7 @@ export function createCarManager({ tokenStore, connectionManager, batchSettings,
             } catch (_) {}
 
             // Check if good enough now
-            if (shouldSendCar(car, batchSettings.useGoldRefreshFallback ? 999 : refreshTickets, batchSettings.carMinColor, customConditions, batchSettings.useGoldRefreshFallback, batchSettings.smartDepartureMatchAll)) {
+            if (shouldSendCar(car, batchSettings.useGoldRefreshFallback ? 999 : refreshTickets, batchSettings.carMinColor, customConditions, batchSettings.useGoldRefreshFallback)) {
               addLog({
                 time: new Date().toLocaleTimeString(),
                 message: `${token.name} 刷新后车辆[${gradeLabel(car.color)}]满足条件，发车`,
