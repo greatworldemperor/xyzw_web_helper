@@ -206,6 +206,91 @@ export function createTasksCar(deps) {
           }
         };
 
+        const customConditions = {
+          gold: batchSettings.smartDepartureGoldThreshold,
+          recruit: batchSettings.smartDepartureRecruitThreshold,
+          jade: batchSettings.smartDepartureJadeThreshold,
+          ticket: batchSettings.smartDepartureTicketThreshold,
+        };
+        const paidRefreshConditions = { ...customConditions, ticket: 0 };
+        const smartDepartureMode =
+          batchSettings.smartDepartureMode === "B" ? "B" : "A";
+
+        const sendCar = async (car, logMessage, logType = "info") => {
+          await assignHelperIfNeeded(car);
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} ${logMessage}`,
+            type: logType,
+          });
+          await tokenStore.sendMessageWithPromise(
+            tokenId,
+            "car_send",
+            {
+              carId: String(car.id),
+              helperId: car.helperId ? String(car.helperId) : 0,
+              text: "",
+              isUpgrade: false,
+            },
+            10000,
+          );
+          await new Promise((r) => setTimeout(r, delayConfig.action));
+        };
+
+        const refreshCar = async (car, isFreeRefresh = false) => {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} 车辆[${gradeLabel(car.color)}]${
+              isFreeRefresh ? "进行免费刷新" : "尝试刷新"
+            }...`,
+            type: "info",
+          });
+          const resp = await tokenStore.sendMessageWithPromise(
+            tokenId,
+            "car_refresh",
+            { carId: String(car.id) },
+            10000,
+          );
+          const data = resp?.car || resp?.body?.car || resp;
+
+          if (data && typeof data === "object") {
+            if (data.color != null) car.color = Number(data.color);
+            if (data.refreshCount != null)
+              car.refreshCount = Number(data.refreshCount);
+            if (data.rewards != null) car.rewards = data.rewards;
+          }
+
+          try {
+            const roleRes = await tokenStore.sendMessageWithPromise(
+              tokenId,
+              "role_getroleinfo",
+              {},
+              5000,
+            );
+            refreshTickets = Number(
+              roleRes?.role?.items?.[35002]?.quantity || 0,
+            );
+          } catch (_) {}
+        };
+
+        const meetsConditions = (car, conditions = customConditions) =>
+          shouldSendCar(
+            car,
+            batchSettings.useGoldRefreshFallback ? 999 : refreshTickets,
+            batchSettings.carMinColor,
+            conditions,
+            batchSettings.useGoldRefreshFallback,
+            false,
+          );
+
+        const canUsePaidRefresh = (car, freeRefreshAttempted) => {
+          if (refreshTickets >= 6) return true;
+          return (
+            batchSettings.useGoldRefreshFallback &&
+            (freeRefreshAttempted || Number(car.refreshCount ?? 0) !== 0)
+          );
+        };
+
         // 3. Process Cars
         for (const car of carList) {
           if (shouldStop.value) break;
@@ -213,167 +298,67 @@ export function createTasksCar(deps) {
           if (Number(car.sendAt || 0) !== 0) continue;
 
           try {
-            // 当启用金砖保底时，强制使用高票数的判断逻辑（严格模式），避免因票数不足而提前发车
-            const effectiveTickets = batchSettings.useGoldRefreshFallback ? 999 : refreshTickets;
-            
-            const customConditions = {
-              gold: batchSettings.smartDepartureGoldThreshold,
-              recruit: batchSettings.smartDepartureRecruitThreshold,
-              jade: batchSettings.smartDepartureJadeThreshold,
-              ticket: batchSettings.smartDepartureTicketThreshold,
-            };
-
-            if (shouldSendCar(car, effectiveTickets, batchSettings.carMinColor, customConditions, batchSettings.useGoldRefreshFallback, batchSettings.smartDepartureMatchAll)) {
-              await assignHelperIfNeeded(car);
-              addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${token.name} 车辆[${gradeLabel(car.color)}]满足条件，直接发车`,
-                type: "info",
-              });
-              await tokenStore.sendMessageWithPromise(
-                tokenId,
-                "car_send",
-                {
-                  carId: String(car.id),
-                  helperId: car.helperId ? String(car.helperId) : 0,
-                  text: "",
-                  isUpgrade: false,
-                },
-                10000,
+            if (meetsConditions(car)) {
+              await sendCar(
+                car,
+                `车辆[${gradeLabel(car.color)}]满足条件，直接发车`,
               );
-              await new Promise((r) => setTimeout(r, delayConfig.action));
               continue;
             }
 
-            let shouldRefresh = false;
-            const free = Number(car.refreshCount ?? 0) === 0;
-            // 启用金砖刷新保底：当且仅当设置了保底且无免费次数、无刷新券时，允许继续刷新
-            const useGoldFallback = batchSettings.useGoldRefreshFallback && !free && refreshTickets < 6;
-            
-            if (refreshTickets >= 6) shouldRefresh = true;
-            else if (free) shouldRefresh = true;
-            else if (useGoldFallback) {
-              shouldRefresh = true;
-              addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${token.name} 车辆[${gradeLabel(car.color)}]仍不满足条件且无刷新次数，将启用金砖刷新`,
-                type: "warning",
-              });
-            }
-            else {
-              await assignHelperIfNeeded(car);
-              addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${token.name} 车辆[${gradeLabel(car.color)}]不满足条件且无刷新次数，直接发车`,
-                type: "warning",
-              });
-              await tokenStore.sendMessageWithPromise(
-                tokenId,
-                "car_send",
-                {
-                  carId: String(car.id),
-                  helperId: car.helperId ? String(car.helperId) : 0,
-                  text: "",
-                  isUpgrade: false,
-                },
-                10000,
-              );
-              await new Promise((r) => setTimeout(r, delayConfig.action));
-              continue;
+            let freeRefreshAttempted = false;
+            if (Number(car.refreshCount ?? 0) === 0) {
+              freeRefreshAttempted = true;
+              await refreshCar(car, true);
+              if (meetsConditions(car)) {
+                await sendCar(
+                  car,
+                  `免费刷新后车辆[${gradeLabel(car.color)}]满足条件，发车`,
+                  "success",
+                );
+                continue;
+              }
             }
 
-            while (shouldRefresh && !shouldStop.value) {
-              addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${token.name} 车辆[${gradeLabel(car.color)}]尝试刷新...`,
-                type: "info",
-              });
-              const resp = await tokenStore.sendMessageWithPromise(
-                tokenId,
-                "car_refresh",
-                { carId: String(car.id) },
-                10000,
-              );
-              const data = resp?.car || resp?.body?.car || resp;
+            if (shouldStop.value) break;
 
-              if (data && typeof data === "object") {
-                if (data.color != null) car.color = Number(data.color);
-                if (data.refreshCount != null)
-                  car.refreshCount = Number(data.refreshCount);
-                if (data.rewards != null) car.rewards = data.rewards;
-              }
-
-              try {
-                const roleRes = await tokenStore.sendMessageWithPromise(
-                  tokenId,
-                  "role_getroleinfo",
-                  {},
-                  5000,
-                );
-                refreshTickets = Number(
-                  roleRes?.role?.items?.[35002]?.quantity || 0,
-                );
-              } catch (_) {}
-
-              if (shouldSendCar(car, batchSettings.useGoldRefreshFallback ? 999 : refreshTickets, batchSettings.carMinColor, customConditions, batchSettings.useGoldRefreshFallback, batchSettings.smartDepartureMatchAll)) {
-                await assignHelperIfNeeded(car);
+            if (smartDepartureMode === "B") {
+              if (customConditions.ticket > 0) {
                 addLog({
                   time: new Date().toLocaleTimeString(),
-                  message: `${token.name} 刷新后车辆[${gradeLabel(car.color)}]满足条件，发车`,
-                  type: "success",
-                });
-                await tokenStore.sendMessageWithPromise(
-                  tokenId,
-                  "car_send",
-                  {
-                    carId: String(car.id),
-                    helperId: car.helperId ? String(car.helperId) : 0,
-                    text: "",
-                    isUpgrade: false,
-                  },
-                  10000,
-                );
-                await new Promise((r) => setTimeout(r, delayConfig.action));
-                break;
-              }
-
-              const freeNow = Number(car.refreshCount ?? 0) === 0;
-              const useGoldFallback = batchSettings.useGoldRefreshFallback && !freeNow && refreshTickets < 6;
-
-              if (refreshTickets >= 6) shouldRefresh = true;
-              else if (freeNow) shouldRefresh = true;
-              else if (useGoldFallback) {
-                shouldRefresh = true;
-                addLog({
-                  time: new Date().toLocaleTimeString(),
-                  message: `${token.name} 刷新后车辆[${gradeLabel(car.color)}]仍不满足条件且无刷新次数，将启用金砖刷新`,
+                  message: `${token.name} 车辆[${gradeLabel(car.color)}]免费刷新后仍不满足完整条件，逻辑B暂时忽略刷新券奖励数量要求`,
                   type: "warning",
                 });
               }
-              else {
-                assignHelperIfNeeded(car);
-                addLog({
-                  time: new Date().toLocaleTimeString(),
-                  message: `${token.name} 刷新后车辆[${gradeLabel(car.color)}]仍不满足条件且无刷新次数，发车`,
-                  type: "warning",
-                });
-                await tokenStore.sendMessageWithPromise(
-                  tokenId,
-                  "car_send",
-                  {
-                    carId: String(car.id),
-                    helperId: car.helperId ? String(car.helperId) : 0,
-                    text: "",
-                    isUpgrade: false,
-                  },
-                  10000,
-                );
-                await new Promise((r) => setTimeout(r, delayConfig.action));
-                break;
+
+              let sentAfterPaidRefresh = false;
+              while (
+                !shouldStop.value &&
+                canUsePaidRefresh(car, freeRefreshAttempted)
+              ) {
+                await refreshCar(car);
+                if (meetsConditions(car, paidRefreshConditions)) {
+                  await sendCar(
+                    car,
+                    `追刷后车辆[${gradeLabel(car.color)}]满足条件，发车`,
+                    "success",
+                  );
+                  sentAfterPaidRefresh = true;
+                  break;
+                }
+
+                await new Promise((r) => setTimeout(r, delayConfig.refresh));
               }
 
-              await new Promise((r) => setTimeout(r, delayConfig.refresh));
+              if (shouldStop.value) break;
+              if (sentAfterPaidRefresh) continue;
             }
+
+            await sendCar(
+              car,
+              `车辆[${gradeLabel(car.color)}]未满足条件，直接发车`,
+              "warning",
+            );
           } catch (carError) {
             addLog({
               time: new Date().toLocaleTimeString(),

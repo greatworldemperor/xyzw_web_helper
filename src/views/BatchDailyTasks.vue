@@ -2098,7 +2098,7 @@
                   align-items: center;
                 "
               >
-                <label class="setting-label">保底车辆颜色</label>
+                <label class="setting-label">车辆颜色门槛</label>
                 <n-select
                   v-model:value="batchSettings.carMinColor"
                   :options="[
@@ -2126,12 +2126,6 @@
                   v-model:value="batchSettings.useGoldRefreshFallback"
                 />
               </div>
-            </div>
-            <div
-              class="settings-grid"
-              v-if="batchSettings.useGoldRefreshFallback"
-              style="margin-top: 12px"
-            >
               <div
                 class="setting-item"
                 style="
@@ -2140,11 +2134,22 @@
                   align-items: center;
                 "
               >
-                <label class="setting-label">需同时满足所有条件</label>
-                <n-switch
-                  v-model:value="batchSettings.smartDepartureMatchAll"
+                <label class="setting-label">智能发车策略</label>
+                <n-select
+                  v-model:value="batchSettings.smartDepartureMode"
+                  :options="[
+                    { label: '逻辑A：免费刷新1次后发车', value: 'A' },
+                    { label: '逻辑B：刷新至满足条件或用完刷新券', value: 'B' },
+                  ]"
+                  size="small"
+                  style="width: 220px"
                 />
               </div>
+            </div>
+            <div
+              class="settings-grid"
+              style="margin-top: 12px"
+            >
               <div
                 class="setting-item"
                 style="
@@ -3472,7 +3477,7 @@ const batchSettings = reactive({
   smartDepartureRecruitThreshold: 0,
   smartDepartureJadeThreshold: 0,
   smartDepartureTicketThreshold: 0,
-  smartDepartureMatchAll: false,
+  smartDepartureMode: "A",
 });
 
 // Load batch settings from localStorage
@@ -3992,7 +3997,7 @@ const exportConfig = () => {
         smartDepartureJadeThreshold: batchSettings.smartDepartureJadeThreshold,
         smartDepartureTicketThreshold:
           batchSettings.smartDepartureTicketThreshold,
-        smartDepartureMatchAll: batchSettings.smartDepartureMatchAll,
+        smartDepartureMode: batchSettings.smartDepartureMode,
       },
       tokenSettings: tokenSettings,
     };
