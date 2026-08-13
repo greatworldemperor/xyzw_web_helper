@@ -22,7 +22,11 @@
     <ServerRoleList
       :data="serverListData"
       max-height="50vh"
+      :page-size="50"
+      :show-add-all="true"
+      :add-all-loading="isAddingAll"
       @add="addSelectedRole"
+      @add-all="addAllRoles"
       @download="handleDownload"
     />
 
@@ -97,6 +101,7 @@ const removeRole = (index: number) => {
 const tokenStore = useTokenStore();
 const message = useMessage();
 const isImporting = ref(false);
+const isAddingAll = ref(false);
 const importForm = reactive({
   name: "",
   server: "",
@@ -178,10 +183,13 @@ const handleDownload = (roleInfo: any) => {
   }
 };
 
-const addSelectedRole = async (roleInfo: any) => {
+const addSelectedRole = async (
+  roleInfo: any,
+  showMessage = true,
+): Promise<boolean> => {
   if (!originalBinData.value) {
     message.error("Bin数据丢失，请重新上传");
-    return;
+    return false;
   }
 
   try {
@@ -222,8 +230,10 @@ const addSelectedRole = async (roleInfo: any) => {
     );
 
     if (exists) {
-      message.warning(`角色 ${finalName} 已在待添加列表中`);
-      return;
+      if (showMessage) {
+        message.warning(`角色 ${finalName} 已在待添加列表中`);
+      }
+      return false;
     }
 
     roleList.value.push({
@@ -237,11 +247,53 @@ const addSelectedRole = async (roleInfo: any) => {
       importMethod: "bin",
     });
 
-    message.success(`已添加角色: ${finalName}`);
+    if (showMessage) {
+      message.success(`已添加角色: ${finalName}`);
+    }
+    return true;
 
   } catch (e: any) {
     console.error("添加角色失败", e);
-    message.error("添加角色失败: " + e.message);
+    if (showMessage) {
+      message.error("添加角色失败: " + e.message);
+    }
+    return false;
+  }
+};
+
+const addAllRoles = async () => {
+  if (isAddingAll.value) return;
+
+  if (!originalBinData.value) {
+    message.error("Bin数据丢失，请重新上传");
+    return;
+  }
+
+  const roles = [...serverListData.value];
+  if (roles.length === 0) {
+    message.warning("没有可添加的角色");
+    return;
+  }
+
+  isAddingAll.value = true;
+  let addedCount = 0;
+
+  try {
+    for (const role of roles) {
+      if (await addSelectedRole(role, false)) {
+        addedCount += 1;
+      }
+    }
+
+    if (addedCount === roles.length) {
+      message.success(`已全部添加 ${addedCount} 个角色`);
+    } else if (addedCount > 0) {
+      message.warning(`已添加 ${addedCount}/${roles.length} 个角色`);
+    } else {
+      message.warning("没有新的角色可添加");
+    }
+  } finally {
+    isAddingAll.value = false;
   }
 };
 
