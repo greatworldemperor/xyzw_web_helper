@@ -1,6 +1,18 @@
 <template>
   <div ref="listRootRef">
     <n-card v-if="data && data.length > 0" :title="title" class="server-role-list-card">
+      <template #header-extra>
+        <n-button
+          v-if="props.showAddAll"
+          type="success"
+          size="small"
+          :loading="props.addAllLoading"
+          :disabled="props.addAllLoading"
+          @click="emit('add-all')"
+        >
+          全部添加
+        </n-button>
+      </template>
     <div class="server-role-list-search">
       <n-input
         v-model:value="serverSearchKeyword"
@@ -45,7 +57,7 @@
         <n-data-table
           :columns="columns"
           :data="filteredData"
-          :pagination="{ pageSize: 5 }"
+          :pagination="{ pageSize: props.pageSize }"
           :scroll-x="600"
         />
       </div>
@@ -70,16 +82,23 @@ const props = withDefaults(
     title?: string;
     serverColumnTitle?: string;
     maxHeight?: string;
+    pageSize?: number;
+    showAddAll?: boolean;
+    addAllLoading?: boolean;
   }>(),
   {
     title: "服务器角色列表",
     serverColumnTitle: "区服",
     maxHeight: "",
+    pageSize: 5,
+    showAddAll: false,
+    addAllLoading: false,
   }
 );
 
 const emit = defineEmits<{
   add: [row: any];
+  "add-all": [];
   download: [row: any];
 }>();
 

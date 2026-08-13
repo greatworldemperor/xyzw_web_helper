@@ -5824,10 +5824,9 @@ const startBatch = async () => {
     tokenStatus.value[tokenId] = "running";
 
     let retryCount = 0;
-    const MAX_RETRIES = 1;
     let success = false;
 
-    while (retryCount <= MAX_RETRIES && !success) {
+    while (!success && !shouldStop.value) {
       if (shouldStop.value) break;
 
       const token = tokens.value.find((t) => t.id === tokenId);
@@ -5872,23 +5871,23 @@ const startBatch = async () => {
         });
       } catch (error) {
         console.error(error);
-        if (retryCount < MAX_RETRIES && !shouldStop.value) {
-          addLog({
-            time: new Date().toLocaleTimeString(),
-            message: `${token.name} 执行出错: ${error.message}，等待3秒后重试...`,
-            type: "warning",
-          });
-          // Wait for potential token refresh in store
-          await new Promise((r) => setTimeout(r, 3000));
-          retryCount++;
-        } else {
+        if (shouldStop.value) {
           tokenStatus.value[tokenId] = "failed";
           addLog({
             time: new Date().toLocaleTimeString(),
             message: `${token.name} 执行失败: ${error.message}`,
             type: "error",
           });
+          break;
         }
+
+        retryCount++;
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${token.name} 执行出错: ${error.message}，等待1秒后重试第${retryCount}次...`,
+          type: "warning",
+        });
+        await new Promise((r) => setTimeout(r, 1000));
       } finally {
         // 完成后关闭连接并释放槽位
         tokenStore.closeWebSocketConnection(tokenId);
