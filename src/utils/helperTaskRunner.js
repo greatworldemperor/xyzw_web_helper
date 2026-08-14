@@ -31,9 +31,23 @@ export function getErrorDetails(error) {
   const details = [];
   const code = error?.code ?? error?.errorCode;
   const hint = error?.hint;
+  const responseStatus = error?.response?.status;
+  const responseCode = error?.response?.data?.code;
 
   if (code !== undefined && code !== null) {
     details.push(`code=${code}`);
+  }
+
+  if (responseStatus !== undefined && responseStatus !== null) {
+    details.push(`httpStatus=${responseStatus}`);
+  }
+
+  if (
+    responseCode !== undefined &&
+    responseCode !== null &&
+    responseCode !== code
+  ) {
+    details.push(`responseCode=${responseCode}`);
   }
 
   if (hint) {
@@ -45,14 +59,26 @@ export function getErrorDetails(error) {
 }
 
 export function isRateLimitError(error) {
-  const message = getErrorMessage(error);
+  const message = [
+    getErrorMessage(error),
+    error?.code,
+    error?.errorCode,
+    error?.response?.status,
+    error?.response?.data?.code,
+    error?.response?.data?.message,
+    error?.response?.data?.hint,
+  ]
+    .filter((value) => value !== undefined && value !== null)
+    .join(" ");
 
   return (
     message.includes("400312") ||
     message.includes("200400") ||
     message.includes("12400000") ||
+    message.includes("429") ||
     message.includes("操作过快") ||
     message.includes("操作太快") ||
+    message.includes("请求频繁") ||
     message.includes("过于频繁") ||
     message.includes("限流") ||
     message.includes("屏蔽")

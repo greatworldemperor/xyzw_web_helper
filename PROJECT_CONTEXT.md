@@ -100,7 +100,7 @@ wss://xxz-xyzw.hortorgames.com/agent?p=<encoded-token>&e=x&lang=chinese
 
 - 普通角色登录连接默认监控 10 秒握手超时；1006 握手失败也会进入相同的刷新流程。
 - `attemptTokenRefresh()` 从 URL 或 IndexedDB 中的 BIN/WX 数据获取新 Token，并在成功后更新本地存储；失败通过 `token:refresh:failed` 事件通知界面。
-- [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue) 的批处理连接等待超时后，关闭旧连接、刷新 Token，再使用最新 Token 重连；批处理连接关闭了 Store 的重复超时监控，但继续复用同一套刷新逻辑。
+- [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue) 的批处理连接失败后，先等待旧连接关闭，再刷新 Token 并使用最新 Token 重连；批处理连接关闭 Store 的握手超时和握手失败自动刷新，避免后台刷新与批量刷新争用。刷新接口遇到限流时每隔 1 秒重试，直到成功；不可重试的刷新错误才停止账号并保留失败原因。
 - [src/layout/DefaultLayout.vue](src/layout/DefaultLayout.vue) 和 [src/views/TokenImport/index.vue](src/views/TokenImport/index.vue) 监听刷新失败事件，并使用 Naive UI 对话框提示用户。
 
 ### 任务层
@@ -176,7 +176,7 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
   -> 更新日志与 gameData
 ```
 
-批量日常主流程按 `maxActive` 分成账号波次：同一波账号并发执行，但下一波必须等待当前波全部结束后才启动。每个账号内部由 `DailyTaskRunner` 线性执行任务，日常任务完成后先逐项领取每日任务积分奖励，再领取每日完成奖励，随后处理周常和通行证奖励。任务遇到服务器限流或已知屏蔽错误时停留在当前任务上，每隔 1 秒重试；其他错误立即停止当前账号。流程结束后在页面弹窗显示完成数量、总数量和最终失败角色清单，并可一键重新选中最终失败的账号。错误账号按最终状态汇总，不记录中间重试失败。
+批量日常主流程按 `maxActive` 分成账号波次：同一波账号并发执行，但下一波必须等待当前波全部结束后才启动。每个账号内部由 `DailyTaskRunner` 线性执行任务，日常任务完成后先逐项领取每日任务积分奖励，再领取每日完成奖励，随后处理周常和通行证奖励。连接失败时先由批量流程刷新 Token，再使用最新 Token 重连；刷新遇到限流或 HTTP 429 时每隔 1 秒重试直到成功。任务执行遇到服务器限流或已知屏蔽错误时停留在当前任务上，每隔 1 秒重试；其他错误立即停止当前账号。流程结束后在页面弹窗显示完成数量、总数量和最终失败角色清单，并可一键重新选中最终失败的账号。错误账号按最终状态汇总，不记录中间重试失败。
 
 批处理工具层已覆盖批次拆分、限流重试、库存前后校验等场景，并有 Node 原生测试；核心 Store、WebSocket、路由和大部分页面交互尚未形成系统化测试。
 
