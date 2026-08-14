@@ -2887,6 +2887,7 @@ import {
 import { useTokenStore, gameTokens, tokenGroups } from "@/stores/tokenStore";
 import { $emit } from "@/stores/events/index.ts";
 import { DailyTaskRunner } from "@/utils/dailyTaskRunner";
+import { isRateLimitError } from "@/utils/helperTaskRunner";
 import { preloadQuestions } from "@/utils/studyQuestionsFromJSON.js";
 import { useMessage } from "naive-ui";
 import { Settings } from "@vicons/ionicons5";
@@ -5913,13 +5914,12 @@ const startBatch = async () => {
     tokenStatus.value[id] = "waiting";
   });
 
-  // 并行启动任务，但每个账号在整个重试生命周期内持有一个槽位
-  const taskPromises = batchTokenIds.map(async (tokenId) => {
+  const runToken = async (tokenId) => {
     if (shouldStop.value) return;
 
     tokenStatus.value[tokenId] = "running";
 
-    let retryCount = 0;
+    let attemptCount = 0;
     let success = false;
     let slotAcquired = false;
     const token = tokens.value.find((t) => t.id === tokenId);
@@ -5931,7 +5931,8 @@ const startBatch = async () => {
 
       while (!success && !shouldStop.value) {
         try {
-          if (retryCount === 0) {
+          attemptCount++;
+          if (attemptCount === 1) {
             addLog({
               time: new Date().toLocaleTimeString(),
               message: `=== 开始执行: ${tokenName} ===`,
@@ -5940,7 +5941,7 @@ const startBatch = async () => {
           } else {
             addLog({
               time: new Date().toLocaleTimeString(),
-              message: `=== 尝试重试: ${tokenName} (第${retryCount}次) ===`,
+              message: `=== 尝试重试: ${tokenName} (第${attemptCount}次) ===`,
               type: "info",
             });
           }
@@ -5983,24 +5984,33 @@ const startBatch = async () => {
             type: "success",
           });
         } catch (error) {
-          console.error(error);
+          const errorMessage = error instanceof Error ? error.message : String(error);
           if (shouldStop.value) {
             tokenStatus.value[tokenId] = "failed";
             addLog({
               time: new Date().toLocaleTimeString(),
-              message: `${tokenName} 执行失败: ${error.message}`,
+              message: `${tokenName} 执行失败: ${errorMessage}`,
               type: "error",
             });
             break;
           }
 
-          retryCount++;
-          addLog({
-            time: new Date().toLocaleTimeString(),
-            message: `${tokenName} 执行出错: ${error.message}，等待1秒后重试第${retryCount}次...`,
-            type: "warning",
-          });
-          await new Promise((r) => setTimeout(r, 1000));
+          if (isRateLimitError(error)) {
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${tokenName} 触发服务器限流或屏蔽: ${errorMessage}，1秒后重试当前账号...`,
+              type: "warning",
+            });
+            await new Promise((r) => setTimeout(r, 1000));
+          } else {
+            tokenStatus.value[tokenId] = "failed";
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${tokenName} 遇到非限流错误，停止该账号任务: ${errorMessage}`,
+              type: "error",
+            });
+            break;
+          }
         } finally {
           tokenStore.closeWebSocketConnection(tokenId);
           addLog({
@@ -6024,12 +6034,25 @@ const startBatch = async () => {
         });
       }
     }
-  });
+  };
 
-  // 等待所有任务完成
-  await Promise.all(taskPromises);
+  const batchSize = Math.max(
+    1,
+    Math.trunc(Number(batchSettings.maxActive) || 1),
+  );
 
-  // 等待所有任务完成后再继续
+  // 按批次并发执行：当前批次全部结束后，才启动下一批账号。
+  for (let startIndex = 0; startIndex < batchTokenIds.length; startIndex += batchSize) {
+    if (shouldStop.value) break;
+
+    const currentBatch = batchTokenIds.slice(
+      startIndex,
+      startIndex + batchSize,
+    );
+    await Promise.all(currentBatch.map((tokenId) => runToken(tokenId)));
+  }
+
+  // 所有批次完成后再展示结果
   await new Promise((r) => setTimeout(r, 1000));
 
   isRunning.value = false;
