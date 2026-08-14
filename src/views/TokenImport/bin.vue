@@ -114,6 +114,7 @@ const roleList = ref<
     id: string;
     name: string;
     roleId: string;
+    serverId?: string | number;
     token: string;
     server: string;
     roleIndex?: number;
@@ -239,6 +240,7 @@ const addSelectedRole = async (
     roleList.value.push({
       id: tokenId,
       roleId: roleInfo.roleId,
+      serverId: roleInfo.serverId,
       token: roleToken,
       name: finalName,
       server: String(serverNum) + "服",

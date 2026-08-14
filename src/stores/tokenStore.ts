@@ -27,6 +27,8 @@ declare interface TokenData {
   token: string; // 原始Base64 token
   wsUrl: string | null; // 可选的自定义WebSocket URL
   server: string;
+  serverId?: string | number;
+  roleId?: string | number;
   remark?: string; // 备注信息
   importMethod?: "manual" | "bin" | "url" | "wxQrcode"; // 导入方式：manual（手动）、bin文件或url链接
   sourceUrl?: string; // 当importMethod为url时，存储url链接
@@ -228,6 +230,8 @@ export const useTokenStore = defineStore("tokens", () => {
       token: tokenData.token, // 保存原始Base64 token
       wsUrl: tokenData.wsUrl || null, // 可选的自定义WebSocket URL
       server: tokenData.server || "",
+      serverId: tokenData.serverId,
+      roleId: tokenData.roleId,
       remark: tokenData.remark || "", // 备注信息
       level: tokenData.level || 1,
       profession: tokenData.profession || "",
