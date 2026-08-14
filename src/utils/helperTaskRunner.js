@@ -58,8 +58,8 @@ export function getErrorDetails(error) {
   return details.join(" | ");
 }
 
-export function isRateLimitError(error) {
-  const message = [
+function getErrorSearchText(error) {
+  return [
     getErrorMessage(error),
     error?.code,
     error?.errorCode,
@@ -70,6 +70,10 @@ export function isRateLimitError(error) {
   ]
     .filter((value) => value !== undefined && value !== null)
     .join(" ");
+}
+
+export function isRateLimitError(error) {
+  const message = getErrorSearchText(error);
 
   return (
     message.includes("400312") ||
@@ -83,6 +87,28 @@ export function isRateLimitError(error) {
     message.includes("限流") ||
     message.includes("屏蔽")
   );
+}
+
+export function isModuleUnavailableError(error) {
+  const message = getErrorSearchText(error);
+
+  return (
+    message.includes("200160") ||
+    /模块(?:未|不)(?:开启|开放)|功能(?:未|不)(?:开启|开放)|尚未开放/.test(
+      message,
+    )
+  );
+}
+
+export function isSkippableTaskError(error, task) {
+  if (isModuleUnavailableError(error)) {
+    return true;
+  }
+
+  const skipErrorCodes = task?.skipErrorCodes ?? [];
+  const message = getErrorSearchText(error);
+
+  return skipErrorCodes.some((code) => message.includes(String(code)));
 }
 
 export function getItemQuantity(roleInfo, itemId) {

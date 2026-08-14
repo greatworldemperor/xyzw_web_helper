@@ -2,6 +2,7 @@ import { useTokenStore } from "@/stores/tokenStore";
 import {
   getErrorDetails,
   isRateLimitError,
+  isSkippableTaskError,
 } from "@/utils/helperTaskRunner";
 
 const formatCommandParams = (params) => {
@@ -413,6 +414,7 @@ export class DailyTaskRunner {
     if (!isTaskCompleted(13) && settings.arenaEnable) {
       taskList.push({
         name: "竞技场战斗",
+        skipErrorCodes: [200020],
         execute: async () => {
           this.log("开始竞技场战斗流程");
           const hour = new Date().getHours();
@@ -799,25 +801,20 @@ export class DailyTaskRunner {
             };
           }
 
-          if (isRateLimitError(error)) {
-            this.log(
-              `[任务 ${taskPosition}] 触发限流，等待1秒后重试当前任务: ${task.name} | ${getErrorDetails(error)}`,
-              "warning",
-            );
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-            continue;
-          }
+          const skipReason = isRateLimitError(error)
+            ? "任务触发限流，跳过当前任务继续执行"
+            : isSkippableTaskError(error, task)
+              ? "当前角色未开启该模块，跳过任务继续执行"
+              : "任务失败，跳过当前任务继续执行";
 
           this.log(
-            `[任务 ${taskPosition}] 失败（非限流错误，停止账号）: ${task.name} | ${getErrorDetails(error)}`,
-            "error",
+            `[任务 ${taskPosition}] ${skipReason}: ${task.name} | ${getErrorDetails(error)}`,
+            "warning",
           );
-          return {
-            success: false,
-            stopped: false,
-            failedTask: task.name,
-            error,
-          };
+          const progress = Math.floor(((i + 1) / totalTasks) * 100);
+          if (this.callbacks?.onProgress) this.callbacks.onProgress(progress);
+          await new Promise((resolve) => setTimeout(resolve, this.delaySettings.taskDelay));
+          break;
         }
       }
     }
