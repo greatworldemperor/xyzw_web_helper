@@ -2887,7 +2887,10 @@ import {
 import { useTokenStore, gameTokens, tokenGroups } from "@/stores/tokenStore";
 import { $emit } from "@/stores/events/index.ts";
 import { DailyTaskRunner } from "@/utils/dailyTaskRunner";
-import { isRateLimitError } from "@/utils/helperTaskRunner";
+import {
+  getErrorDetails,
+  isRateLimitError,
+} from "@/utils/helperTaskRunner";
 import { preloadQuestions } from "@/utils/studyQuestionsFromJSON.js";
 import { useMessage } from "naive-ui";
 import { Settings } from "@vicons/ionicons5";
@@ -5935,18 +5938,23 @@ const startBatch = async () => {
           if (attemptCount === 1) {
             addLog({
               time: new Date().toLocaleTimeString(),
-              message: `=== 开始执行: ${tokenName} ===`,
+              message: `=== 开始执行: ${tokenName} [tokenId=${tokenId}] ===`,
               type: "info",
             });
           } else {
             addLog({
               time: new Date().toLocaleTimeString(),
-              message: `=== 尝试重试: ${tokenName} (第${attemptCount}次) ===`,
+              message: `=== 尝试重试: ${tokenName} [tokenId=${tokenId}] (第${attemptCount}次) ===`,
               type: "info",
             });
           }
 
           await ensureConnection(tokenId, 2, true);
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${tokenName} 连接准备完成，开始执行日常任务（第${attemptCount}次）`,
+            type: "info",
+          });
 
           const runner = new DailyTaskRunner(tokenStore, {
             commandDelay: batchSettings.commandDelay,
@@ -5963,13 +5971,16 @@ const startBatch = async () => {
 
           if (!runResult.success) {
             tokenStatus.value[tokenId] = "failed";
+            const failureDetails = runResult.error
+              ? ` | ${getErrorDetails(runResult.error)}`
+              : "";
             addLog({
               time: new Date().toLocaleTimeString(),
               message: `${tokenName} ${
                 runResult.stopped
                   ? "已停止"
                   : `任务失败: ${runResult.failedTask || "未知任务"}`
-              }`,
+              }${failureDetails}`,
               type: "error",
             });
             break;
@@ -5984,12 +5995,12 @@ const startBatch = async () => {
             type: "success",
           });
         } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
+          const errorDetails = getErrorDetails(error);
           if (shouldStop.value) {
             tokenStatus.value[tokenId] = "failed";
             addLog({
               time: new Date().toLocaleTimeString(),
-              message: `${tokenName} 执行失败: ${errorMessage}`,
+              message: `${tokenName} 执行失败: ${errorDetails}`,
               type: "error",
             });
             break;
@@ -5998,7 +6009,7 @@ const startBatch = async () => {
           if (isRateLimitError(error)) {
             addLog({
               time: new Date().toLocaleTimeString(),
-              message: `${tokenName} 触发服务器限流或屏蔽: ${errorMessage}，1秒后重试当前账号...`,
+              message: `${tokenName} 触发服务器限流或屏蔽: ${errorDetails}，1秒后重试当前账号...`,
               type: "warning",
             });
             await new Promise((r) => setTimeout(r, 1000));
@@ -6006,7 +6017,7 @@ const startBatch = async () => {
             tokenStatus.value[tokenId] = "failed";
             addLog({
               time: new Date().toLocaleTimeString(),
-              message: `${tokenName} 遇到非限流错误，停止该账号任务: ${errorMessage}`,
+              message: `${tokenName} 遇到非限流错误，停止该账号任务: ${errorDetails}`,
               type: "error",
             });
             break;

@@ -1,5 +1,16 @@
 import { useTokenStore } from "@/stores/tokenStore";
-import { isRateLimitError } from "@/utils/helperTaskRunner";
+import {
+  getErrorDetails,
+  isRateLimitError,
+} from "@/utils/helperTaskRunner";
+
+const formatCommandParams = (params) => {
+  try {
+    return JSON.stringify(params ?? {});
+  } catch {
+    return "[无法序列化]";
+  }
+};
 
 // 辅助函数
 const pickArenaTargetId = (targets) => {
@@ -71,7 +82,8 @@ export class DailyTaskRunner {
     timeout = 8000,
   ) {
     try {
-      if (description) this.log(`执行: ${description}`);
+      const commandContext = `[cmd=${cmd}, params=${formatCommandParams(params)}]`;
+      if (description) this.log(`执行: ${description} ${commandContext}`);
       const result = await this.tokenStore.sendMessageWithPromise(
         tokenId,
         cmd,
@@ -85,7 +97,10 @@ export class DailyTaskRunner {
       if (description) {
         const token = this.tokenStore.gameTokens.find((t) => t.id === tokenId);
         const tokenName = token?.name || tokenId;
-        this.log(`[${tokenName}] ${description} - 失败: ${error.message}`, "error");
+        this.log(
+          `[${tokenName}] ${description} - 失败 [cmd=${cmd}, params=${formatCommandParams(params)}] ${getErrorDetails(error)}`,
+          "error",
+        );
       }
       throw error;
     }
@@ -734,13 +749,38 @@ export class DailyTaskRunner {
 
     // 执行
     const totalTasks = taskList.length;
-    this.log(`共有 ${totalTasks} 个任务待执行`);
+    const dailyRewardStartIndex = taskList.findIndex(
+      (task) => task.name === "领取每日任务积分奖励1",
+    );
+    const dailyRewardStartPosition =
+      dailyRewardStartIndex >= 0
+        ? `${dailyRewardStartIndex + 1}/${totalTasks}`
+        : "未找到";
+
+    this.log(
+      `任务队列已生成: 共 ${totalTasks} 项；每日任务奖励阶段起点=${dailyRewardStartPosition}`,
+    );
 
     for (let i = 0; i < taskList.length; i++) {
       const task = taskList[i];
+      const taskPosition = `${i + 1}/${totalTasks}`;
+
       if (isStopped()) {
+        this.log(
+          `[任务 ${taskPosition}] 执行前检测到停止，未执行: ${task.name}`,
+          "warning",
+        );
         return { success: false, stopped: true, failedTask: task.name };
       }
+
+      if (i === dailyRewardStartIndex) {
+        this.log(
+          `[奖励阶段] 开始领取每日任务积分/完成奖励（任务 ${taskPosition}）`,
+          "info",
+        );
+      }
+
+      this.log(`[任务 ${taskPosition}] 开始: ${task.name}`);
 
       for (;;) {
         try {
@@ -761,7 +801,7 @@ export class DailyTaskRunner {
 
           if (isRateLimitError(error)) {
             this.log(
-              `任务执行触发服务器限流: ${task.name}，等待1秒后重试当前任务`,
+              `[任务 ${taskPosition}] 触发限流，等待1秒后重试当前任务: ${task.name} | ${getErrorDetails(error)}`,
               "warning",
             );
             await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -769,7 +809,7 @@ export class DailyTaskRunner {
           }
 
           this.log(
-            `任务执行失败（非限流错误）: ${task.name} - ${error.message}`,
+            `[任务 ${taskPosition}] 失败（非限流错误，停止账号）: ${task.name} | ${getErrorDetails(error)}`,
             "error",
           );
           return {

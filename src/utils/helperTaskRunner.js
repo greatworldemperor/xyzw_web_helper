@@ -27,6 +27,23 @@ export function getErrorMessage(error) {
   return error instanceof Error ? error.message : String(error || "未知错误");
 }
 
+export function getErrorDetails(error) {
+  const details = [];
+  const code = error?.code ?? error?.errorCode;
+  const hint = error?.hint;
+
+  if (code !== undefined && code !== null) {
+    details.push(`code=${code}`);
+  }
+
+  if (hint) {
+    details.push(`hint=${hint}`);
+  }
+
+  details.push(`message=${getErrorMessage(error)}`);
+  return details.join(" | ");
+}
+
 export function isRateLimitError(error) {
   const message = getErrorMessage(error);
 
