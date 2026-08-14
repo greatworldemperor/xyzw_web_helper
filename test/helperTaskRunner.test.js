@@ -17,6 +17,7 @@ test("isRateLimitError recognizes server throttling responses", () => {
     isRateLimitError(new Error("服务器错误: 12400000 - 挂机奖励领取过于频繁")),
     true,
   );
+  assert.equal(isRateLimitError({ response: { status: 429 } }), true);
   assert.equal(isRateLimitError(new Error("服务器错误: 200160 - 模块未开启")), false);
 });
 

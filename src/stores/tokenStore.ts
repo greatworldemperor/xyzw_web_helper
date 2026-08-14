@@ -14,6 +14,7 @@ import {
   setAuthUserRateLimiterCallback,
   scheduleAuthUserRequest,
 } from "@/utils/token";
+import { isRateLimitError } from "@/utils/helperTaskRunner";
 import { emitPlus, $emit } from "./events/index.js";
 import router from "@/router";
 
@@ -48,6 +49,18 @@ declare interface WebSocketConnection {
   lastRandomSeed?: number | null;
   connectionTimeoutTimer?: ReturnType<typeof setTimeout>;
   tokenRefreshInProgress?: boolean;
+  autoRefresh?: boolean;
+}
+
+declare interface TokenRefreshResult {
+  success: boolean;
+  retryable: boolean;
+  reason: string;
+}
+
+declare interface TokenRefreshOptions {
+  ignoreCooldown?: boolean;
+  notifyFailure?: boolean;
 }
 
 declare type WebCtx = Record<string, Partial<WebSocketConnection>>;
@@ -336,22 +349,33 @@ export const useTokenStore = defineStore("tokens", () => {
     });
   };
 
-  // 尝试自动刷新Token
-  const attemptTokenRefresh = async (
+  // 执行一次Token刷新，并返回失败是否可重试的原因
+  const attemptTokenRefreshWithResult = async (
     tokenId: string,
     forceReconnect = false,
-  ) => {
+    options: TokenRefreshOptions = {},
+  ): Promise<TokenRefreshResult> => {
     // 检查冷却时间 (10秒)
     const lastAttempt = tokenRefreshAttempts.value[tokenId] || 0;
     const now = Date.now();
-    if (now - lastAttempt < 10000) {
+    if (!options.ignoreCooldown && now - lastAttempt < 10000) {
       wsLogger.warn(`Token刷新过于频繁，跳过 [${tokenId}]`);
-      return false;
+      return {
+        success: false,
+        retryable: true,
+        reason: "Token刷新冷却中",
+      };
     }
     tokenRefreshAttempts.value[tokenId] = now;
 
     const gameToken = gameTokens.value.find((t) => t.id === tokenId);
-    if (!gameToken) return false;
+    if (!gameToken) {
+      return {
+        success: false,
+        retryable: false,
+        reason: "未找到Token",
+      };
+    }
 
     wsLogger.info(`尝试自动刷新Token [${tokenId}]`);
     let refreshSuccess = false;
@@ -434,12 +458,29 @@ export const useTokenStore = defineStore("tokens", () => {
         }
         selectToken(tokenId, true);
       }
-      return true;
+      return { success: true, retryable: false, reason: "" };
     } else {
-      wsLogger.error(`Token刷新失败，请手动重新导入 [${tokenId}]`);
-      reportTokenRefreshFailure(tokenId, failureReason);
-      return false;
+      const retryable = isRateLimitError(new Error(failureReason));
+      wsLogger.error(
+        `Token刷新失败 [${tokenId}]${retryable ? "，检测为限流，可重试" : "，请手动重新导入"}: ${failureReason}`,
+      );
+      if (options.notifyFailure !== false && !retryable) {
+        reportTokenRefreshFailure(tokenId, failureReason);
+      }
+      return { success: false, retryable, reason: failureReason };
     }
+  };
+
+  // 保持原有布尔返回值，供普通连接和界面流程继续使用
+  const attemptTokenRefresh = async (
+    tokenId: string,
+    forceReconnect = false,
+  ) => {
+    const result = await attemptTokenRefreshWithResult(
+      tokenId,
+      forceReconnect,
+    );
+    return result.success;
   };
 
   // 游戏消息处理
@@ -716,7 +757,11 @@ export const useTokenStore = defineStore("tokens", () => {
     tokenId: string,
     base64Token: string,
     customWsUrl = null,
-    options: { monitorTimeout?: boolean; connectionTimeoutMs?: number } = {},
+    options: {
+      monitorTimeout?: boolean;
+      connectionTimeoutMs?: number;
+      autoRefresh?: boolean;
+    } = {},
   ) => {
     wsLogger.info(`开始创建连接: ${tokenId}`);
 
@@ -788,6 +833,7 @@ export const useTokenStore = defineStore("tokens", () => {
         randomSeedSynced: false,
         lastRandomSeedSource: null,
         lastRandomSeed: null,
+        autoRefresh: options.autoRefresh !== false,
       };
 
       if (options.monitorTimeout !== false) {
@@ -857,7 +903,8 @@ export const useTokenStore = defineStore("tokens", () => {
           if (
             event.code === 1006 &&
             !conn.connectedAt &&
-            !conn.tokenRefreshInProgress
+            !conn.tokenRefreshInProgress &&
+            conn.autoRefresh !== false
           ) {
             wsLogger.warn(`检测到握手失败(1006)，尝试刷新Token [${tokenId}]`);
             // 强制刷新并重连
@@ -962,7 +1009,7 @@ export const useTokenStore = defineStore("tokens", () => {
 
   // 同步版本的关闭连接（保持向后兼容）
   const closeWebSocketConnection = (tokenId: string) => {
-    closeWebSocketConnectionAsync(tokenId).catch((error) => {
+    return closeWebSocketConnectionAsync(tokenId).catch((error) => {
       wsLogger.error(`关闭连接异步操作失败 [${tokenId}]:`, error);
     });
   };
@@ -1644,6 +1691,7 @@ export const useTokenStore = defineStore("tokens", () => {
     removeToken,
     selectToken,
     attemptTokenRefresh,
+    attemptTokenRefreshWithResult,
 
     // Base64解析方法
     parseBase64Token,
