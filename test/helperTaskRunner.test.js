@@ -5,7 +5,9 @@ import {
   buildTenBatchPlan,
   getClaimableBoxPoints,
   getItemQuantity,
+  isModuleUnavailableError,
   isRateLimitError,
+  isSkippableTaskError,
   runInventoryVerifiedGameCommand,
   runBatchedGameCommand,
 } from "../src/utils/helperTaskRunner.js";
@@ -19,6 +21,28 @@ test("isRateLimitError recognizes server throttling responses", () => {
   );
   assert.equal(isRateLimitError({ response: { status: 429 } }), true);
   assert.equal(isRateLimitError(new Error("服务器错误: 200160 - 模块未开启")), false);
+});
+
+test("isModuleUnavailableError recognizes disabled modules", () => {
+  assert.equal(isModuleUnavailableError(new Error("服务器错误: 200160 - 模块未开启")), true);
+  assert.equal(isModuleUnavailableError({ response: { data: { code: 200160 } } }), true);
+  assert.equal(isModuleUnavailableError(new Error("服务器错误: 200020")), false);
+});
+
+test("isSkippableTaskError recognizes task-specific unavailable errors", () => {
+  assert.equal(
+    isSkippableTaskError(new Error("服务器错误: 200020"), {
+      name: "竞技场战斗",
+      skipErrorCodes: [200020],
+    }),
+    true,
+  );
+  assert.equal(
+    isSkippableTaskError(new Error("服务器错误: 200020"), {
+      name: "每日BOSS 1/3",
+    }),
+    false,
+  );
 });
 
 test("buildTenBatchPlan splits totals into ten-sized batches plus remainder", () => {
