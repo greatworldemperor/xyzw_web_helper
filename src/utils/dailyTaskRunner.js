@@ -177,6 +177,37 @@ export class DailyTaskRunner {
     }
   }
 
+  createDailyTaskRewardTasks(tokenId) {
+    const rewardTasks = [];
+
+    for (let taskId = 1; taskId <= 10; taskId++) {
+      rewardTasks.push({
+        name: `领取每日任务积分奖励${taskId}`,
+        execute: () =>
+          this.executeGameCommand(
+            tokenId,
+            "task_claimdailypoint",
+            { taskId },
+            `领取每日任务积分奖励${taskId}`,
+            5000,
+          ),
+      });
+    }
+
+    rewardTasks.push({
+      name: "领取每日任务完成奖励",
+      execute: () =>
+        this.executeGameCommand(
+          tokenId,
+          "task_claimdailyreward",
+          {},
+          "领取每日任务完成奖励",
+        ),
+    });
+
+    return rewardTasks;
+  }
+
   async run(tokenId, callbacks = {}, customSettings = null) {
     this.callbacks = callbacks;
     const settings = customSettings || this.loadSettings(tokenId); // 优先使用传入的设置
@@ -676,32 +707,9 @@ export class DailyTaskRunner {
       });
     }
 
-    // 7. 任务奖励
-    for (let taskId = 1; taskId <= 10; taskId++) {
-      taskList.push({
-        name: `领取任务奖励${taskId}`,
-        execute: () =>
-          this.executeGameCommand(
-            tokenId,
-            "task_claimdailypoint",
-            { taskId },
-            `领取任务奖励${taskId}`,
-            5000,
-          ),
-      });
-    }
-
+    // 7. 每日任务奖励：先领取各项积分奖励，再领取每日完成奖励
+    taskList.push(...this.createDailyTaskRewardTasks(tokenId));
     taskList.push(
-      {
-        name: "领取日常任务奖励",
-        execute: () =>
-          this.executeGameCommand(
-            tokenId,
-            "task_claimdailyreward",
-            {},
-            "领取日常任务奖励",
-          ),
-      },
       {
         name: "领取周常任务奖励",
         execute: () =>
@@ -760,7 +768,10 @@ export class DailyTaskRunner {
             continue;
           }
 
-          this.log(`任务执行失败: ${task.name} - ${error.message}`, "error");
+          this.log(
+            `任务执行失败（非限流错误）: ${task.name} - ${error.message}`,
+            "error",
+          );
           return {
             success: false,
             stopped: false,

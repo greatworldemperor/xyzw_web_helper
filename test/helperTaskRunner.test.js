@@ -13,6 +13,10 @@ import {
 test("isRateLimitError recognizes server throttling responses", () => {
   assert.equal(isRateLimitError(new Error("服务器错误: 200400 - 操作太快")), true);
   assert.equal(isRateLimitError(new Error("服务器错误: 400312")), true);
+  assert.equal(
+    isRateLimitError(new Error("服务器错误: 12400000 - 挂机奖励领取过于频繁")),
+    true,
+  );
   assert.equal(isRateLimitError(new Error("服务器错误: 200160 - 模块未开启")), false);
 });
 

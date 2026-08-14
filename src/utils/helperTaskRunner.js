@@ -33,9 +33,12 @@ export function isRateLimitError(error) {
   return (
     message.includes("400312") ||
     message.includes("200400") ||
+    message.includes("12400000") ||
     message.includes("操作过快") ||
     message.includes("操作太快") ||
-    message.includes("过于频繁")
+    message.includes("过于频繁") ||
+    message.includes("限流") ||
+    message.includes("屏蔽")
   );
 }
 
