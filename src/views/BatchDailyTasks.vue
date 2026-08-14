@@ -200,7 +200,7 @@
                   @click="toggleSort('server')"
                   :type="sortConfig.field === 'server' ? 'primary' : 'default'"
                 >
-                  服务器 {{ getSortIcon("server") }}
+                  服务器/角色ID {{ getSortIcon("server") }}
                 </n-button>
                 <n-button
                   @click="toggleSort('createdAt')"
@@ -2895,6 +2895,7 @@ import { preloadQuestions } from "@/utils/studyQuestionsFromJSON.js";
 import { useMessage } from "naive-ui";
 import { Settings } from "@vicons/ionicons5";
 import { DEFAULT_WEIRD_TOWER_MAX_CLIMB } from "@/utils/towerClimbLimit.js";
+import { compareTokensByServerAndRole } from "@/utils/tokenSort.js";
 
 // Import batch task modules
 import {
@@ -2960,14 +2961,27 @@ const weirdTowerMaxClimb = ref(DEFAULT_WEIRD_TOWER_MAX_CLIMB);
 
 // 排序配置（从localStorage读取，与TokenImport共享）
 const savedSortConfig = localStorage.getItem("tokenSortConfig");
-const sortConfig = ref(
-  savedSortConfig
+const defaultSortConfig = {
+  field: "server",
+  direction: "asc",
+};
+let initialSortConfig = { ...defaultSortConfig };
+
+try {
+  const parsedSortConfig = savedSortConfig
     ? JSON.parse(savedSortConfig)
-    : {
-        field: "createdAt", // 排序字段：name, server, createdAt, lastUsed
-        direction: "asc", // 排序方向：asc, desc
-      },
-);
+    : null;
+  if (parsedSortConfig && typeof parsedSortConfig === "object") {
+    initialSortConfig = { ...defaultSortConfig, ...parsedSortConfig };
+    if (initialSortConfig.field === "createdAt") {
+      initialSortConfig.field = "server";
+    }
+  }
+} catch {
+  initialSortConfig = { ...defaultSortConfig };
+}
+
+const sortConfig = ref(initialSortConfig);
 
 // 计算属性 - 从gameData中获取塔相关信息
 const evoTowerInfo = computed(() => {
@@ -2999,9 +3013,11 @@ const sortedTokens = computed(() => {
         valueB = tokenB.name?.toLowerCase() || "";
         break;
       case "server":
-        valueA = tokenA.server?.toLowerCase() || "";
-        valueB = tokenB.server?.toLowerCase() || "";
-        break;
+        return compareTokensByServerAndRole(
+          tokenA,
+          tokenB,
+          sortConfig.value.direction,
+        );
       case "createdAt":
         valueA = new Date(tokenA.createdAt || 0).getTime();
         valueB = new Date(tokenB.createdAt || 0).getTime();
