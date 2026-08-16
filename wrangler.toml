@@ -1,6 +1,6 @@
 name = "xyzw-web-helper"
 compatibility_date = "2023-12-01"
+main = "worker.js"
 
-[pages_build_config]
-build_command = "npm run build"
-destination_dir = "dist"
+[assets]
+directory = "./dist"
