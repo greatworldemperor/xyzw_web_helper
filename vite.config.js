@@ -115,6 +115,11 @@ export default defineConfig(async () => {
             }
             fs.copyFileSync(src, dest);
             console.log("\n[copy-worker] worker.js copied to dist/_worker.js");
+            
+            // Create .assetsignore to tell Wrangler not to upload _worker.js as a static asset
+            const assetsignorePath = path.resolve(__dirname, "dist/.assetsignore");
+            fs.writeFileSync(assetsignorePath, "_worker.js\n");
+            console.log("[copy-worker] Created dist/.assetsignore with _worker.js");
           } else {
             console.warn("\n[copy-worker] worker.js not found at " + src);
           }
