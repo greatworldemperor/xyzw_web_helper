@@ -4,6 +4,16 @@
  */
 
 import { CarresearchItem } from "./constants.js";
+import {
+  is400340Error,
+  RATE_LIMIT_MAX_RETRIES,
+  RATE_LIMIT_RETRY_DELAY_MS,
+  runWithRateLimitRetry,
+} from "../helperTaskRunner.js";
+
+const CAR_COMMAND_RETRY_DELAY_MS = RATE_LIMIT_RETRY_DELAY_MS;
+// 实测第46次重试成功，推测服务器实际冷却时间约46秒；服务器可能随时调整冷却时间。
+const CAR_COMMAND_MAX_RETRIES = RATE_LIMIT_MAX_RETRIES;
 
 /**
  * 创建车辆类任务执行器
@@ -35,6 +45,9 @@ export function createTasksCar(deps) {
   } = deps;
 
   const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
+  const carCommandRetryDelayMs = Number.isFinite(Number(delayConfig?.retry))
+    ? Number(delayConfig.retry)
+    : CAR_COMMAND_RETRY_DELAY_MS;
 
   /**
    * 智能发车
@@ -56,6 +69,23 @@ export function createTasksCar(deps) {
 
       const token = tokens.value.find((t) => t.id === tokenId);
 
+      const sendCarCommand = (cmd, params, timeout, operation) =>
+        runWithRateLimitRetry({
+          execute: () =>
+            tokenStore.sendMessageWithPromise(tokenId, cmd, params, timeout, {
+              skip400340Retry: true,
+            }),
+          retryDelayMs: carCommandRetryDelayMs,
+          maxRetries: CAR_COMMAND_MAX_RETRIES,
+          onRetry: ({ retryCount, maxRetries }) => {
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${token.name} ${operation}触发服务器限流，1秒后重试（第${retryCount}/${maxRetries}次）`,
+              type: "warning",
+            });
+          },
+        });
+
       try {
         addLog({
           time: new Date().toLocaleTimeString(),
@@ -71,11 +101,11 @@ export function createTasksCar(deps) {
           message: `${token.name} 获取车辆信息...`,
           type: "info",
         });
-        const res = await tokenStore.sendMessageWithPromise(
-          tokenId,
+        const res = await sendCarCommand(
           "car_getrolecar",
           {},
           10000,
+          "获取车辆信息",
         );
         let carList = normalizeCars(res?.body ?? res);
 
@@ -83,11 +113,11 @@ export function createTasksCar(deps) {
         let refreshTickets = 0;
         let currentRoleId = null;
         try {
-          const roleRes = await tokenStore.sendMessageWithPromise(
-            tokenId,
+          const roleRes = await sendCarCommand(
             "role_getroleinfo",
             {},
             10000,
+            "获取角色信息",
           );
           const qty = roleRes?.role?.items?.[35002]?.quantity;
           refreshTickets = Number(qty || 0);
@@ -106,11 +136,11 @@ export function createTasksCar(deps) {
         // 封装获取护卫使用情况的方法
         const updateHelperUsage = async () => {
           try {
-            const usageRes = await tokenStore.sendMessageWithPromise(
-              tokenId,
+            const usageRes = await sendCarCommand(
               "car_getmemberhelpingcnt",
               {},
-              5000
+              5000,
+              "获取护卫使用情况",
             );
             helperUsageMap =
               usageRes?.body?.memberHelpingCntMap ||
@@ -126,11 +156,11 @@ export function createTasksCar(deps) {
           await updateHelperUsage();
 
           // Fetch club members
-          const legionRes = await tokenStore.sendMessageWithPromise(
-            tokenId,
+          const legionRes = await sendCarCommand(
             "legion_getinfo",
             {},
-            5000
+            5000,
+            "获取护卫列表",
           );
           const membersMap =
             legionRes?.body?.info?.members || legionRes?.info?.members || {};
@@ -223,8 +253,7 @@ export function createTasksCar(deps) {
             message: `${token.name} ${logMessage}`,
             type: logType,
           });
-          await tokenStore.sendMessageWithPromise(
-            tokenId,
+          await sendCarCommand(
             "car_send",
             {
               carId: String(car.id),
@@ -233,6 +262,7 @@ export function createTasksCar(deps) {
               isUpgrade: false,
             },
             10000,
+            "发车",
           );
           await new Promise((r) => setTimeout(r, delayConfig.action));
         };
@@ -245,11 +275,11 @@ export function createTasksCar(deps) {
             }...`,
             type: "info",
           });
-          const resp = await tokenStore.sendMessageWithPromise(
-            tokenId,
+          const resp = await sendCarCommand(
             "car_refresh",
             { carId: String(car.id) },
             10000,
+            isFreeRefresh ? "免费刷新车辆" : "刷新车辆",
           );
           const data = resp?.car || resp?.body?.car || resp;
 
@@ -261,35 +291,31 @@ export function createTasksCar(deps) {
           }
 
           try {
-            const roleRes = await tokenStore.sendMessageWithPromise(
-              tokenId,
+            const roleRes = await sendCarCommand(
               "role_getroleinfo",
               {},
               5000,
+              "获取刷新券数量",
             );
             refreshTickets = Number(
               roleRes?.role?.items?.[35002]?.quantity || 0,
             );
-          } catch (_) {}
+          } catch (_) {
+            refreshTickets = 0;
+          }
         };
 
         const meetsConditions = (car, conditions = customConditions) =>
           shouldSendCar(
             car,
-            batchSettings.useGoldRefreshFallback ? 999 : refreshTickets,
+            refreshTickets,
             batchSettings.carMinColor,
             conditions,
-            batchSettings.useGoldRefreshFallback,
+            false,
             false,
           );
 
-        const canUsePaidRefresh = (car, freeRefreshAttempted) => {
-          if (refreshTickets >= 6) return true;
-          return (
-            batchSettings.useGoldRefreshFallback &&
-            (freeRefreshAttempted || Number(car.refreshCount ?? 0) !== 0)
-          );
-        };
+        const canUsePaidRefresh = () => refreshTickets > 0;
 
         // 3. Process Cars
         for (const car of carList) {
@@ -306,9 +332,7 @@ export function createTasksCar(deps) {
               continue;
             }
 
-            let freeRefreshAttempted = false;
             if (Number(car.refreshCount ?? 0) === 0) {
-              freeRefreshAttempted = true;
               await refreshCar(car, true);
               if (meetsConditions(car)) {
                 await sendCar(
@@ -334,7 +358,7 @@ export function createTasksCar(deps) {
               let sentAfterPaidRefresh = false;
               while (
                 !shouldStop.value &&
-                canUsePaidRefresh(car, freeRefreshAttempted)
+                canUsePaidRefresh()
               ) {
                 await refreshCar(car);
                 if (meetsConditions(car, paidRefreshConditions)) {
@@ -362,7 +386,9 @@ export function createTasksCar(deps) {
           } catch (carError) {
             addLog({
               time: new Date().toLocaleTimeString(),
-              message: `${token.name} 车辆[${gradeLabel(car.color)}]处理失败: ${carError.message}，跳过该车辆`,
+              message: is400340Error(carError)
+                ? `${token.name} 车辆[${gradeLabel(car.color)}]发车失败（400340每秒重试${CAR_COMMAND_MAX_RETRIES}次后仍失败），继续处理其他车辆`
+                : `${token.name} 车辆[${gradeLabel(car.color)}]处理失败: ${carError.message}，跳过该车辆`,
               type: "error",
             });
             continue;
@@ -421,6 +447,21 @@ export function createTasksCar(deps) {
 
       const token = tokens.value.find((t) => t.id === tokenId);
 
+      const sendCarCommand = (cmd, params, timeout, operation) =>
+        runWithRateLimitRetry({
+          execute: () =>
+            tokenStore.sendMessageWithPromise(tokenId, cmd, params, timeout),
+          retryDelayMs: carCommandRetryDelayMs,
+          maxRetries: CAR_COMMAND_MAX_RETRIES,
+          onRetry: ({ retryCount, maxRetries }) => {
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${token.name} ${operation}触发服务器限流，1秒后重试（第${retryCount}/${maxRetries}次）`,
+              type: "warning",
+            });
+          },
+        });
+
       try {
         addLog({
           time: new Date().toLocaleTimeString(),
@@ -435,11 +476,11 @@ export function createTasksCar(deps) {
           message: `${token.name} 获取车辆信息...`,
           type: "info",
         });
-        const res = await tokenStore.sendMessageWithPromise(
-          tokenId,
+        const res = await sendCarCommand(
           "car_getrolecar",
           {},
           10000,
+          "获取车辆信息",
         );
         let carList = normalizeCars(res?.body ?? res);
         let refreshlevel = res?.roleCar?.research?.[1] || 0;
@@ -449,11 +490,11 @@ export function createTasksCar(deps) {
           if (shouldStop.value) break;
           if (canClaim(car)) {
             try {
-              await tokenStore.sendMessageWithPromise(
-                tokenId,
+              await sendCarCommand(
                 "car_claim",
                 { carId: String(car.id) },
                 10000,
+                "收车",
               );
               claimedCount++;
               addLog({
@@ -461,11 +502,11 @@ export function createTasksCar(deps) {
                 message: `${token.name} 收车成功: ${gradeLabel(car.color)}`,
                 type: "success",
               });
-              const roleRes = await tokenStore.sendMessageWithPromise(
-                tokenId,
+              const roleRes = await sendCarCommand(
                 "role_getroleinfo",
                 {},
                 5000,
+                "获取角色信息",
               );
               let refreshpieces = Number(
                 roleRes?.role?.items?.[35009]?.quantity || 0,
@@ -476,19 +517,19 @@ export function createTasksCar(deps) {
                 !shouldStop.value
               ) {
                 try {
-                  await tokenStore.sendMessageWithPromise(
-                    tokenId,
+                  await sendCarCommand(
                     "car_research",
                     { researchId: 1 },
                     5000,
+                    "车辆改装升级",
                   );
                   refreshlevel++;
 
-                  const updatedRoleRes = await tokenStore.sendMessageWithPromise(
-                    tokenId,
+                  const updatedRoleRes = await sendCarCommand(
                     "role_getroleinfo",
                     {},
                     5000,
+                    "获取角色信息",
                   );
                   refreshpieces = Number(
                     updatedRoleRes?.role?.items?.[35009]?.quantity || 0,
@@ -513,11 +554,11 @@ export function createTasksCar(deps) {
 
               // 尝试领取改装升级累计奖励
               try {
-                const rewardRes = await tokenStore.sendMessageWithPromise(
-                  tokenId,
+                const rewardRes = await sendCarCommand(
                   "car_claimpartconsumereward",
                   {},
                   5000,
+                  "领取改装升级累计奖励",
                 );
                 if (rewardRes && rewardRes.reward) {
                   addLog({

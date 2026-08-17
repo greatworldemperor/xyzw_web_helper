@@ -5,10 +5,12 @@ import {
   buildTenBatchPlan,
   getClaimableBoxPoints,
   getItemQuantity,
+  isCarSendUnavailableError,
   isModuleUnavailableError,
   isRateLimitError,
   isSkippableTaskError,
   runInventoryVerifiedGameCommand,
+  runWithRateLimitRetry,
   runBatchedGameCommand,
 } from "../src/utils/helperTaskRunner.js";
 
@@ -21,6 +23,75 @@ test("isRateLimitError recognizes server throttling responses", () => {
   );
   assert.equal(isRateLimitError({ response: { status: 429 } }), true);
   assert.equal(isRateLimitError(new Error("服务器错误: 200160 - 模块未开启")), false);
+});
+
+test("400340 is a rate-limit error for every operation", () => {
+  const error = new Error("服务器错误: 400340 - 未知错误");
+
+  assert.equal(isCarSendUnavailableError(error), true);
+  assert.equal(isRateLimitError(error), true);
+  assert.equal(
+    isRateLimitError(new Error("400340 - 操作太快，请稍后再试")),
+    true,
+  );
+});
+
+test("runWithRateLimitRetry waits one second for throttling and retries", async () => {
+  const events = [];
+  let attempts = 0;
+
+  await runWithRateLimitRetry({
+    execute: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("服务器错误: 200400 - 操作太快，请稍后再试");
+      }
+      return "ok";
+    },
+    sleepFn: async (ms) => events.push(ms),
+  });
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(events, [1000]);
+});
+
+test("runWithRateLimitRetry does not retry non-throttling errors", async () => {
+  let attempts = 0;
+  let sleeps = 0;
+
+  await assert.rejects(
+    runWithRateLimitRetry({
+      execute: async () => {
+        attempts += 1;
+        throw new Error("车辆不存在");
+      },
+      sleepFn: async () => {
+        sleeps += 1;
+      },
+    }),
+    /车辆不存在/,
+  );
+
+  assert.equal(attempts, 1);
+  assert.equal(sleeps, 0);
+});
+
+test("runWithRateLimitRetry stops after the configured retry limit", async () => {
+  let attempts = 0;
+
+  await assert.rejects(
+    runWithRateLimitRetry({
+      execute: async () => {
+        attempts += 1;
+        throw new Error("服务器错误: 200400 - 操作太快");
+      },
+      maxRetries: 2,
+      sleepFn: async () => {},
+    }),
+    /操作太快/,
+  );
+
+  assert.equal(attempts, 3);
 });
 
 test("isModuleUnavailableError recognizes disabled modules", () => {
