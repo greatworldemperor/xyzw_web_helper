@@ -3,6 +3,13 @@
  * 包含: claimHangUpRewards, batchAddHangUpTime, batchStudy, batchclubsign
  */
 
+import {
+  is400340Error,
+  RATE_LIMIT_MAX_RETRIES,
+  RATE_LIMIT_RETRY_DELAY_MS,
+  runWithRateLimitRetry,
+} from "../helperTaskRunner.js";
+
 /**
  * 创建挂机、答题、签到类任务执行器
  * @param {Object} deps - 依赖项
@@ -26,7 +33,36 @@ export function createTasksHangUp(deps) {
     currentRunningTokenId,
     batchResult,
     showBatchResultModal,
+    delayConfig,
   } = deps;
+
+  const hangUpRetryDelayMs = Number.isFinite(Number(delayConfig?.retry))
+    ? Number(delayConfig.retry)
+    : RATE_LIMIT_RETRY_DELAY_MS;
+
+  const sendHangUpCommand = (
+    tokenId,
+    tokenName,
+    command,
+    params,
+    timeout,
+    operation,
+  ) =>
+    runWithRateLimitRetry({
+      execute: () =>
+        tokenStore.sendMessageWithPromise(tokenId, command, params, timeout, {
+          skip400340Retry: true,
+        }),
+      retryDelayMs: hangUpRetryDelayMs,
+      maxRetries: RATE_LIMIT_MAX_RETRIES,
+      onRetry: ({ retryCount, maxRetries }) => {
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${tokenName} ${operation}触发限流（400340或其他限流错误），1秒后重试（第${retryCount}/${maxRetries}次）`,
+          type: "warning",
+        });
+      },
+    });
 
   /**
    * 领取挂机奖励
@@ -63,11 +99,13 @@ export function createTasksHangUp(deps) {
           message: `${token.name} 领取挂机奖励`,
           type: "info",
         });
-        await tokenStore.sendMessageWithPromise(
+        await sendHangUpCommand(
           tokenId,
+          token.name,
           "system_claimhangupreward",
           {},
           5000,
+          "领取挂机奖励",
         );
         await new Promise((r) => setTimeout(r, 500));
 
@@ -79,11 +117,13 @@ export function createTasksHangUp(deps) {
             message: `${token.name} 挂机加钟 ${i + 1}/4`,
             type: "info",
           });
-          await tokenStore.sendMessageWithPromise(
+          await sendHangUpCommand(
             tokenId,
+            token.name,
             "system_mysharecallback",
             { isSkipShareCard: true, type: 2 },
             5000,
+            `挂机加钟 ${i + 1}/4`,
           );
           await new Promise((r) => setTimeout(r, 500));
         }
@@ -99,11 +139,13 @@ export function createTasksHangUp(deps) {
         tokenStatus.value[tokenId] = "failed";
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `${token.name} 领取挂机奖励失败: ${error.message}`,
+          message: is400340Error(error)
+            ? `${token.name} 领取挂机奖励失败: 400340每秒重试${RATE_LIMIT_MAX_RETRIES}次后仍失败，跳过该账号`
+            : `${token.name} 领取挂机奖励失败: ${error.message}`,
           type: "error",
         });
       } finally {
-        tokenStore.closeWebSocketConnection(tokenId);
+        await tokenStore.closeWebSocketConnection(tokenId);
         releaseConnectionSlot();
         addLog({
           time: new Date().toLocaleTimeString(),
@@ -161,7 +203,7 @@ export function createTasksHangUp(deps) {
               type: "info",
             });
 
-            await ensureConnection(tokenId, 2, true);
+            await ensureConnection(tokenId, 2, true, true);
 
             for (let i = 0; i < 4; i++) {
               if (shouldStop.value) break;
@@ -170,11 +212,13 @@ export function createTasksHangUp(deps) {
                 message: `${tokenName} 执行加钟 ${i + 1}/4`,
                 type: "info",
               });
-              await tokenStore.sendMessageWithPromise(
+              await sendHangUpCommand(
                 tokenId,
+                tokenName,
                 "system_mysharecallback",
                 { isSkipShareCard: true, type: 2 },
                 5000,
+                `加钟 ${i + 1}/4`,
               );
               await new Promise((r) => setTimeout(r, 500));
             }
@@ -201,6 +245,16 @@ export function createTasksHangUp(deps) {
               break;
             }
 
+            if (is400340Error(error)) {
+              tokenStatus.value[tokenId] = "failed";
+              addLog({
+                time: new Date().toLocaleTimeString(),
+                message: `${tokenName} 加钟失败: 400340每秒重试${RATE_LIMIT_MAX_RETRIES}次后仍失败，跳过该账号`,
+                type: "error",
+              });
+              break;
+            }
+
             retryCount++;
             addLog({
               time: new Date().toLocaleTimeString(),
@@ -209,7 +263,7 @@ export function createTasksHangUp(deps) {
             });
             await new Promise((r) => setTimeout(r, 1000));
           } finally {
-            tokenStore.closeWebSocketConnection(tokenId);
+            await tokenStore.closeWebSocketConnection(tokenId);
             addLog({
               time: new Date().toLocaleTimeString(),
               message: `${tokenName} 连接已关闭  (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,

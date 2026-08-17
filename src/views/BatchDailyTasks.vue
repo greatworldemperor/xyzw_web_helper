@@ -2121,19 +2121,6 @@
                   align-items: center;
                 "
               >
-                <label class="setting-label">车辆强制刷新保底</label>
-                <n-switch
-                  v-model:value="batchSettings.useGoldRefreshFallback"
-                />
-              </div>
-              <div
-                class="setting-item"
-                style="
-                  flex-direction: row;
-                  justify-content: space-between;
-                  align-items: center;
-                "
-              >
                 <label class="setting-label">智能发车策略</label>
                 <n-select
                   v-model:value="batchSettings.smartDepartureMode"
@@ -2889,7 +2876,11 @@ import { $emit } from "@/stores/events/index.ts";
 import { DailyTaskRunner } from "@/utils/dailyTaskRunner";
 import {
   getErrorDetails,
+  is400340Error,
   isRateLimitError,
+  RATE_LIMIT_MAX_RETRIES,
+  RATE_LIMIT_RETRY_DELAY_MS,
+  runWithRateLimitRetry,
 } from "@/utils/helperTaskRunner";
 import { preloadQuestions } from "@/utils/studyQuestionsFromJSON.js";
 import { useMessage } from "naive-ui";
@@ -3476,7 +3467,6 @@ const batchSettings = reactive({
   receiverId: "",
   password: "",
   tokenListColumns: 2,
-  useGoldRefreshFallback: false,
   // 延迟配置（毫秒）
   commandDelay: 500, // 命令间延迟
   taskDelay: 500, // 任务间延迟
@@ -3486,17 +3476,17 @@ const batchSettings = reactive({
   longDelay: 3000, // 长延迟（功法赠送等）
   // 其他配置
   maxActive: 2,
-  carMinColor: 4,
+  carMinColor: 1,
   connectionTimeout: 10000,
   reconnectDelay: 1000,
   maxLogEntries: 1000,
   // 页面刷新配置
   enableRefresh: false,
   refreshInterval: 360, // 分钟
-  smartDepartureGoldThreshold: 0,
-  smartDepartureRecruitThreshold: 0,
-  smartDepartureJadeThreshold: 0,
-  smartDepartureTicketThreshold: 0,
+  smartDepartureGoldThreshold: 2000,
+  smartDepartureRecruitThreshold: 10,
+  smartDepartureJadeThreshold: 2000,
+  smartDepartureTicketThreshold: 2,
   smartDepartureMode: "A",
 });
 
@@ -4010,7 +4000,6 @@ const exportConfig = () => {
         longDelay: batchSettings.longDelay,
         maxActive: batchSettings.maxActive,
         tokenListColumns: batchSettings.tokenListColumns,
-        useGoldRefreshFallback: batchSettings.useGoldRefreshFallback,
         smartDepartureGoldThreshold: batchSettings.smartDepartureGoldThreshold,
         smartDepartureRecruitThreshold:
           batchSettings.smartDepartureRecruitThreshold,
@@ -5716,10 +5705,40 @@ const refreshTokenUntilSuccess = async (tokenId) => {
   throw new Error("批量任务已停止，取消Token刷新");
 };
 
+const initializeGameData = async (tokenId) => {
+  const sendInitializationCommand = (command, operation) =>
+    runWithRateLimitRetry({
+      execute: () =>
+        tokenStore.sendMessageWithPromise(tokenId, command, {}, 5000, {
+          skip400340Retry: true,
+        }),
+      retryDelayMs: RATE_LIMIT_RETRY_DELAY_MS,
+      maxRetries: RATE_LIMIT_MAX_RETRIES,
+      onRetry: ({ retryCount, maxRetries }) => {
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${operation}触发限流（400340或其他限流错误），1秒后重试（第${retryCount}/${maxRetries}次）`,
+          type: "warning",
+        });
+      },
+    });
+
+  await sendInitializationCommand("role_getroleinfo", "初始化角色数据");
+
+  const res = await sendInitializationCommand(
+    "fight_startlevel",
+    "初始化战斗数据",
+  );
+  if (res?.battleData?.version) {
+    tokenStore.setBattleVersion(res.battleData.version);
+  }
+};
+
 const ensureConnection = async (
   tokenId,
   maxRetries = 2,
   slotAlreadyAcquired = false,
+  refreshOnInitializationFailure = false,
 ) => {
   const latestToken = tokens.value.find((t) => t.id === tokenId);
   if (!latestToken) {
@@ -5800,33 +5819,57 @@ const ensureConnection = async (
 
   // 连接成功，槽位保持占用，直到任务完成后手动释放
 
-  // Initialize Game Data (Critical for Battle Version and Session)
   try {
-    // Fetch Role Info first (Standard flow)
-    await tokenStore.sendMessageWithPromise(
-      tokenId,
-      "role_getroleinfo",
-      {},
-      5000,
-    );
-
-    // Fetch Battle Version
-    const res = await tokenStore.sendMessageWithPromise(
-      tokenId,
-      "fight_startlevel",
-      {},
-      5000,
-    );
-    if (res?.battleData?.version) {
-      tokenStore.setBattleVersion(res.battleData.version);
-    }
-  } catch (e) {
+    await initializeGameData(tokenId);
+  } catch (initializationError) {
     addLog({
       time: new Date().toLocaleTimeString(),
-      message: `初始化数据失败: ${e.message}`,
+      message: `初始化数据失败: ${initializationError.message}`,
       type: "warning",
     });
-    throw e;
+
+    if (
+      !refreshOnInitializationFailure ||
+      shouldStop.value ||
+      is400340Error(initializationError)
+    ) {
+      throw initializationError;
+    }
+
+    let lastInitializationError = initializationError;
+    const initializationRetries = Math.max(1, maxRetries);
+
+    for (
+      let initializationRetry = 1;
+      initializationRetry <= initializationRetries && !shouldStop.value;
+      initializationRetry++
+    ) {
+      addLog({
+        time: new Date().toLocaleTimeString(),
+        message: `初始化失败，刷新Token后重连重试（第${initializationRetry}/${initializationRetries}次）`,
+        type: "warning",
+      });
+
+      await tokenStore.closeWebSocketConnection(tokenId);
+      await refreshTokenUntilSuccess(tokenId);
+      await new Promise((resolve) =>
+        setTimeout(resolve, batchSettings.reconnectDelay),
+      );
+
+      try {
+        await ensureConnection(tokenId, maxRetries, true, false);
+        return true;
+      } catch (retryError) {
+        lastInitializationError = retryError;
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `刷新Token后初始化仍失败: ${retryError.message}`,
+          type: "warning",
+        });
+      }
+    }
+
+    throw lastInitializationError;
   }
 
   return true;
@@ -5857,6 +5900,7 @@ const createTaskDeps = () => ({
     battle: batchSettings.battleDelay,
     refresh: batchSettings.refreshDelay,
     long: batchSettings.longDelay,
+    retry: RATE_LIMIT_RETRY_DELAY_MS,
   },
   // 其他特定依赖
   logs,

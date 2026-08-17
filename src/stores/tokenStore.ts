@@ -14,7 +14,12 @@ import {
   setAuthUserRateLimiterCallback,
   scheduleAuthUserRequest,
 } from "@/utils/token";
-import { isRateLimitError } from "@/utils/helperTaskRunner";
+import {
+  is400340Error,
+  isRateLimitError,
+  RATE_LIMIT_MAX_RETRIES,
+  RATE_LIMIT_RETRY_DELAY_MS,
+} from "@/utils/helperTaskRunner";
 import { emitPlus, $emit } from "./events/index.js";
 import router from "@/router";
 
@@ -1083,6 +1088,7 @@ export const useTokenStore = defineStore("tokens", () => {
     cmd: string,
     params = {},
     timeout = 5000,
+    retryOptions: { skip400340Retry?: boolean } = {},
   ) => {
     const connection = wsConnections.value[tokenId];
     if (!connection || connection.status !== "connected") {
@@ -1111,21 +1117,42 @@ export const useTokenStore = defineStore("tokens", () => {
       );
     }
 
-    try {
-      const result = await client.sendWithPromise(cmd, params, timeout);
+    let retryCount = 0;
 
-      // 特殊日志：fight_starttower 响应
-      if (cmd === "fight_starttower") {
-        wsLogger.info(`🗼 [咸将塔] 收到爬塔响应 [${tokenId}]:`, result);
-      }
+    while (true) {
+      try {
+        const result = await client.sendWithPromise(cmd, params, timeout);
 
-      return result;
-    } catch (error) {
-      // 特殊日志：fight_starttower 错误
-      if (cmd === "fight_starttower") {
-        wsLogger.error(`🗼 [咸将塔] 爬塔请求失败 [${tokenId}]:`, error.message);
+        // 特殊日志：fight_starttower 响应
+        if (cmd === "fight_starttower") {
+          wsLogger.info(`🗼 [咸将塔] 收到爬塔响应 [${tokenId}]:`, result);
+        }
+
+        return result;
+      } catch (error) {
+        if (
+          retryOptions.skip400340Retry ||
+          !is400340Error(error) ||
+          retryCount >= RATE_LIMIT_MAX_RETRIES
+        ) {
+          // 特殊日志：fight_starttower 错误
+          if (cmd === "fight_starttower") {
+            wsLogger.error(
+              `🗼 [咸将塔] 爬塔请求失败 [${tokenId}]:`,
+              error.message,
+            );
+          }
+          return Promise.reject(error);
+        }
+
+        retryCount++;
+        wsLogger.warn(
+          `请求触发400340限流 [${tokenId}] ${cmd}，1秒后重试（第${retryCount}/${RATE_LIMIT_MAX_RETRIES}次）`,
+        );
+        await new Promise((resolve) =>
+          setTimeout(resolve, RATE_LIMIT_RETRY_DELAY_MS),
+        );
       }
-      return Promise.reject(error);
     }
   };
 

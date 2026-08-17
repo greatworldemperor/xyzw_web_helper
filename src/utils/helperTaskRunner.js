@@ -3,6 +3,8 @@ export const HELPER_BATCH_DELAY_MS = 300;
 export const HELPER_COMMAND_TIMEOUT_MS = 5000;
 export const HELPER_RETRY_DELAY_MS = 1000;
 export const HELPER_MAX_RETRIES = 2;
+export const RATE_LIMIT_RETRY_DELAY_MS = 1000;
+export const RATE_LIMIT_MAX_RETRIES = 100;
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -72,10 +74,19 @@ function getErrorSearchText(error) {
     .join(" ");
 }
 
+export function is400340Error(error) {
+  return getErrorSearchText(error).includes("400340");
+}
+
+export function isCarSendUnavailableError(error) {
+  return is400340Error(error);
+}
+
 export function isRateLimitError(error) {
   const message = getErrorSearchText(error);
 
   return (
+    is400340Error(error) ||
     message.includes("400312") ||
     message.includes("200400") ||
     message.includes("12400000") ||
@@ -87,6 +98,35 @@ export function isRateLimitError(error) {
     message.includes("限流") ||
     message.includes("屏蔽")
   );
+}
+
+export async function runWithRateLimitRetry({
+  execute,
+  retryDelayMs = RATE_LIMIT_RETRY_DELAY_MS,
+  maxRetries = RATE_LIMIT_MAX_RETRIES,
+  sleepFn = sleep,
+  onRetry,
+}) {
+  const retryLimit = Number.isFinite(Number(maxRetries))
+    ? Math.max(0, Math.trunc(Number(maxRetries)))
+    : 0;
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await execute();
+    } catch (error) {
+      if (attempt >= retryLimit || !isRateLimitError(error)) {
+        throw error;
+      }
+
+      onRetry?.({
+        error,
+        retryCount: attempt + 1,
+        maxRetries: retryLimit,
+      });
+      await sleepFn(retryDelayMs);
+    }
+  }
 }
 
 export function isModuleUnavailableError(error) {

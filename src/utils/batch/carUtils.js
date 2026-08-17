@@ -183,23 +183,8 @@ export const shouldSendCar = (car, tickets, minColor = 4, customConditions = {},
     return false;
   }
 
-  if (hasConditions) {
-    return customConditionsMet;
-  }
-
-  // 金砖保底且未设置奖励条件时，只要颜色达到门槛即可发车
-  if (useGoldRefreshFallback) {
-    return true;
-  }
-
-  const racingTickets = countRacingRefreshTickets(rewards);
-  if (tickets >= 6) {
-    return (
-      color >= minColor &&
-      (color >= 5 || racingTickets >= 4 || isBigPrize(rewards))
-    );
-  }
-  return color >= minColor || racingTickets >= 2 || isBigPrize(rewards);
+  // 未设置奖励阈值时，颜色达标就是全部发车条件。
+  return !hasConditions || customConditionsMet;
 };
 
 /**
