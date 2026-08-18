@@ -240,11 +240,30 @@
                   <div class="token-row">
                     <n-checkbox
                       :value="token.id"
-                      :label="token.name"
                       style="flex: 1"
                     >
                       <div class="token-item">
                         <span>{{ token.name }}</span>
+                        <n-popselect
+                          :value="
+                            getTokenTemplateId(token.id) || DEFAULT_TEMPLATE_ID
+                          "
+                          :options="taskTemplateOptions"
+                          :render-label="renderTemplateOption"
+                          trigger="click"
+                          @update:value="
+                            (templateId) => applyTemplateToToken(token.id, templateId)
+                          "
+                        >
+                          <n-tag
+                            size="small"
+                            :color="getTokenTemplateTagColor(token.id)"
+                            style="margin-left: 8px; cursor: pointer"
+                            @click.stop
+                          >
+                            模板：{{ getTokenTemplateName(token.id) }}
+                          </n-tag>
+                        </n-popselect>
                         <n-tag
                           size="small"
                           :type="getStatusType(token.id)"
@@ -946,9 +965,7 @@
             <label class="setting-label">选择模板</label>
             <n-select
               v-model:value="selectedTemplateId"
-              :options="taskTemplates"
-              label-field="name"
-              value-field="id"
+              :options="taskTemplateOptions"
               placeholder="请选择要应用的模板"
               size="small"
               style="width: 100%"
@@ -1188,7 +1205,7 @@
               </div>
               <div>
                 <n-tag
-                  :type="item.templateId ? 'success' : 'default'"
+                  :color="getTemplateTagColor(item.templateColor)"
                   size="small"
                 >
                   {{ item.templateName }}
@@ -3373,6 +3390,8 @@ const showAccountTemplateModal = ref(false);
 const taskTemplates = ref([]);
 const selectedTemplateId = ref(null);
 const selectedTokensForApply = ref([]);
+const templateAssignmentVersion = ref(0);
+const DEFAULT_TEMPLATE_ID = "__default__";
 const currentTemplateName = ref("");
 const currentTemplateId = ref(null); // 用于编辑现有模板
 const currentTemplate = reactive({
@@ -3388,6 +3407,21 @@ const currentTemplate = reactive({
   claimEmail: true,
   blackMarketPurchase: true,
 });
+
+const templateColorPalette = [
+  "#c92a2a",
+  "#d9480f",
+  "#a86100",
+  "#2b8a3e",
+  "#087f5b",
+  "#0b7285",
+  "#1864ab",
+  "#364fc7",
+  "#6741d9",
+  "#862e9c",
+  "#a61e4d",
+  "#495057",
+];
 
 // Account Template References
 const accountTemplateReferences = ref([]);
@@ -3413,6 +3447,157 @@ const isIndeterminateForApply = computed(() => {
 const filteredTaskTemplates = computed(() => {
   return taskTemplates.value;
 });
+
+const taskTemplateOptions = computed(() => {
+  return [
+    {
+      label: "默认模板（未应用模板）",
+      value: DEFAULT_TEMPLATE_ID,
+      color: "#6b7280",
+    },
+    ...taskTemplates.value.map((template) => ({
+      label: template.name,
+      value: template.id,
+      color: template.color,
+    })),
+  ];
+});
+
+const renderTemplateOption = (option) => {
+  const color = option.color || "#6b7280";
+  return h(
+    "div",
+    {
+      style: "display: flex; align-items: center; gap: 8px",
+    },
+    [
+      h("span", {
+        style: {
+          width: "10px",
+          height: "10px",
+          borderRadius: "50%",
+          backgroundColor: color,
+          flexShrink: 0,
+        },
+      }),
+      h("span", option.label),
+    ],
+  );
+};
+
+const getTokenTemplateId = (tokenId) => {
+  void templateAssignmentVersion.value;
+  const settingsStr = localStorage.getItem(`daily-settings:${tokenId}`);
+  if (!settingsStr) return null;
+
+  try {
+    return JSON.parse(settingsStr)?.templateId || null;
+  } catch {
+    return null;
+  }
+};
+
+const getTokenTemplate = (tokenId) => {
+  const templateId = getTokenTemplateId(tokenId);
+  if (!templateId) return null;
+
+  return taskTemplates.value.find(
+    (item) => String(item.id) === String(templateId),
+  );
+};
+
+const getTokenTemplateName = (tokenId) => {
+  const templateId = getTokenTemplateId(tokenId);
+  if (!templateId) return "未应用模板";
+
+  return getTokenTemplate(tokenId)?.name || "模板已删除";
+};
+
+const getTemplateTagColor = (color) => {
+  const tagColor = color || "#6b7280";
+  return {
+    color: tagColor,
+    borderColor: tagColor,
+    textColor: "#ffffff",
+  };
+};
+
+const getTokenTemplateTagColor = (tokenId) => {
+  return getTemplateTagColor(getTokenTemplate(tokenId)?.color);
+};
+
+const getRandomTemplateColor = (usedColors) => {
+  const availableColors = templateColorPalette.filter(
+    (color) => !usedColors.has(color),
+  );
+  const colors =
+    availableColors.length > 0 ? availableColors : templateColorPalette;
+  return colors[Math.floor(Math.random() * colors.length)];
+};
+
+const ensureTemplateColors = (templates) => {
+  const usedColors = new Set();
+  let changed = false;
+  const coloredTemplates = templates.map((template) => {
+    let color = template.color;
+    if (!color || usedColors.has(color)) {
+      color = getRandomTemplateColor(usedColors);
+    }
+
+    usedColors.add(color);
+    if (template.color === color) return template;
+
+    changed = true;
+    return { ...template, color };
+  });
+
+  if (changed) {
+    localStorage.setItem("task-templates", JSON.stringify(coloredTemplates));
+  }
+  return coloredTemplates;
+};
+
+const saveTemplateToTokens = (template, tokenIds) => {
+  tokenIds.forEach((tokenId) => {
+    localStorage.setItem(
+      `daily-settings:${tokenId}`,
+      JSON.stringify({
+        ...template.settings,
+        templateId: template.id,
+      }),
+    );
+  });
+  templateAssignmentVersion.value++;
+};
+
+const resetTokensToDefault = (tokenIds) => {
+  tokenIds.forEach((tokenId) => {
+    localStorage.removeItem(`daily-settings:${tokenId}`);
+  });
+  templateAssignmentVersion.value++;
+};
+
+const applyTemplateToToken = (tokenId, templateId) => {
+  const templates = loadTaskTemplates();
+  const token = tokens.value.find((item) => item.id === tokenId);
+
+  if (String(templateId) === DEFAULT_TEMPLATE_ID) {
+    resetTokensToDefault([tokenId]);
+    message.success(`已将 ${token?.name || tokenId} 恢复为默认模板`);
+    return;
+  }
+
+  const template = templates.find(
+    (item) => String(item.id) === String(templateId),
+  );
+  if (!template) {
+    message.error("模板不存在");
+    return;
+  }
+
+  saveTemplateToTokens(template, [tokenId]);
+  message.success(`已将模板“${template.name}”应用到 ${token?.name || tokenId}`);
+};
 
 // Helper Modal State
 const showHelperModal = ref(false);
@@ -5095,8 +5280,11 @@ const openTaskTemplateModal = () => {
 const loadTaskTemplates = () => {
   const templates = localStorage.getItem("task-templates");
   const parsed = templates ? JSON.parse(templates) : [];
-  taskTemplates.value = parsed;
-  return parsed;
+  const coloredTemplates = ensureTemplateColors(
+    Array.isArray(parsed) ? parsed : [],
+  );
+  taskTemplates.value = coloredTemplates;
+  return coloredTemplates;
 };
 
 const openApplyTemplateModal = () => {
@@ -5124,28 +5312,26 @@ const applyTemplate = () => {
 
   // 找到选中的模板
   const templates = loadTaskTemplates();
+  if (String(selectedTemplateId.value) === DEFAULT_TEMPLATE_ID) {
+    resetTokensToDefault(selectedTokensForApply.value);
+    message.success(
+      `已将 ${selectedTokensForApply.value.length} 个账号恢复为默认模板`,
+    );
+    showApplyTemplateModal.value = false;
+    return;
+  }
+
   const template = templates.find((t) => t.id === selectedTemplateId.value);
   if (!template) {
     message.error("模板不存在");
     return;
   }
 
-  // 应用模板到选中的账号
-  let successCount = 0;
-  selectedTokensForApply.value.forEach((tokenId) => {
-    // 保存账号设置时同时保存模板ID
-    const accountSettings = {
-      ...template.settings,
-      templateId: template.id, // 记录模板ID
-    };
-    localStorage.setItem(
-      `daily-settings:${tokenId}`,
-      JSON.stringify(accountSettings),
-    );
-    successCount++;
-  });
+  saveTemplateToTokens(template, selectedTokensForApply.value);
 
-  message.success(`已成功应用模板到 ${successCount} 个账号`);
+  message.success(
+    `已成功应用模板到 ${selectedTokensForApply.value.length} 个账号`,
+  );
   showApplyTemplateModal.value = false;
 };
 
@@ -5262,6 +5448,7 @@ const loadAccountTemplateReferences = () => {
           tokenName: token.name,
           templateId: templateId,
           templateName: template ? template.name : "未引用模板",
+          templateColor: template?.color || null,
         });
       } catch (e) {
         console.error(`解析账号 ${token.name} 的设置失败:`, e);
@@ -5273,6 +5460,7 @@ const loadAccountTemplateReferences = () => {
         tokenName: token.name,
         templateId: null,
         templateName: "未引用模板",
+        templateColor: null,
       });
     }
   });
@@ -5314,6 +5502,9 @@ const saveTaskTemplate = () => {
     const template = {
       id: Date.now().toString(),
       name: currentTemplateName.value.trim(),
+      color: getRandomTemplateColor(
+        new Set(templates.map((item) => item.color).filter(Boolean)),
+      ),
       settings: {
         ...currentTemplate,
       },
@@ -6045,6 +6236,7 @@ const startBatch = async () => {
     let slotAcquired = false;
     const token = tokens.value.find((t) => t.id === tokenId);
     const tokenName = token?.name || tokenId;
+    const templateName = getTokenTemplateName(tokenId);
 
     try {
       await waitForConnectionSlot();
@@ -6056,13 +6248,13 @@ const startBatch = async () => {
           if (attemptCount === 1) {
             addLog({
               time: new Date().toLocaleTimeString(),
-              message: `=== 开始执行: ${tokenName} [tokenId=${tokenId}] ===`,
+              message: `=== 开始执行: ${tokenName} [tokenId=${tokenId}] [模板=${templateName}] ===`,
               type: "info",
             });
           } else {
             addLog({
               time: new Date().toLocaleTimeString(),
-              message: `=== 尝试重试: ${tokenName} [tokenId=${tokenId}] (第${attemptCount}次) ===`,
+              message: `=== 尝试重试: ${tokenName} [tokenId=${tokenId}] [模板=${templateName}] (第${attemptCount}次) ===`,
               type: "info",
             });
           }
@@ -6070,7 +6262,7 @@ const startBatch = async () => {
           await ensureConnection(tokenId, 2, true);
           addLog({
             time: new Date().toLocaleTimeString(),
-            message: `${tokenName} 连接准备完成，开始执行日常任务（第${attemptCount}次）`,
+            message: `${tokenName} [模板=${templateName}] 连接准备完成，开始执行日常任务（第${attemptCount}次）`,
             type: "info",
           });
 
@@ -6085,6 +6277,21 @@ const startBatch = async () => {
               // 每个token维护自己的进度
             },
             shouldStop: () => shouldStop.value,
+            maxWebSocketReconnectRetries: 2,
+            onWebSocketReconnect: async ({ retryCount, maxRetries }) => {
+              if (shouldStop.value) {
+                throw new Error("批量任务已停止，取消WebSocket重连");
+              }
+
+              addLog({
+                time: new Date().toLocaleTimeString(),
+                message: `${tokenName} 刷新WebSocket并重连（第${retryCount}/${maxRetries}次）`,
+                type: "warning",
+              });
+
+              await tokenStore.closeWebSocketConnection(tokenId);
+              await ensureConnection(tokenId, 2, true);
+            },
           });
 
           if (!runResult.success) {

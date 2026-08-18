@@ -129,6 +129,39 @@ export async function runWithRateLimitRetry({
   }
 }
 
+export function isWebSocketNotConnectedError(error) {
+  return getErrorSearchText(error).includes("WebSocket未连接");
+}
+
+export async function runWithWebSocketReconnectRetry({
+  execute,
+  reconnect,
+  maxRetries = 2,
+  onRetry,
+}) {
+  const retryLimit = Number.isFinite(Number(maxRetries))
+    ? Math.max(0, Math.trunc(Number(maxRetries)))
+    : 0;
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await execute();
+    } catch (error) {
+      if (
+        !reconnect ||
+        attempt >= retryLimit ||
+        !isWebSocketNotConnectedError(error)
+      ) {
+        throw error;
+      }
+
+      const retryCount = attempt + 1;
+      onRetry?.({ error, retryCount, maxRetries: retryLimit });
+      await reconnect({ error, retryCount, maxRetries: retryLimit });
+    }
+  }
+}
+
 export function isModuleUnavailableError(error) {
   const message = getErrorSearchText(error);
 
