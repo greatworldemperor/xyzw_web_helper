@@ -9,8 +9,10 @@ import {
   isModuleUnavailableError,
   isRateLimitError,
   isSkippableTaskError,
+  isWebSocketNotConnectedError,
   runInventoryVerifiedGameCommand,
   runWithRateLimitRetry,
+  runWithWebSocketReconnectRetry,
   runBatchedGameCommand,
 } from "../src/utils/helperTaskRunner.js";
 
@@ -94,6 +96,34 @@ test("runWithRateLimitRetry stops after the configured retry limit", async () =>
   assert.equal(attempts, 3);
 });
 
+
+test("runWithWebSocketReconnectRetry reconnects before retrying the command", async () => {
+  const events = [];
+  let attempts = 0;
+
+  const result = await runWithWebSocketReconnectRetry({
+    execute: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("WebSocket未连接 [token-1]");
+      }
+      return "ok";
+    },
+    reconnect: async (context) => {
+      events.push({ type: "reconnect", ...context });
+    },
+    onRetry: (context) => {
+      events.push({ type: "retry", ...context });
+    },
+  });
+
+  assert.equal(result, "ok");
+  assert.equal(attempts, 2);
+  assert.equal(isWebSocketNotConnectedError(new Error("WebSocket未连接")), true);
+  assert.equal(events[0].type, "retry");
+  assert.equal(events[1].type, "reconnect");
+  assert.equal(events[1].retryCount, 1);
+});
 test("isModuleUnavailableError recognizes disabled modules", () => {
   assert.equal(isModuleUnavailableError(new Error("服务器错误: 200160 - 模块未开启")), true);
   assert.equal(isModuleUnavailableError({ response: { data: { code: 200160 } } }), true);

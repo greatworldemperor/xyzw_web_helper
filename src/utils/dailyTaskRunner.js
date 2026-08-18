@@ -3,6 +3,7 @@ import {
   getErrorDetails,
   isRateLimitError,
   isSkippableTaskError,
+  runWithWebSocketReconnectRetry,
 } from "@/utils/helperTaskRunner";
 
 const formatCommandParams = (params) => {
@@ -75,6 +76,25 @@ export class DailyTaskRunner {
     }
   }
 
+  async executeWithWebSocketRecovery(tokenId, execute) {
+    const reconnect = this.callbacks?.onWebSocketReconnect;
+
+    return runWithWebSocketReconnectRetry({
+      execute,
+      reconnect: reconnect
+        ? ({ error, retryCount, maxRetries }) =>
+            reconnect({ tokenId, error, retryCount, maxRetries })
+        : null,
+      maxRetries: this.callbacks?.maxWebSocketReconnectRetries ?? 2,
+      onRetry: ({ retryCount, maxRetries }) => {
+        this.log(
+          `[${tokenId}] 检测到WebSocket未连接，刷新连接后重试（第${retryCount}/${maxRetries}次）`,
+          "warning",
+        );
+      },
+    });
+  }
+
   async executeGameCommand(
     tokenId,
     cmd,
@@ -85,11 +105,13 @@ export class DailyTaskRunner {
     try {
       const commandContext = `[cmd=${cmd}, params=${formatCommandParams(params)}]`;
       if (description) this.log(`执行: ${description} ${commandContext}`);
-      const result = await this.tokenStore.sendMessageWithPromise(
-        tokenId,
-        cmd,
-        params,
-        timeout,
+      const result = await this.executeWithWebSocketRecovery(tokenId, () =>
+        this.tokenStore.sendMessageWithPromise(
+          tokenId,
+          cmd,
+          params,
+          timeout,
+        ),
       );
       await new Promise((resolve) => setTimeout(resolve, this.delaySettings.commandDelay));
       if (description) this.log(`${description} - 成功`, "success");
@@ -233,7 +255,9 @@ export class DailyTaskRunner {
     this.log("正在获取角色信息...");
     let roleInfoResp;
     try {
-      roleInfoResp = await this.tokenStore.sendGetRoleInfo(tokenId);
+      roleInfoResp = await this.executeWithWebSocketRecovery(tokenId, () =>
+        this.tokenStore.sendGetRoleInfo(tokenId),
+      );
       this.log("角色信息获取成功", "success");
     } catch (error) {
       this.log(`获取角色信息失败: ${error.message}`, "error");
