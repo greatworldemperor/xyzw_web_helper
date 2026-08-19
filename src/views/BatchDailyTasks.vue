@@ -222,6 +222,32 @@
             </n-space>
           </div>
 
+          <div class="status-selection-buttons" style="margin-bottom: 12px">
+            <n-space align="center" :wrap="true">
+              <span style="font-size: 13px; color: #86909c">按状态选择：</span>
+              <n-button-group size="small">
+                <n-button
+                  v-for="option in statusSelectionOptions"
+                  :key="option.value"
+                  :type="option.type"
+                  :disabled="isRunning"
+                  @click="selectTokensByStatus(option.value)"
+                >
+                  {{ option.label }}
+                </n-button>
+              </n-button-group>
+              <n-button
+                size="small"
+                type="warning"
+                secondary
+                :disabled="isRunning || !hasTokenStatus"
+                @click="clearTokenStatuses"
+              >
+                清空状态
+              </n-button>
+            </n-space>
+          </div>
+
           <n-space vertical>
             <n-checkbox
               :checked="isAllSelected"
@@ -5581,7 +5607,34 @@ const getStatusText = (tokenId) => {
   if (status === "completed") return "已完成";
   if (status === "failed") return "失败";
   if (status === "running") return "执行中";
-  return "等待中";
+  if (status === "waiting") return "等待中";
+  return "未执行";
+};
+
+const statusSelectionOptions = [
+  { label: "未执行", value: "unstarted", type: "default" },
+  { label: "等待中", value: "waiting", type: "default" },
+  { label: "执行中", value: "running", type: "info" },
+  { label: "已完成", value: "completed", type: "success" },
+  { label: "失败", value: "failed", type: "error" },
+];
+
+const hasTokenStatus = computed(() => Object.keys(tokenStatus.value).length > 0);
+
+const selectTokensByStatus = (status) => {
+  selectedTokens.value = sortedTokens.value
+    .filter((token) => {
+      const tokenStatusValue = tokenStatus.value[token.id];
+      return status === "unstarted"
+        ? !tokenStatusValue
+        : tokenStatusValue === status;
+    })
+    .map((token) => token.id);
+};
+
+const clearTokenStatuses = () => {
+  tokenStatus.value = {};
+  message.success("已清空所有账号状态");
 };
 
 // =====================
