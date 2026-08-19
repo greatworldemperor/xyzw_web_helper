@@ -3,6 +3,19 @@
  * 包含: resetBottles, batchlingguanzi
  */
 
+import {
+  getErrorMessage,
+  isRateLimitError,
+  RATE_LIMIT_MAX_RETRIES,
+  RATE_LIMIT_RETRY_DELAY_MS,
+  runWithRateLimitRetry,
+} from "../helperTaskRunner.js";
+
+function isBottleStartTimeoutError(error) {
+  const message = getErrorMessage(error);
+  return message.includes("请求超时") && message.includes("bottlehelper_start");
+}
+
 /**
  * 创建罐子类任务执行器
  * @param {Object} deps - 依赖项
@@ -74,12 +87,26 @@ export function createTasksBottle(deps) {
           message: `${token.name} 开始计时...`,
           type: "info",
         });
-        await tokenStore.sendMessageWithPromise(
-          tokenId,
-          "bottlehelper_start",
-          {},
-          5000,
-        );
+        await runWithRateLimitRetry({
+          execute: () =>
+            tokenStore.sendMessageWithPromise(
+              tokenId,
+              "bottlehelper_start",
+              {},
+              5000,
+            ),
+          retryDelayMs: RATE_LIMIT_RETRY_DELAY_MS,
+          maxRetries: RATE_LIMIT_MAX_RETRIES,
+          shouldRetry: (error) =>
+            isRateLimitError(error) || isBottleStartTimeoutError(error),
+          onRetry: ({ error, retryCount, maxRetries }) => {
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${token.name} 开始计时失败: ${getErrorMessage(error)}，1秒后重试（第${retryCount}/${maxRetries}次）`,
+              type: "warning",
+            });
+          },
+        });
 
         tokenStatus.value[tokenId] = "completed";
         addLog({

@@ -105,6 +105,7 @@ export async function runWithRateLimitRetry({
   retryDelayMs = RATE_LIMIT_RETRY_DELAY_MS,
   maxRetries = RATE_LIMIT_MAX_RETRIES,
   sleepFn = sleep,
+  shouldRetry = isRateLimitError,
   onRetry,
 }) {
   const retryLimit = Number.isFinite(Number(maxRetries))
@@ -115,7 +116,7 @@ export async function runWithRateLimitRetry({
     try {
       return await execute();
     } catch (error) {
-      if (attempt >= retryLimit || !isRateLimitError(error)) {
+      if (attempt >= retryLimit || !shouldRetry(error)) {
         throw error;
       }
 

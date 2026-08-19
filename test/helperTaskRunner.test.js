@@ -78,6 +78,26 @@ test("runWithRateLimitRetry does not retry non-throttling errors", async () => {
   assert.equal(sleeps, 0);
 });
 
+test("runWithRateLimitRetry supports operation-specific retry errors", async () => {
+  const events = [];
+  let attempts = 0;
+
+  await runWithRateLimitRetry({
+    execute: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error("请求超时: bottlehelper_start (5000ms)");
+      }
+      return "ok";
+    },
+    shouldRetry: (error) => error.message.includes("bottlehelper_start"),
+    sleepFn: async (ms) => events.push(ms),
+  });
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(events, [1000]);
+});
+
 test("runWithRateLimitRetry stops after the configured retry limit", async () => {
   let attempts = 0;
 
