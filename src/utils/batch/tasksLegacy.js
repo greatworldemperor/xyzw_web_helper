@@ -20,6 +20,7 @@ export function createTasksLegacy(deps) {
     connectionQueue,
     batchSettings,
     tokenStore,
+    sendRoleInfo: batchSendRoleInfo,
     addLog,
     message,
     currentRunningTokenId,
@@ -29,6 +30,17 @@ export function createTasksLegacy(deps) {
     giftQuantity,
     delayConfig,
   } = deps;
+
+  const sendRoleInfo =
+    batchSendRoleInfo ||
+    ((tokenId, params = {}) =>
+      typeof tokenStore.sendGetRoleInfo === "function"
+        ? tokenStore.sendGetRoleInfo(tokenId, params)
+        : tokenStore.sendMessageWithPromise(
+            tokenId,
+            "role_getroleinfo",
+            params,
+          ));
 
   /**
    * 批量领取功法残卷
@@ -157,7 +169,7 @@ export function createTasksLegacy(deps) {
 
           await ensureConnection(tokenId);
 
-          const roleInfo = await tokenStore.sendGetRoleInfo(tokenId);
+          const roleInfo = await sendRoleInfo(tokenId);
           const legacyFragmentCount =
             Math.min(
               roleInfo?.role?.items?.[giftConfig.itemId]?.quantity,
@@ -267,7 +279,7 @@ export function createTasksLegacy(deps) {
             throw new Error("赠送请求无响应");
           }
 
-          await tokenStore.sendMessage(tokenId, "role_getroleinfo");
+          await sendRoleInfo(tokenId);
 
           addLog({
             time: new Date().toLocaleTimeString(),

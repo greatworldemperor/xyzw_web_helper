@@ -22,6 +22,7 @@ export function createTasksArena(deps) {
     connectionQueue,
     batchSettings,
     tokenStore,
+    sendRoleInfo: batchSendRoleInfo,
     addLog,
     message,
     currentRunningTokenId,
@@ -33,6 +34,17 @@ export function createTasksArena(deps) {
     delayConfig,
     loadSettings,
   } = deps;
+
+  const sendRoleInfo =
+    batchSendRoleInfo ||
+    ((tokenId, params = {}) =>
+      typeof tokenStore.sendGetRoleInfo === "function"
+        ? tokenStore.sendGetRoleInfo(tokenId, params)
+        : tokenStore.sendMessageWithPromise(
+            tokenId,
+            "role_getroleinfo",
+            params,
+          ));
 
   /**
    * 一键竞技场战斗3次
@@ -65,10 +77,8 @@ export function createTasksArena(deps) {
         // 检查咸神门票 (ID: 1007)
         let role = tokenStore.gameData?.roleInfo?.role;
         if (!role) {
-          try {
-            const roleInfo = await tokenStore.sendGetRoleInfo(tokenId);
-            role = roleInfo?.role;
-          } catch {}
+          const roleInfo = await sendRoleInfo(tokenId);
+          role = roleInfo?.role;
         }
         const ticketCount = role?.items?.[1007]?.quantity || 0;
         addLog({
@@ -301,10 +311,8 @@ export function createTasksArena(deps) {
 
         let role = tokenStore.gameData?.roleInfo?.role;
         if (!role) {
-          try {
-            const roleInfo = await tokenStore.sendGetRoleInfo(tokenId);
-            role = roleInfo?.role;
-          } catch {}
+          const roleInfo = await sendRoleInfo(tokenId);
+          role = roleInfo?.role;
         }
         let freeUsed = 0;
         const lastFreeTime = Number(
@@ -407,11 +415,11 @@ export function createTasksArena(deps) {
             // 每钓鱼5轮（50次）后，重新获取角色信息，校验鱼竿数量
             if (remaining > 0 && batch >= 10 && remaining % 50 === 0) {
                  try {
-                     const roleRes = await tokenStore.sendMessageWithPromise(
-                         tokenId,
-                         "role_getroleinfo",
-                         {},
-                         5000,
+                     const roleRes = await sendRoleInfo(
+                       tokenId,
+                       {},
+                       5000,
+                       "同步鱼竿数量",
                      );
                      const currentRole = roleRes?.role || roleRes?.data?.role;
                      if (currentRole) {
@@ -426,6 +434,7 @@ export function createTasksArena(deps) {
                          }
                      }
                  } catch (e) {
+                     if (e?.code === "ROLE_INFO_RECOVERY_FAILED") throw e;
                      // ignore
                  }
             }
@@ -467,11 +476,11 @@ export function createTasksArena(deps) {
         
         // 自动领取鱼竿累计奖励
         try {
-           const roleRes = await tokenStore.sendMessageWithPromise(
+           const roleRes = await sendRoleInfo(
              tokenId,
-             "role_getroleinfo",
              {},
              5000,
+             "获取鱼竿累计奖励信息",
            );
            const currentRole = roleRes?.role || roleRes?.data?.role;
            if (currentRole) {
@@ -510,7 +519,8 @@ export function createTasksArena(deps) {
                  });
               }
            }
-        } catch (e) {
+          } catch (e) {
+            if (e?.code === "ROLE_INFO_RECOVERY_FAILED") throw e;
            addLog({
               time: new Date().toLocaleTimeString(),
               message: `${token.name} 检查累计奖励失败: ${e.message}`,
@@ -672,9 +682,11 @@ export function createTasksArena(deps) {
         let role = tokenStore.gameData?.roleInfo?.role;
         if (!role) {
           try {
-            const roleInfo = await tokenStore.sendGetRoleInfo(tokenId);
+            const roleInfo = await sendRoleInfo(tokenId);
             role = roleInfo?.role;
-          } catch {}
+          } catch (e) {
+            if (e?.code === "ROLE_INFO_RECOVERY_FAILED") throw e;
+          }
         }
         const ticketCount = role?.items?.[1007]?.quantity || 0;
         addLog({
@@ -814,11 +826,11 @@ export function createTasksArena(deps) {
           
           // 每轮战斗后重新获取角色信息以更新门票数量
           try {
-             const roleRes = await tokenStore.sendMessageWithPromise(
+             const roleRes = await sendRoleInfo(
                tokenId,
-               "role_getroleinfo",
                {},
                5000,
+               "同步竞技场门票",
              );
              const currentRole = roleRes?.role || roleRes?.data?.role;
              if (currentRole) {
@@ -832,7 +844,8 @@ export function createTasksArena(deps) {
                     ticketsLeft = newTickets;
                  }
              }
-          } catch (e) {
+            } catch (e) {
+              if (e?.code === "ROLE_INFO_RECOVERY_FAILED") throw e;
               // ignore error, use local calculation
           }
 

@@ -101,6 +101,7 @@ wss://xxz-xyzw.hortorgames.com/agent?p=<encoded-token>&e=x&lang=chinese
 - 普通角色登录连接默认监控 10 秒握手超时；1006 握手失败也会进入相同的刷新流程。
 - `attemptTokenRefresh()` 从 URL 或 IndexedDB 中的 BIN/WX 数据获取新 Token，并在成功后更新本地存储；失败通过 `token:refresh:failed` 事件通知界面。
 - [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue) 的批处理连接失败后，先等待旧连接关闭，再刷新 Token 并使用最新 Token 重连；批处理连接关闭 Store 的握手超时和握手失败自动刷新，避免后台刷新与批量刷新争用。刷新接口遇到限流时每隔 1 秒重试，直到成功；不可重试的刷新错误才停止账号并保留失败原因。
+- 批量任务中的 `role_getroleinfo` 统一通过 [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue) 的恢复入口请求；请求失败时关闭旧 WSS、刷新 Token、使用最新 Token 重建连接并重试角色信息，恢复耗尽后将异常交回当前账号任务，避免继续使用过期数据。
 - [src/layout/DefaultLayout.vue](src/layout/DefaultLayout.vue) 和 [src/views/TokenImport/index.vue](src/views/TokenImport/index.vue) 监听刷新失败事件，并使用 Naive UI 对话框提示用户。
 
 ### 任务层

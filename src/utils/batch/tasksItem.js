@@ -23,12 +23,24 @@ export function createTasksItem(deps) {
     connectionQueue,
     batchSettings,
     tokenStore,
+    sendRoleInfo: batchSendRoleInfo,
     addLog,
     message,
     currentRunningTokenId,
     helperSettings,
     delayConfig,
   } = deps;
+
+  const sendRoleInfo =
+    batchSendRoleInfo ||
+    ((tokenId, params = {}) =>
+      typeof tokenStore.sendGetRoleInfo === "function"
+        ? tokenStore.sendGetRoleInfo(tokenId, params)
+        : tokenStore.sendMessageWithPromise(
+            tokenId,
+            "role_getroleinfo",
+            params,
+          ));
 
   const boxNames = {
     2001: "木质宝箱",
@@ -347,7 +359,7 @@ export function createTasksItem(deps) {
           type: "success",
         });
 
-        await tokenStore.sendMessage(tokenId, "role_getroleinfo");
+        await sendRoleInfo(tokenId);
         tokenStatus.value[tokenId] = "completed";
         addLog({
           time: new Date().toLocaleTimeString(),
@@ -615,12 +627,7 @@ export function createTasksItem(deps) {
         await ensureConnection(tokenId);
 
         // 获取最新角色信息
-        const roleInfoRes = await tokenStore.sendMessageWithPromise(
-          tokenId,
-          "role_getroleinfo",
-          {},
-          5000
-        );
+        const roleInfoRes = await sendRoleInfo(tokenId, {}, 5000, "获取灯神扫荡信息");
         
         // 解析灯神进度和扫荡券
         const role = roleInfoRes?.role || roleInfoRes?.data?.role || {};
@@ -729,7 +736,7 @@ export function createTasksItem(deps) {
         }
 
         // 刷新信息
-        await tokenStore.sendMessage(tokenId, "role_getroleinfo");
+        await sendRoleInfo(tokenId);
         tokenStatus.value[tokenId] = "completed";
         addLog({
           time: new Date().toLocaleTimeString(),
@@ -831,7 +838,7 @@ export function createTasksItem(deps) {
           "item_batchclaimboxpointreward",
         );
         await new Promise((r) => setTimeout(r, delayConfig.action));
-        await tokenStore.sendMessage(tokenId, "role_getroleinfo");
+        await sendRoleInfo(tokenId);
         tokenStatus.value[tokenId] = "completed";
         addLog({
           time: new Date().toLocaleTimeString(),
@@ -905,10 +912,8 @@ export function createTasksItem(deps) {
         // 检查鱼竿数量
         let role = tokenStore.gameData?.roleInfo?.role;
         if (!role) {
-           try {
-             const roleInfo = await tokenStore.sendGetRoleInfo(tokenId);
-             role = roleInfo?.role;
-           } catch {}
+           const roleInfo = await sendRoleInfo(tokenId);
+           role = roleInfo?.role;
         }
         // 普通鱼竿: 1011, 黄金鱼竿: 1012
         const rodId = fishType === 1 ? 1011 : 1012;
@@ -959,11 +964,11 @@ export function createTasksItem(deps) {
           // 每5轮（50次）后，重新校验鱼竿数量
           if ((i + 1) % 5 === 0 && i < batches - 1) {
              try {
-                const roleRes = await tokenStore.sendMessageWithPromise(
+                const roleRes = await sendRoleInfo(
                   tokenId,
-                  "role_getroleinfo",
                   {},
                   5000,
+                  "同步鱼竿数量",
                 );
                 const currentRole = roleRes?.role || roleRes?.data?.role;
                 if (currentRole) {
@@ -985,6 +990,7 @@ export function createTasksItem(deps) {
                     }
                 }
              } catch (e) {
+               if (e?.code === "ROLE_INFO_RECOVERY_FAILED") throw e;
                  // ignore
              }
           }
@@ -1007,11 +1013,11 @@ export function createTasksItem(deps) {
         }
         // 自动领取鱼竿累计奖励
         try {
-           const roleRes = await tokenStore.sendMessageWithPromise(
+           const roleRes = await sendRoleInfo(
              tokenId,
-             "role_getroleinfo",
              {},
              5000,
+             "获取鱼竿累计奖励信息",
            );
            const currentRole = roleRes?.role || roleRes?.data?.role;
            if (currentRole) {
@@ -1051,7 +1057,8 @@ export function createTasksItem(deps) {
                  });
               }
            }
-        } catch (e) {
+          } catch (e) {
+            if (e?.code === "ROLE_INFO_RECOVERY_FAILED") throw e;
            addLog({
               time: new Date().toLocaleTimeString(),
               message: `${token.name} 检查累计奖励失败: ${e.message}`,
@@ -1160,7 +1167,7 @@ export function createTasksItem(deps) {
           });
         }
 
-        await tokenStore.sendMessage(tokenId, "role_getroleinfo");
+        await sendRoleInfo(tokenId);
         tokenStatus.value[tokenId] = "completed";
         addLog({
           time: new Date().toLocaleTimeString(),
@@ -1234,12 +1241,7 @@ export function createTasksItem(deps) {
 
         await ensureConnection(tokenId);
 
-        const roleInfoRes = await tokenStore.sendMessageWithPromise(
-          tokenId,
-          "role_getroleinfo",
-          {},
-          5000,
-        );
+        const roleInfoRes = await sendRoleInfo(tokenId, {}, 5000, "获取积分开箱信息");
         const role = roleInfoRes?.role || roleInfoRes?.data?.role || {};
         const items = role.items || {};
 
@@ -1424,7 +1426,7 @@ export function createTasksItem(deps) {
           }
         }
 
-        await tokenStore.sendMessage(tokenId, "role_getroleinfo");
+        await sendRoleInfo(tokenId);
         tokenStatus.value[tokenId] = "completed";
         addLog({
           time: new Date().toLocaleTimeString(),

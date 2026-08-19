@@ -2919,7 +2919,6 @@ import { $emit } from "@/stores/events/index.ts";
 import { DailyTaskRunner } from "@/utils/dailyTaskRunner";
 import {
   getErrorDetails,
-  is400340Error,
   isRateLimitError,
   RATE_LIMIT_MAX_RETRIES,
   RATE_LIMIT_RETRY_DELAY_MS,
@@ -5949,6 +5948,104 @@ const refreshTokenUntilSuccess = async (tokenId) => {
   throw new Error("批量任务已停止，取消Token刷新");
 };
 
+const reconnectWithLatestToken = async (tokenId, reason) => {
+  addLog({
+    time: new Date().toLocaleTimeString(),
+    message: `${reason}，关闭旧WSS并刷新Token后重建连接`,
+    type: "warning",
+  });
+
+  await tokenStore.closeWebSocketConnection(tokenId);
+  await refreshTokenUntilSuccess(tokenId);
+  await new Promise((resolve) =>
+    setTimeout(resolve, batchSettings.reconnectDelay),
+  );
+
+  const refreshedToken = tokens.value.find((t) => t.id === tokenId);
+  if (!refreshedToken) {
+    throw new Error(`Token刷新后未找到账号: ${tokenId}`);
+  }
+
+  await tokenStore.createWebSocketConnection(
+    tokenId,
+    refreshedToken.token,
+    refreshedToken.wsUrl,
+    { monitorTimeout: false, autoRefresh: false },
+  );
+
+  if (!(await waitForConnection(tokenId))) {
+    throw new Error("刷新Token后重建WSS失败");
+  }
+};
+
+const sendRoleInfo = async (
+  tokenId,
+  params = {},
+  timeout = 15000,
+  operation = "获取角色信息",
+) => {
+  const markRecoveryError = (error) => {
+    const roleInfoError =
+      error instanceof Error ? error : new Error(String(error));
+    roleInfoError.code = "ROLE_INFO_RECOVERY_FAILED";
+    return roleInfoError;
+  };
+  const recoveryRetries = 2;
+  let lastError;
+
+  for (let recoveryAttempt = 0; recoveryAttempt <= recoveryRetries; recoveryAttempt++) {
+    try {
+      return await runWithRateLimitRetry({
+        execute: () =>
+          tokenStore.sendMessageWithPromise(
+            tokenId,
+            "role_getroleinfo",
+            params,
+            timeout,
+            { skip400340Retry: true },
+          ),
+        retryDelayMs: RATE_LIMIT_RETRY_DELAY_MS,
+        maxRetries: RATE_LIMIT_MAX_RETRIES,
+        onRetry: ({ retryCount, maxRetries }) => {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${operation}触发限流，1秒后重试（第${retryCount}/${maxRetries}次）`,
+            type: "warning",
+          });
+        },
+      });
+    } catch (error) {
+      lastError = error;
+
+      if (shouldStop.value || recoveryAttempt >= recoveryRetries) {
+        throw shouldStop.value ? error : markRecoveryError(error);
+      }
+
+      addLog({
+        time: new Date().toLocaleTimeString(),
+        message: `${operation}失败: ${error.message}，刷新Token并重建WSS后重试（第${recoveryAttempt + 1}/${recoveryRetries}次）`,
+        type: "warning",
+      });
+
+      try {
+        await reconnectWithLatestToken(
+          tokenId,
+          `${operation}失败（第${recoveryAttempt + 1}次）`,
+        );
+      } catch (reconnectError) {
+        lastError = reconnectError;
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `刷新Token并重建WSS失败: ${reconnectError.message}`,
+          type: "warning",
+        });
+      }
+    }
+  }
+
+  throw markRecoveryError(lastError);
+};
+
 const initializeGameData = async (tokenId) => {
   const sendInitializationCommand = (command, operation) =>
     runWithRateLimitRetry({
@@ -5982,7 +6079,7 @@ const ensureConnection = async (
   tokenId,
   maxRetries = 2,
   slotAlreadyAcquired = false,
-  refreshOnInitializationFailure = false,
+  refreshOnInitializationFailure = true,
 ) => {
   const latestToken = tokens.value.find((t) => t.id === tokenId);
   if (!latestToken) {
@@ -6074,8 +6171,7 @@ const ensureConnection = async (
 
     if (
       !refreshOnInitializationFailure ||
-      shouldStop.value ||
-      is400340Error(initializationError)
+      shouldStop.value
     ) {
       throw initializationError;
     }
@@ -6131,6 +6227,7 @@ const createTaskDeps = () => ({
   connectionQueue,
   batchSettings,
   tokenStore,
+  sendRoleInfo,
   addLog,
   message,
   currentRunningTokenId,
@@ -6312,7 +6409,7 @@ const startBatch = async () => {
             });
           }
 
-          await ensureConnection(tokenId, 2, true);
+          await ensureConnection(tokenId, 2, true, true);
           addLog({
             time: new Date().toLocaleTimeString(),
             message: `${tokenName} [模板=${templateName}] 连接准备完成，开始执行日常任务（第${attemptCount}次）`,
@@ -6343,7 +6440,7 @@ const startBatch = async () => {
               });
 
               await tokenStore.closeWebSocketConnection(tokenId);
-              await ensureConnection(tokenId, 2, true);
+              await ensureConnection(tokenId, 2, true, true);
             },
           });
 

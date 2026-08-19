@@ -22,10 +22,22 @@ export function createTasksDungeon(deps) {
     connectionQueue,
     batchSettings,
     tokenStore,
+    sendRoleInfo: batchSendRoleInfo,
     addLog,
     message,
     currentRunningTokenId,
   } = deps;
+
+  const sendRoleInfo =
+    batchSendRoleInfo ||
+    ((tokenId, params = {}) =>
+      typeof tokenStore.sendGetRoleInfo === "function"
+        ? tokenStore.sendGetRoleInfo(tokenId, params)
+        : tokenStore.sendMessageWithPromise(
+            tokenId,
+            "role_getroleinfo",
+            params,
+          ));
 
   /**
    * 一键宝库前3层
@@ -292,11 +304,11 @@ export function createTasksDungeon(deps) {
         await ensureConnection(tokenId);
 
         // 1. 获取角色信息以获得商店数据
-        const roleInfo = await tokenStore.sendMessageWithPromise(
+        const roleInfo = await sendRoleInfo(
           tokenId,
-          "role_getroleinfo",
           {},
-          15000
+          15000,
+          "获取梦境商店信息",
         );
 
         if (!roleInfo || !roleInfo.role || !roleInfo.role.dungeon || !roleInfo.role.dungeon.merchant) {

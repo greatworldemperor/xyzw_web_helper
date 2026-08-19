@@ -23,6 +23,7 @@ export function createTasksTower(deps) {
     connectionQueue,
     batchSettings,
     tokenStore,
+    sendRoleInfo: batchSendRoleInfo,
     addLog,
     message,
     currentRunningTokenId,
@@ -30,6 +31,17 @@ export function createTasksTower(deps) {
     loadSettings,
     weirdTowerMaxClimb,
   } = deps;
+
+  const sendRoleInfo =
+    batchSendRoleInfo ||
+    ((tokenId, params = {}) =>
+      typeof tokenStore.sendGetRoleInfo === "function"
+        ? tokenStore.sendGetRoleInfo(tokenId, params)
+        : tokenStore.sendMessageWithPromise(
+            tokenId,
+            "role_getroleinfo",
+            params,
+          ));
 
   /**
    * 爬塔
@@ -103,7 +115,7 @@ export function createTasksTower(deps) {
         await tokenStore
           .sendMessageWithPromise(tokenId, "tower_getinfo", {}, 5000)
           .catch(() => {});
-        let roleInfo = await tokenStore.sendGetRoleInfo(tokenId);
+        let roleInfo = await sendRoleInfo(tokenId);
         let energy = roleInfo?.role?.tower?.energy || 0;
         addLog({
           time: new Date().toLocaleTimeString(),
@@ -137,9 +149,10 @@ export function createTasksTower(deps) {
             // 默认每5次刷新一次，或体力不足时刷新
             if (count % 5 === 0) {
                try {
-                  roleInfo = await tokenStore.sendGetRoleInfo(tokenId);
+                  roleInfo = await sendRoleInfo(tokenId);
                   energy = roleInfo?.role?.tower?.energy || 0;
                } catch (e) {
+                 if (e?.code === "ROLE_INFO_RECOVERY_FAILED") throw e;
                  // 忽略刷新失败
                }
             } else {
@@ -178,7 +191,7 @@ export function createTasksTower(deps) {
               try {
                 // 如果本地没有roleInfo，尝试获取一次
                 if (!roleInfo) {
-                   roleInfo = await tokenStore.sendGetRoleInfo(tokenId);
+                   roleInfo = await sendRoleInfo(tokenId);
                 }
                 const towerId = roleInfo?.role?.tower?.id;
                 
@@ -194,7 +207,8 @@ export function createTasksTower(deps) {
                       tokenStore.sendMessage(tokenId, "tower_claimreward", { rewardId: rewardFloor });
                    }
                 }
-              } catch (e) {
+                } catch (e) {
+                  if (e?.code === "ROLE_INFO_RECOVERY_FAILED") throw e;
                  // 忽略获取信息失败
               }
 
@@ -203,9 +217,11 @@ export function createTasksTower(deps) {
               
               // 刷新角色信息以更新状态
               try {
-                 roleInfo = await tokenStore.sendGetRoleInfo(tokenId);
+                 roleInfo = await sendRoleInfo(tokenId);
                  energy = roleInfo?.role?.tower?.energy || 0;
-              } catch (e) {}
+              } catch (e) {
+                if (e?.code === "ROLE_INFO_RECOVERY_FAILED") throw e;
+              }
 
               // 重置连续失败计数，因为这是一个可恢复的错误
               consecutiveFailures = 0;
@@ -231,9 +247,10 @@ export function createTasksTower(deps) {
             await new Promise((r) => setTimeout(r, 2000));
 
             try {
-              roleInfo = await tokenStore.sendGetRoleInfo(tokenId);
+              roleInfo = await sendRoleInfo(tokenId);
               energy = roleInfo?.role?.tower?.energy || 0;
             } catch (e) {
+              if (e?.code === "ROLE_INFO_RECOVERY_FAILED") throw e;
               // 忽略刷新失败
             }
           }
