@@ -4,11 +4,21 @@
  */
 
 import {
+  getErrorMessage,
   is400340Error,
+  isRateLimitError,
   RATE_LIMIT_MAX_RETRIES,
   RATE_LIMIT_RETRY_DELAY_MS,
   runWithRateLimitRetry,
 } from "../helperTaskRunner.js";
+
+function isHangUpRewardTimeoutError(error) {
+  const message = getErrorMessage(error);
+  return (
+    message.includes("请求超时") &&
+    message.includes("system_claimhangupreward")
+  );
+}
 
 /**
  * 创建挂机、答题、签到类任务执行器
@@ -47,6 +57,7 @@ export function createTasksHangUp(deps) {
     params,
     timeout,
     operation,
+    shouldRetry = isRateLimitError,
   ) =>
     runWithRateLimitRetry({
       execute: () =>
@@ -55,10 +66,11 @@ export function createTasksHangUp(deps) {
         }),
       retryDelayMs: hangUpRetryDelayMs,
       maxRetries: RATE_LIMIT_MAX_RETRIES,
-      onRetry: ({ retryCount, maxRetries }) => {
+      shouldRetry,
+      onRetry: ({ error, retryCount, maxRetries }) => {
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `${tokenName} ${operation}触发限流（400340或其他限流错误），1秒后重试（第${retryCount}/${maxRetries}次）`,
+          message: `${tokenName} ${operation}暂时失败: ${getErrorMessage(error)}，1秒后重试（第${retryCount}/${maxRetries}次）`,
           type: "warning",
         });
       },
@@ -106,6 +118,8 @@ export function createTasksHangUp(deps) {
           {},
           5000,
           "领取挂机奖励",
+          (error) =>
+            isRateLimitError(error) || isHangUpRewardTimeoutError(error),
         );
         await new Promise((r) => setTimeout(r, 500));
 
