@@ -32,6 +32,7 @@ export function createTasksCar(deps) {
     connectionQueue,
     batchSettings,
     tokenStore,
+    sendRoleInfo: batchSendRoleInfo,
     addLog,
     message,
     currentRunningTokenId,
@@ -48,6 +49,15 @@ export function createTasksCar(deps) {
   const carCommandRetryDelayMs = Number.isFinite(Number(delayConfig?.retry))
     ? Number(delayConfig.retry)
     : CAR_COMMAND_RETRY_DELAY_MS;
+  const sendRoleInfo = (tokenId, params = {}, timeout = 15000, operation) =>
+    batchSendRoleInfo
+      ? batchSendRoleInfo(tokenId, params, timeout, operation)
+      : tokenStore.sendMessageWithPromise(
+          tokenId,
+          "role_getroleinfo",
+          params,
+          timeout,
+        );
 
   /**
    * 智能发车
@@ -113,12 +123,7 @@ export function createTasksCar(deps) {
         let refreshTickets = 0;
         let currentRoleId = null;
         try {
-          const roleRes = await sendCarCommand(
-            "role_getroleinfo",
-            {},
-            10000,
-            "获取角色信息",
-          );
+          const roleRes = await sendRoleInfo(tokenId, {}, 10000, "获取角色信息");
           const qty = roleRes?.role?.items?.[35002]?.quantity;
           refreshTickets = Number(qty || 0);
           currentRoleId = roleRes?.role?.roleId ? String(roleRes.role.roleId) : null;
@@ -127,7 +132,9 @@ export function createTasksCar(deps) {
             message: `${token.name} 剩余刷新次数: ${refreshTickets}`,
             type: "info",
           });
-        } catch (_) {}
+        } catch (error) {
+          throw error;
+        }
 
         // 2.5 Fetch Helper Data (Club Members & Usage)
         let helperUsageMap = {};
@@ -291,8 +298,8 @@ export function createTasksCar(deps) {
           }
 
           try {
-            const roleRes = await sendCarCommand(
-              "role_getroleinfo",
+            const roleRes = await sendRoleInfo(
+              tokenId,
               {},
               5000,
               "获取刷新券数量",
@@ -300,7 +307,8 @@ export function createTasksCar(deps) {
             refreshTickets = Number(
               roleRes?.role?.items?.[35002]?.quantity || 0,
             );
-          } catch (_) {
+          } catch (error) {
+            if (error?.code === "ROLE_INFO_RECOVERY_FAILED") throw error;
             refreshTickets = 0;
           }
         };
@@ -502,8 +510,8 @@ export function createTasksCar(deps) {
                 message: `${token.name} 收车成功: ${gradeLabel(car.color)}`,
                 type: "success",
               });
-              const roleRes = await sendCarCommand(
-                "role_getroleinfo",
+              const roleRes = await sendRoleInfo(
+                tokenId,
                 {},
                 5000,
                 "获取角色信息",
@@ -525,8 +533,8 @@ export function createTasksCar(deps) {
                   );
                   refreshlevel++;
 
-                  const updatedRoleRes = await sendCarCommand(
-                    "role_getroleinfo",
+                  const updatedRoleRes = await sendRoleInfo(
+                    tokenId,
                     {},
                     5000,
                     "获取角色信息",
@@ -543,6 +551,7 @@ export function createTasksCar(deps) {
 
                   await new Promise((r) => setTimeout(r, delayConfig.action));
                 } catch (e) {
+                  if (e?.code === "ROLE_INFO_RECOVERY_FAILED") throw e;
                   addLog({
                     time: new Date().toLocaleTimeString(),
                     message: `${token.name} 车辆改装升级失败: ${e.message}`,
@@ -571,6 +580,7 @@ export function createTasksCar(deps) {
                 // 忽略错误
               }
             } catch (e) {
+              if (e?.code === "ROLE_INFO_RECOVERY_FAILED") throw e;
               addLog({
                 time: new Date().toLocaleTimeString(),
                 message: `${token.name} 收车失败: ${e.message}`,
