@@ -22,6 +22,11 @@ export const formationOptions = [1, 2, 3, 4, 5, 6].map((v) => ({
   value: v,
 }));
 
+// 智能竞技场选敌模式
+export const smartArenaModeOptions = [
+  { label: "最低战力", value: "lowestPower" },
+];
+
 // BOSS次数选项
 export const bossTimesOptions = [0, 1, 2, 3, 4].map((v) => ({
   label: `${v}次`,
@@ -149,6 +154,7 @@ export const defaultBatchSettings = {
   smartDepartureJadeThreshold: 2000,
   smartDepartureTicketThreshold: 2,
   smartDepartureMode: "A",
+  smartArenaMode: "lowestPower",
 };
 
 // 默认模板

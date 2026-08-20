@@ -171,7 +171,9 @@ export function createTasksArena(deps) {
             `[Arena][${token.name}][${i + 1}/3] arena_getareatarget 原始响应:`,
             targets,
           );
-          const targetId = pickArenaTargetId(targets);
+          const targetId = pickArenaTargetId(targets, {
+            mode: batchSettings.smartArenaMode || "lowestPower",
+          });
           console.info(
             `[Arena][${token.name}][${i + 1}/3] 候选列表: ${candidateSources || "无数组候选列表"}; 选择目标:`,
             targetId,

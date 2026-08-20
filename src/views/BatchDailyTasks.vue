@@ -2130,8 +2130,27 @@
               </div>
             </div>
             <n-divider title-placement="left" style="margin: 12px 0 8px 0"
-              >智能发车条件设置(0为不限制)</n-divider
+              >智能竞技场设置</n-divider
             >
+            <div class="settings-grid">
+              <div
+                class="setting-item"
+                style="
+                  flex-direction: row;
+                  justify-content: space-between;
+                  align-items: center;
+                "
+              >
+                <label class="setting-label">智能竞技场模式</label>
+                <n-select
+                  v-model:value="batchSettings.smartArenaMode"
+                  :options="smartArenaModeOptions"
+                  size="small"
+                  style="width: 180px"
+                />
+              </div>
+            </div>
+            <n-divider title-placement="left" style="margin: 12px 0 8px 0">智能发车条件设置(0为不限制)</n-divider>
             <div class="settings-grid">
               <div
                 class="setting-item"
@@ -2947,6 +2966,7 @@ import {
   defaultTemplate,
   defaultTaskForm,
   defaultHelperSettings,
+  smartArenaModeOptions,
   // Cron utilities
   validateCronField,
   validateCronExpression,
@@ -3698,6 +3718,7 @@ const batchSettings = reactive({
   smartDepartureJadeThreshold: 2000,
   smartDepartureTicketThreshold: 2,
   smartDepartureMode: "A",
+  smartArenaMode: "lowestPower",
 });
 
 // Load batch settings from localStorage
@@ -4217,6 +4238,7 @@ const exportConfig = () => {
         smartDepartureTicketThreshold:
           batchSettings.smartDepartureTicketThreshold,
         smartDepartureMode: batchSettings.smartDepartureMode,
+        smartArenaMode: batchSettings.smartArenaMode,
       },
       tokenSettings: tokenSettings,
     };

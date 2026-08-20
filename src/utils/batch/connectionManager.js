@@ -255,20 +255,68 @@ export const calculateMonthProgress = () => {
   return Math.min(1, Math.max(0, dayOfMonth / daysInMonth));
 };
 
+const arenaTargetListKeys = [
+  "rankList",
+  "roleList",
+  "targets",
+  "targetList",
+  "list",
+];
+
+const getArenaTargetList = (targets) => {
+  if (Array.isArray(targets)) return targets;
+
+  const listKey = arenaTargetListKeys.find((key) =>
+    Array.isArray(targets?.[key]),
+  );
+  return listKey ? targets[listKey] : [];
+};
+
+const getArenaTargetId = (candidate) =>
+  candidate?.roleId ?? candidate?.id ?? candidate?.targetId;
+
+const getArenaTargetPower = (candidate) => {
+  const power = candidate?.info?.power ?? candidate?.power;
+  if (power === undefined || power === null || power === "") return null;
+
+  const numericPower = Number(power);
+  return Number.isFinite(numericPower) ? numericPower : null;
+};
+
 /**
  * 竞技场目标ID选择
- * @param {object} targets - 目标列表
- * @returns {number|null} - 目标ID
+ * @param {object|Array} targets - 目标列表
+ * @param {object} options - 选敌选项
+ * @param {string} options.mode - 选敌模式
+ * @returns {number|string|null} - 目标ID
  */
-export const pickArenaTargetId = (targets) => {
-  const candidate =
-    targets?.rankList?.[0] ||
-    targets?.roleList?.[0] ||
-    targets?.targets?.[0] ||
-    targets?.targetList?.[0] ||
-    targets?.list?.[0];
+export const pickArenaTargetId = (targets, options = {}) => {
+  const candidates = getArenaTargetList(targets);
 
-  if (candidate?.roleId) return candidate.roleId;
-  if (candidate?.id) return candidate.id;
-  return targets?.roleId || targets?.id;
+  if (options.mode === "lowestPower") {
+    const rankedCandidates = candidates
+      .map((candidate, index) => ({
+        candidate,
+        index,
+        id: getArenaTargetId(candidate),
+        power: getArenaTargetPower(candidate),
+      }))
+      .filter(({ id }) => id !== undefined && id !== null)
+      .sort((left, right) => {
+        if (left.power === null && right.power !== null) return 1;
+        if (left.power !== null && right.power === null) return -1;
+        if (left.power !== null && right.power !== null) {
+          const powerDifference = left.power - right.power;
+          if (powerDifference !== 0) return powerDifference;
+        }
+        return left.index - right.index;
+      });
+
+    if (rankedCandidates[0]) return rankedCandidates[0].id;
+  }
+
+  const candidate = candidates[0];
+  const candidateId = getArenaTargetId(candidate);
+  if (candidateId !== undefined && candidateId !== null) return candidateId;
+  return targets?.roleId ?? targets?.id ?? targets?.targetId ?? null;
 };
