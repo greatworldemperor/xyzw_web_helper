@@ -2,25 +2,44 @@
 
 > 这是一份面向后续开发和代码分析的快速交接文档。
 >
-> 内容基于 2026-08-12 对当前工作区源码、配置和测试结果的核对。遇到本文与源码冲突时，以当前源码和验证结果为准；已知问题集中记录在 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。
+> 内容基于 2026-08-20 对当前工作区源码、配置和测试结果的核对。遇到本文与源码冲突时，以当前源码和验证结果为准；已知问题集中记录在 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。
 
 ## 1. 项目定位
 
 这是一个基于 Vue 3 + Vite 的 XYZW 游戏自动化前端工具，核心能力是：
 
-- 导入、解析和管理多个游戏 Token。
-- 在浏览器中维护 Token、选中角色和部分任务状态。
-- 通过 WebSocket 直接连接游戏服务。
-- 使用自定义 BON 二进制协议完成编码、解码和多种加解密。
-- 执行单账号日常任务和多账号批量任务。
-- 提供角色状态、游戏功能、消息测试、盐场和主题管理界面。
 
 项目没有一个与前端配套、且当前完整存在于仓库中的业务后端。生产部署主要面向 Cloudflare Pages，`worker.js` 被复制为 `dist/_worker.js`，用于固定上游接口代理。
 
-## 2. 技术栈和入口
 
 - Vue 3.5 + Composition API + `<script setup>`
 - Vite 5
+##### 脚本信息的协议参考判定
+
+后续自动蟠桃和自动盐场开发应按“脚本实际触达的层级”判断参考价值，不能把所有 Userscript 等价看待：
+
+- **纯 UI 模拟**：只查找按钮、触发点击、修改页面节点或拦截界面回调的脚本，只能参考操作流程、状态判断和交互时机，不能据此确认服务端命令、参数或成功条件。
+- **真实 H5 模块调用**：脚本通过 `ModuleManager.GET_MODULE(...)` 取得 `LEGION_WAR`/`LEGION_PAYLOAD`，再调用真实模块的 `send*` 方法时，动作会交给游戏内部网络层编码并发送。此类脚本可以直接参考真实动作顺序、参数语义、前置状态和轮询策略，是当前自动蟠桃/自动盐场最有价值的协议线索。
+- **直接 BON/WebSocket 通讯**：脚本若自行构造请求包、编码 BON body 或直接调用 WebSocket，则可以进一步直接参考 `cmd`、请求体和响应匹配方式；这是比方法级调用更强的协议证据。
+- **sandbox/mock 分支**：只修改本地伪造的战场、角色或方法返回值，不能证明服务端接口存在或请求成功。`自动盐场.js` 的 `sandbox: true` 路径必须排除在协议推断之外。
+- **混合脚本**：同一脚本可以同时包含 UI 补丁和真实协议调用。`盐场攻击弹窗不消失(1).js` 的弹窗修改属于 UI 行为，但其中 `LEGION_WAR.sendStartBattle(targetId)` 仍然是一个可追踪的真实动作调用；应拆开判断，不能因为外层改 UI 就否定该调用。
+
+因此，当前工作结论是：`全自动蟠桃园.js`、`自动盐场.js` 和 `新锁头盐场阵容.js` 的真实分支具有直接开发参考价值；它们已经证明了进场、布阵、行军、加速、攻击、拾取、用车道具、复活和组队等动作会通过游戏协议层执行。但它们仍没有单独证明每个动作的底层命令名、完整 BON body、响应类型或错误码，不能仅凭方法名直接在主项目中盲发请求。
+
+后续应把每个动作整理成以下映射并逐项验证：
+
+```text
+H5 方法
+  -> 内部网络方法/请求类
+  -> cmd
+  -> BON body 参数及类型
+  -> 连接类型（普通游戏连接或盐场战场连接）
+  -> 成功响应、状态推送和错误码
+  -> 冷却、限流、消耗和失败重试规则
+```
+
+“游戏指令大概率共用同一套路子”的假设可以作为反查方向，但不能提前当作事实：当前项目已确认盐场存在 `war_enterbattlefield`/`war_getbattlefieldinfo` 的专用连接链，蟠桃动作和盐场动作是否共用完全相同的连接、命令前缀和响应机制，仍需从 H5 方法实现或真实收发报文确认。协议一旦确认，就可以复用当前 `XyzwWebSocketClient`、`CommandRegistry` 和 `tokenStore.sendMessageWithPromise()`，再实现自动蟠桃、自动盐场的任务编排；在此之前，不能把 UI 资源已加载或 H5 方法名存在误认为 Vue 页面已经具备可用的游戏会话。
+
 - Pinia 2
 - Vue Router 4
 - Naive UI 和 Arco Design Vue
@@ -115,6 +134,185 @@
 - 样本中的候选顺序没有稳定地按战力、分数或排名升降排列，后续应把服务端顺序视为随机顺序，在前端基于 `info.power`、外层 `score`/`rank` 等字段自行筛选或排序。
 - 智能竞技场设置目前只有 `lowestPower`（最低战力）模式，默认值为 `lowestPower`；只有批量任务“一键竞技场战斗3次”传入该模式，竞技场补齐任务仍使用默认的第一个有效候选逻辑。战力相同则保留服务端原始顺序；无有效战力、候选为空或目标 ID 缺失时保留兼容回退。
 - 后续竞技场候选排序或选敌功能可以直接依据上述已验证响应结构开发，无需等待新的实测数据；仍需保留 `roleList` 缺失、字段缺失和目标 ID 缺失时的兼容回退。
+
+#### 盐场与蟠桃军团即时战斗接口盘点
+
+以下结论基于当前仓库源码的调用链和命令注册表整理，区分“已经真实发送过的接口”和“仅注册、尚未实测的接口”。命令本身通过 BON 编码后经 WebSocket 发送；通用接口入口是 `tokenStore.sendMessage()` / `tokenStore.sendMessageWithPromise()`，响应优先按 `resp` 或请求序号匹配，再按命令响应映射兼容处理。
+
+##### 盐场：已接入的接口
+
+普通游戏 WebSocket 和盐场专用 WebSocket 分成两条连接链路：
+
+1. `legion_getbattlefield`
+   - 普通连接请求战场元信息。
+   - 当前代码使用返回的 `info.sid` 构造盐场专用 WSS 地址，使用 `info.battlefieldId` 作为战场标识，使用 `info.phase` 查询匹配对手。
+   - 入口：[src/stores/legionWarStore.js](src/stores/legionWarStore.js) 和 [src/views/LegionWar.vue](src/views/LegionWar.vue)。
+2. `legion_getopponent`
+   - 参数为 `{ phase, battlefieldId }`。
+   - 返回 `opponentList`，用于盐场匹配对手页面；随后对每个俱乐部调用 `legion_getinfobyid`，并对成员调用 `rank_getroleinfo` 补充战力、红淬和阵容信息。
+   - 入口：[src/components/Club/ClubWarrank.vue](src/components/Club/ClubWarrank.vue)。
+3. `war_enterbattlefield`
+   - 盐场专用 WebSocket 连接建立后发送，参数为 `{ battlefieldId, useGzip: true }`。
+   - 作用是进入实时战场，不是普通战绩查询接口。
+4. `war_getbattlefieldinfo`
+   - 盐场专用 WebSocket 的实时战场快照请求，参数为 `{ battlefieldId }`。
+   - 当前 UI 只主动刷新快照，没有发现移动、攻击、占点或复活等独立动作命令。
+5. `war_ping`
+   - 专用连接内部心跳，由 `heart_beat` 映射产生；用于维持连接，不是业务战斗动作。
+
+盐场专用客户端和状态管理位于 [src/utils/xyzwLegionWarWebSocket.js](src/utils/xyzwLegionWarWebSocket.js) 与 [src/stores/legionWarStore.js](src/stores/legionWarStore.js)。实时快照的原始内容明显比当前页面展示的字段更丰富：
+
+- `battlefield.buildingData`：地图建筑、坐标、类型、血量、最大血量、占领关系和建筑积分等。
+- `battlefield.legions`：俱乐部 ID、名称、等级、战力、服务器、基地位置、占领建筑、四圣数量/积分、击杀数、俱乐部积分、成员集合和自定义统计字段。
+- `battlefield.roles`：角色名称、所属俱乐部、在线状态、行动状态、刨地数据、击杀、死亡、复活、复活丹消耗和个人积分等。
+
+[src/utils/legionWar.js](src/utils/legionWar.js) 的 `extractValidData()` 目前只抽取地图、俱乐部汇总和成员统计；如果需要研究更底层的盐场状态，应保留并记录 `war_getbattlefieldinfo` 的完整 `message.rawData`，而不是只看 `validData`。
+
+盐场相关的其他读取接口还包括：
+
+- `legion_getwarrank`：盐场历史/当前匹配榜单。
+- `legionwar_getdetails`：指定日期的俱乐部战争详细战绩。
+- `legionwar_getgoldmonthwarrank`：黄金月赛俱乐部榜单。
+- `saltroad_getwartype`：查询伟大航路/岛屿赛事类型。
+- `saltroad_getsaltroadwartotalrank`：查询岛屿赛事总榜。
+- `legion_getinfo`：获取俱乐部信息，其中现有页面会读取 `warMap` 和 `warRank`。
+- `legion_getinfobyid`、`rank_getroleinfo`：查询俱乐部和角色详情，用于补充战力、红淬、英雄和阵容数据。
+
+这些接口主要是读取或补充数据，不等同于实时战场操作接口。
+
+##### 蟠桃：已接入的接口
+
+蟠桃当前代码已经覆盖实时/历史信息、战斗记录、任务和奖励，但没有接入完整的蟠桃船操作链：
+
+- `legion_getpayloadbf`
+  - 蟠桃战斗时间内获取实时双方俱乐部信息。
+  - 当前代码读取 `legions`，根据本方俱乐部 ID 找出对手俱乐部 ID。
+- `legion_getpayloadrecord`
+  - 获取历史对战日期到对手俱乐部的映射，当前代码读取 `enemyLegionMap[shortDate].id`。
+- `legion_getpayloadkillrecord`
+  - 按日期获取双方参战/击杀记录，当前代码读取 `recordsMap[legionId]`。
+  - 页面消费的字段包括 `roleInfo.roleId`、角色名称/头像、`killCnt`、`reviveCnt`、`mCKCnt`、`carCnt` 等；具体响应可能还包含更多字段。
+- `legion_getpayloadtask`
+  - 获取蟠桃任务和进度，当前代码读取 `payloadTask.taskMap`、`legionPoint`、`selfPoint` 和 `progressMap`。
+- `legion_claimpayloadtask`
+  - 参数为 `{ taskId }`，领取单个蟠桃任务奖励。
+- `legion_claimpayloadtaskprogress`
+  - 参数为 `{ taskGroup: 1 }` 或 `{ taskGroup: 2 }`，分别领取俱乐部积分奖励和个人积分奖励。
+- `legion_getinfobyid`
+  - 获取双方俱乐部的名称、等级、战力、服务器、Logo、公告和成员等详情。
+- `rank_getroleinfo`
+  - 获取参战角色的完整角色、英雄、装备、鱼灵和阵容信息。
+- `fight_startpvp`
+  - 当前“蟠桃信息”页面中的手动切磋入口，参数为 `{ targetId }`；`tokenStore` 会自动注入 `battleVersion`。
+  - 页面消费 `battleData.result.isWin`、`leftTeam`、`rightTeam`、双方 `teamInfo` 和英雄血量，用于统计切磋胜率与掉将情况。
+
+相关实现位于 [src/components/Club/PeachInfo.vue](src/components/Club/PeachInfo.vue)、[src/components/Club/PeachBattleRecords.vue](src/components/Club/PeachBattleRecords.vue) 和 [src/utils/batch/tasksItem.js](src/utils/batch/tasksItem.js)。
+
+##### 仅注册、尚未接线实测的军团战接口
+
+`src/utils/xyzwWebSocket.js` 的默认命令注册表和响应映射中存在以下命令，但当前源码没有找到实际页面或任务发送链：
+
+- `legion_signup`：注释标记为盐场报名。
+- `legion_payloadsignup`：注释标记为蟠桃报名。
+- `league_getbattlefield`：联盟/联赛战场信息候选接口。
+- `league_getgroupopponent`：联盟/联赛分组对手候选接口。
+- `saltroad_getsaltroadwargrouprank`：岛屿赛事分组榜候选接口。
+
+这些命令目前只能确认“客户端预留了命令名和响应映射”，无法仅根据现有代码确定参数、开放条件或返回结构，需在对应活动时间用实际日志验证。
+
+`legionmatch_rolesignup` 虽然已经在 [src/components/Club/Rank.vue](src/components/Club/Rank.vue) 和 [src/views/GameFeatures.vue](src/views/GameFeatures.vue) 中调用，但它是“俱乐部排位”报名，不应与盐场的 `legion_signup` 或蟠桃的 `legion_payloadsignup` 混同。
+
+##### 主项目 `src` 当前未发现的战斗动作接口
+
+在主项目 `src` 的标准 BON/WebSocket 命令链中，没有发现能够直接执行以下蟠桃或盐场操作的已实现命令链：
+
+- 蟠桃船出发、护送、移动、登船或下船。
+- 攻击船上玩家、抢夺船只控制权、使用花盆等战斗道具。
+- 盐场角色移动、攻击、占点、建筑操作或主动复活。
+- 蟠桃战斗或盐场战斗的独立结算提交接口。
+
+`src/utils/PeachTaskIds.js` 中大量“送船、抢船、花盆、击杀、控制权”的描述来自任务配置，只能证明这些游戏事件存在，不能反推出对应的请求命令已经被项目掌握。
+
+##### `../scripts` H5 注入脚本的补充发现
+
+仓库旁侧目录 `../scripts` 中的四份 Userscript 不是主项目的标准协议封装，而是注入真实游戏 H5 页面后，通过 `window.__require()` 取得游戏内部模块并直接调用模块方法。它们依赖游戏页面已经初始化的 Cocos/FGUI、`ModuleManager`、`Configs`、`ServerData`、`LEGION_WAR` 和 `LEGION_PAYLOAD`，不能脱离 H5 运行时单独执行。
+
+四份脚本的能力如下：
+
+- `../scripts/全自动蟠桃园.js`
+  - 获取 `Configs.ModuleType.LEGION_PAYLOAD` 模块。
+  - `startBattle(force)`：进场；`sendSetBattleTeam(battleTeam, lordWeaponId, petUId)`：提交主阵容。
+  - `sendMarch(path)`：普通行军；`sendGetCar(carId, path)`：向车辆行军/上车。
+  - `sendPickItem()`：拾取道具；`sendUse(carId)`：使用车辆道具；`sendBattle(enemyId)`：攻击附近敌人。
+  - 读取 `lPWarData.battlefield`、`self`、`roles`、`carData`、`itemData`、位置、死亡和复活状态，并按距离选择车辆、敌人和道具。
+  - 具备自动进场、布阵、复活后重进、自动上车、自动拾取、用车道具和攻击；未发现报名、领奖或明确的夺船控制权方法。
+
+- `../scripts/自动盐场.js`
+  - 获取真实 `Configs.ModuleType.LEGION_WAR` 模块，也能获取 `LEGION_PAYLOAD`、`LEGION` 模块。
+  - 进场：`enterAnonymousWar()` / `goto()`；刷新：`sendGetBattlefield()`、`sendGetBattlefieldInfo()`。
+  - 布阵：`deployData.sendSetBattleTeam()`；行军：`sendStartMarch(position)`；加速：`sendSpeedUp(marchId)`。
+  - 战斗：`sendStartAttackBuilding(buildingId)` 攻击建筑，`sendStartBattle(enemyId)` 攻击敌人。
+  - 复活：`sendUseResurrect()`；组队：`sendInviteJoinTeam(playerId)`、`sendKickOutTeam(playerId)`、`sendLeave()`、`sendChangePos(ids)`。
+  - 查询：`sendGetTeamInfo(roleCodeId)`、`sendGetTeamImgInfo(imgNames)`，并通过 `LEGION.sendGetInfo()` 刷新成员信息。
+  - 自动化流程包括寻盐田、跟随成员、锁定敌人、等待入队、攻击建筑、攻击当前建筑内敌人、自动加速、死亡复活和队伍管理。
+  - `sandbox: true` 分支会创建本地伪造的战场、角色、建筑和方法；沙盒方法只修改本地对象，不能证明服务端接口成功。默认 `sandbox: false` 时才调用真实 H5 模块。
+
+- `../scripts/新锁头盐场阵容.js`
+  - 不只是阵容展示工具：通过 `sendGetTeamInfo()` / `sendGetTeamImgInfo()` 获取敌方阵容和头像数据，使用头像 PNG 签名与英雄 ID识别阵容。
+  - 给攻击/防守队列增加阵容标签、战力/精力排序和锁定按钮。
+  - 锁定目标后会调用 `sendStartMarch(position)` 前往目标建筑，必要时调用 `sendSpeedUp(marchId)`，到达后调用 `sendStartBattle(targetId)`；目标离开时可返回原建筑并切换队列中的下一个目标。
+  - 还包含自动攻击当前建筑 `sendStartAttackBuilding(buildingId)`，并通过 `isAutoAttack` 控制游戏内置自动攻击开关。
+
+- `../scripts/盐场攻击弹窗不消失(1).js`
+  - 修改 `AttackTroopsPage` 和 `DefenseTroopsPage` 的 `_refreshItem`，替换攻击按钮处理器。
+  - 点击时调用 `LEGION_WAR.sendStartBattle(targetId)`，但故意不执行关闭部队弹窗的逻辑；它是 UI/按钮补丁，不是完整自动化器。
+
+这些脚本没有自行创建 `WebSocket`，也没有统一的 `fetch`/XHR 拦截层；它们调用的 `send*` 方法由游戏 H5 内部网络模块继续编码和发送。因此脚本暴露了比主项目 `src` 更丰富的“方法级接口”，但没有直接给出每个方法对应的底层 `cmd`、完整参数编码和响应命令名。
+
+##### 将 H5 脚本能力加入本网页项目的可行性
+
+总体可行，但不能把这些脚本方法直接当作当前 Vue 页面里的普通函数调用。[src/main.js](src/main.js) 只负责启动 Vue、Pinia、Router 和 Naive UI；[index.html](index.html) 另外加载了 `src/xyzw/cocos2d-js-min.js`、`src/xyzw/game-defines.js` 和 `src/xyzw/index.js`。因此游戏打包资源和 `window.__require` 定义在仓库中已有，但“脚本能否直接工作”仍取决于 Cocos/FGUI 是否完成初始化、游戏模块是否注册、动态资源包是否加载以及有效 H5 会话是否建立。当前 Vue 应用没有对这些运行时状态提供稳定的适配层，也不能假设 `ModuleManager.GET_MODULE(...)` 已经返回可用的 `LEGION_WAR`/`LEGION_PAYLOAD` 实例。
+
+可选路线有两条：
+
+1. **H5 注入桥接路线，短期最可行**
+   - 让 Userscript/浏览器扩展继续运行在真实游戏 H5 页面中，由脚本调用内部 `send*` 方法。
+   - 主项目只负责配置、账号选择、策略和日志，通过 `postMessage`、同源页面通信或扩展消息通道与注入脚本通信。
+   - 优点是可以直接复用已经验证的进场、行军、攻击、组队、蟠桃车辆等能力，不需要立即反编译所有底层命令。
+   - 缺点是依赖真实游戏页面、注入权限、页面生命周期和跨域通信；Token、操作权限和消息来源必须严格校验，不能把任意网页消息直接转成战斗动作。
+
+2. **协议移植路线，长期更适合独立网页**
+   - 从 H5 内部 `sendStartMarch`、`sendStartBattle`、`sendStartAttackBuilding`、`sendGetTeamInfo` 等方法继续反查真实请求命令和参数。
+   - 在主项目的 `CommandRegistry`、`xyzwLegionWarWebSocket.js` 和 `tokenStore` 中新增命令、响应映射、参数校验和状态处理，再由 Vue 页面调用。
+   - 优点是最终可以不依赖游戏 UI 和 Cocos/FGUI 页面，适合批量任务和独立控制台。
+   - 缺点是需要逐个实测请求/响应，处理战场专用连接、序列号、心跳、战场状态同步、版本差异和服务端权限；仅凭脚本中的方法名无法安全推导完整协议。
+
+##### 当前缺失的集成资源和前置条件
+
+如果采用 H5 注入桥接，必须具备：
+
+- 可加载并完成初始化的游戏打包入口；当前仓库已有 `index.html` 加载的 Cocos/游戏 bundle，但仍需确认运行时启动成功。
+- 初始化后的 `window.__require`、Cocos `cc`、FGUI `fgui` 和游戏 `ModuleManager`，以及 `ModuleManager.GET_MODULE(...)` 能取得目标模块。
+- `Configs.ModuleType`、`ServerData`、`DateUtil`、`types-legion-war`、`types-legion-payload` 等运行时模块。
+- 盐场/蟠桃所需的资源包和 UI/地图资源，例如脚本中引用的 `legion_payload`、`ui_lp_tiled_map`、`ui_lp_war` 等；仅执行后台动作时不一定需要全部 UI 资源，但进入原生地图或修改界面时需要。
+- 与当前 Token 对应的有效 H5 会话、活动开放时间和服务端允许的角色状态。
+
+如果采用协议移植，当前仍缺少：
+
+- 上述 `send*` 方法实际发送的底层命令名和精确 BON 请求体。
+- `sendStartMarch`、`sendStartAttackBuilding`、`sendUseResurrect`、`sendInviteJoinTeam`、`sendChangePos` 等动作的成功响应和错误码样本。
+- 盐场战场专用连接中完整的请求/响应类型，尤其是队伍、行军、建筑、攻击和复活状态同步。
+- 蟠桃 `sendMarch`、`sendGetCar`、`sendPickItem`、`sendUse`、`sendBattle` 对应的请求/响应类型；当前主项目的 `legion_getpayload*` 只覆盖查询和奖励，不能替代这些动作接口。
+- 游戏版本对应的生成数据模块、协议响应类和可能的 source map；例如脚本会尝试读取 `data-index` 中的 `War_GetTeamInfoResp`。
+- 真实运行日志，用于确认接口开放条件、参数 ID 类型、战斗冷却、限流、复活消耗和失败重试规则。
+
+因此建议的实现顺序是：先在当前页面实际验证 Cocos/FGUI、`window.__require` 和目标模块是否就绪，再用 H5 注入桥接验证控制面和安全边界；随后针对最稳定的只读/低风险动作抓取原始报文，最后将已确认的协议逐个移植到主项目。`src/xyzw/index.js` 虽然已经由 `index.html` 加载，但单独加载 bundle 仍不等于完整的 Cocos 场景、模块状态、动态资源和登录会话；这些运行时条件仍需处理。
+
+##### 底层扩展边界
+
+通用 `XyzwWebSocketClient` 可以通过 `sendMessage()` 或 `sendMessageWithPromise()` 发送已注册命令，自动完成 BON 编码、序列号、响应匹配和日志；战斗命令还会由 [src/stores/tokenStore.ts](src/stores/tokenStore.ts) 自动注入 `battleVersion`。因此，后续验证未知命令的最小路径是：确认活动时间和连接类型，记录原始请求/响应包，先验证只读接口，再判断是否存在状态变更接口。
+
+仓库中的旧 [src/utils/wsAgent.js](src/utils/wsAgent.js) 仅用于早期 Token/连接流程，不是盐场或蟠桃业务接口的第二套实现。对内置 [src/xyzw/index.js](src/xyzw/index.js) 游戏资源进行命令字符串检索，也未发现额外的 `payload_*`、`saltroad_*` 或可直接对应船战动作的协议实现。
 
 [src/utils/xyzwWebSocket.js](src/utils/xyzwWebSocket.js) 是游戏 WebSocket 客户端，负责：
 
