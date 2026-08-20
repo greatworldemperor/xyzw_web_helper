@@ -81,6 +81,40 @@
 
 ### WebSocket 层
 
+#### 竞技场目标响应（已用实测日志确认）
+
+2026-08-20 的批量“一键竞技场战斗3次”日志确认，`arena_getareatarget` 返回的实际结构为 `roleList`，本次观测每次返回 4 个候选对象；候选数量不是固定值，协议上最多不超过 4 个。每个候选对象已包含可用于前端排序的摘要信息，不需要先调用 `rank_getroleinfo` 补充基础数据：
+
+```js
+{
+  roleId,
+  score,
+  rank,
+  info: {
+    roleId,
+    serverId,
+    name,
+    headImg,
+    power,
+    score,
+    bossId,
+    bossHeadImg,
+    bottleType,
+    lordSkinId,
+    legacy,
+    petId,
+    petEvo,
+    // 以及头像框、勋章、自定义卡片等字段
+  }
+}
+```
+
+- 外层 `roleId` 与 `info.roleId` 对应；外层 `score`、`rank` 是候选摘要，`info.power` 是可直接使用的战力字段，`info.score` 是带小数部分的分数值。
+- 本次样本中的 `info.rank` 均为 `0`，不能把它当作竞技场排名；实现排序时优先使用外层 `rank`/`score` 或 `info.power`，并对缺失字段设置回退策略。
+- 三轮样本均为 `roleList[4]`，当前 `pickArenaTargetId()` 只取 `roleList[0]`；实现不能依赖固定数量，必须按实际返回数组长度（0 至 4）遍历，实测选中的目标分别是每轮数组第一个角色。
+- 样本中的候选顺序没有稳定地按战力、分数或排名升降排列，后续应把服务端顺序视为随机顺序，在前端基于 `info.power`、外层 `score`/`rank` 等字段自行筛选或排序。
+- 后续竞技场候选排序或选敌功能可以直接依据上述已验证响应结构开发，无需等待新的实测数据；仍需保留 `roleList` 缺失、字段缺失和目标 ID 缺失时的兼容回退。
+
 [src/utils/xyzwWebSocket.js](src/utils/xyzwWebSocket.js) 是游戏 WebSocket 客户端，负责：
 
 - `CommandRegistry` 命令注册和默认参数合并。

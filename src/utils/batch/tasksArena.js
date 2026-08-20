@@ -157,7 +157,25 @@ export function createTasksArena(deps) {
             message.error(`获取竞技场目标失败：${err.message}`);
             break;
           }
+          const candidateSources = [
+            "rankList",
+            "roleList",
+            "targets",
+            "targetList",
+            "list",
+          ]
+            .filter((source) => Array.isArray(targets?.[source]))
+            .map((source) => `${source}[${targets[source].length}]`)
+            .join(", ");
+          console.info(
+            `[Arena][${token.name}][${i + 1}/3] arena_getareatarget 原始响应:`,
+            targets,
+          );
           const targetId = pickArenaTargetId(targets);
+          console.info(
+            `[Arena][${token.name}][${i + 1}/3] 候选列表: ${candidateSources || "无数组候选列表"}; 选择目标:`,
+            targetId,
+          );
           if (!targetId) {
             addLog({
               time: new Date().toLocaleTimeString(),
