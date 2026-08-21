@@ -82,9 +82,7 @@ export function createTasksCar(deps) {
       const sendCarCommand = (cmd, params, timeout, operation) =>
         runWithRateLimitRetry({
           execute: () =>
-            tokenStore.sendMessageWithPromise(tokenId, cmd, params, timeout, {
-              skip400340Retry: true,
-            }),
+            tokenStore.sendMessageWithPromise(tokenId, cmd, params, timeout),
           retryDelayMs: carCommandRetryDelayMs,
           maxRetries: CAR_COMMAND_MAX_RETRIES,
           onRetry: ({ retryCount, maxRetries }) => {

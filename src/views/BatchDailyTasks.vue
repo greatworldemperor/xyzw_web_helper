@@ -2939,6 +2939,7 @@ import { $emit } from "@/stores/events/index.ts";
 import { DailyTaskRunner } from "@/utils/dailyTaskRunner";
 import {
   getErrorDetails,
+  is400340Error,
   isRateLimitError,
   RATE_LIMIT_MAX_RETRIES,
   RATE_LIMIT_RETRY_DELAY_MS,
@@ -6025,7 +6026,6 @@ const sendRoleInfo = async (
             "role_getroleinfo",
             params,
             timeout,
-            { skip400340Retry: true },
           ),
         retryDelayMs: RATE_LIMIT_RETRY_DELAY_MS,
         maxRetries: RATE_LIMIT_MAX_RETRIES,
@@ -6040,8 +6040,13 @@ const sendRoleInfo = async (
     } catch (error) {
       lastError = error;
 
-      if (shouldStop.value || recoveryAttempt >= recoveryRetries) {
-        throw shouldStop.value ? error : markRecoveryError(error);
+      if (
+        shouldStop.value ||
+        is400340Error(error) ||
+        recoveryAttempt >= recoveryRetries
+      ) {
+        if (shouldStop.value || is400340Error(error)) throw error;
+        throw markRecoveryError(error);
       }
 
       addLog({
@@ -6073,9 +6078,7 @@ const initializeGameData = async (tokenId) => {
   const sendInitializationCommand = (command, operation) =>
     runWithRateLimitRetry({
       execute: () =>
-        tokenStore.sendMessageWithPromise(tokenId, command, {}, 5000, {
-          skip400340Retry: true,
-        }),
+        tokenStore.sendMessageWithPromise(tokenId, command, {}, 5000),
       retryDelayMs: RATE_LIMIT_RETRY_DELAY_MS,
       maxRetries: RATE_LIMIT_MAX_RETRIES,
       onRetry: ({ retryCount, maxRetries }) => {
@@ -6499,6 +6502,16 @@ const startBatch = async () => {
             addLog({
               time: new Date().toLocaleTimeString(),
               message: `${tokenName} 执行失败: ${errorDetails}`,
+              type: "error",
+            });
+            break;
+          }
+
+          if (is400340Error(error)) {
+            tokenStatus.value[tokenId] = "failed";
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${tokenName} 触发400340冷却，已按每秒重试100次仍失败，停止当前账号任务: ${errorDetails}`,
               type: "error",
             });
             break;

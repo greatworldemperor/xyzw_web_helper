@@ -5,9 +5,11 @@ import {
   buildTenBatchPlan,
   getClaimableBoxPoints,
   getItemQuantity,
+  is400340Error,
   isCarSendUnavailableError,
   isModuleUnavailableError,
   isRateLimitError,
+  markRateLimitRetriesExhausted,
   isSkippableTaskError,
   isWebSocketNotConnectedError,
   runInventoryVerifiedGameCommand,
@@ -36,6 +38,33 @@ test("400340 is a rate-limit error for every operation", () => {
     isRateLimitError(new Error("400340 - 操作太快，请稍后再试")),
     true,
   );
+});
+
+test("exhausted 400340 retries are not retried by outer rate-limit wrappers", async () => {
+  const exhaustedError = markRateLimitRetriesExhausted(
+    new Error("服务器错误: 400340 - 未知错误"),
+  );
+  let attempts = 0;
+  let sleeps = 0;
+
+  assert.equal(is400340Error(exhaustedError), true);
+  assert.equal(isRateLimitError(exhaustedError), false);
+
+  await assert.rejects(
+    runWithRateLimitRetry({
+      execute: async () => {
+        attempts += 1;
+        throw exhaustedError;
+      },
+      sleepFn: async () => {
+        sleeps += 1;
+      },
+    }),
+    /400340/,
+  );
+
+  assert.equal(attempts, 1);
+  assert.equal(sleeps, 0);
 });
 
 test("runWithRateLimitRetry waits one second for throttling and retries", async () => {
