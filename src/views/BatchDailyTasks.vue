@@ -266,63 +266,64 @@
                   <div class="token-row">
                     <n-checkbox
                       :value="token.id"
-                      style="flex: 1"
+                      class="token-checkbox"
                     >
                       <div class="token-item">
-                        <span>{{ token.name }}</span>
-                        <n-popselect
-                          :value="
-                            getTokenTemplateId(token.id) || DEFAULT_TEMPLATE_ID
-                          "
-                          :options="taskTemplateOptions"
-                          :render-label="renderTemplateOption"
-                          trigger="click"
-                          @update:value="
-                            (templateId) => applyTemplateToToken(token.id, templateId)
-                          "
-                        >
+                        <span class="token-name" :title="token.name">
+                          {{ token.name }}
+                        </span>
+                        <div class="token-meta">
+                          <n-popselect
+                            :value="
+                              getTokenTemplateId(token.id) || DEFAULT_TEMPLATE_ID
+                            "
+                            :options="taskTemplateOptions"
+                            :render-label="renderTemplateOption"
+                            trigger="click"
+                            @update:value="
+                              (templateId) => applyTemplateToToken(token.id, templateId)
+                            "
+                          >
+                            <n-tag
+                              size="small"
+                              :color="getTokenTemplateTagColor(token.id)"
+                              class="template-tag"
+                              @click.stop
+                            >
+                              模板：{{ getTokenTemplateName(token.id) }}
+                            </n-tag>
+                          </n-popselect>
                           <n-tag
                             size="small"
-                            :color="getTokenTemplateTagColor(token.id)"
-                            style="margin-left: 8px; cursor: pointer"
-                            @click.stop
+                            :type="getStatusType(token.id)"
+                            class="status-tag"
                           >
-                            模板：{{ getTokenTemplateName(token.id) }}
+                            {{ getStatusText(token.id) }}
                           </n-tag>
-                        </n-popselect>
-                        <n-tag
-                          size="small"
-                          :type="getStatusType(token.id)"
-                          style="margin-left: 8px"
-                        >
-                          {{ getStatusText(token.id) }}
-                        </n-tag>
-                        <!-- 显示token所属的分组 -->
-                        <div
-                          v-if="tokenStore.getTokenGroups(token.id).length > 0"
-                          style="
-                            margin-left: 8px;
-                            display: inline-flex;
-                            gap: 4px;
-                            flex-wrap: wrap;
-                          "
-                        >
-                          <n-tag
-                            v-for="group in tokenStore.getTokenGroups(token.id)"
-                            :key="group.id"
-                            size="small"
-                            :color="{ color: group.color, textColor: 'white' }"
-                            style="font-size: 11px"
+                          <!-- 显示token所属的分组 -->
+                          <div
+                            v-if="tokenStore.getTokenGroups(token.id).length > 0"
+                            class="token-groups"
                           >
-                            {{ group.name }}
-                          </n-tag>
+                            <n-tag
+                              v-for="group in tokenStore.getTokenGroups(token.id)"
+                              :key="group.id"
+                              size="small"
+                              :color="{ color: group.color, textColor: 'white' }"
+                              class="group-tag"
+                            >
+                              {{ group.name }}
+                            </n-tag>
+                          </div>
                         </div>
                       </div>
                     </n-checkbox>
                     <n-button
                       size="tiny"
                       circle
+                      class="token-settings-button"
                       @click.stop="openSettings(token)"
+                      :title="`设置 ${token.name}`"
                     >
                       <template #icon>
                         <n-icon>
@@ -6620,8 +6621,51 @@ const stopBatch = () => {
 }
 
 .token-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.85fr);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.token-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary, #333);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.token-meta {
   display: flex;
   align-items: center;
+  min-width: 0;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.token-meta :deep(.n-tag) {
+  flex-shrink: 0;
+  margin-left: 0 !important;
+}
+
+.token-groups {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
+  overflow: hidden;
+  flex-wrap: nowrap;
+}
+
+.group-tag {
+  max-width: 96px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
 }
 
 .log-card {
@@ -6752,8 +6796,35 @@ const stopBatch = () => {
 .token-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding-right: 8px;
+  gap: 8px;
+  min-width: 0;
+  min-height: 42px;
+  padding: 6px 8px;
+  box-sizing: border-box;
+  border: 1px solid var(--border-color, #e5e7eb);
+  border-radius: 6px;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease;
+}
+
+.token-row:hover {
+  background-color: rgba(24, 160, 88, 0.04);
+  border-color: rgba(24, 160, 88, 0.35);
+}
+
+.token-checkbox {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.token-row :deep(.n-checkbox__label) {
+  flex: 1;
+  min-width: 0;
+}
+
+.token-settings-button {
+  flex-shrink: 0;
 }
 
 .batch-result-content {
