@@ -17,6 +17,7 @@ import {
 import {
   is400340Error,
   isRateLimitError,
+  markRateLimitRetriesExhausted,
   RATE_LIMIT_MAX_RETRIES,
   RATE_LIMIT_RETRY_DELAY_MS,
 } from "@/utils/helperTaskRunner";
@@ -1088,7 +1089,6 @@ export const useTokenStore = defineStore("tokens", () => {
     cmd: string,
     params = {},
     timeout = 5000,
-    retryOptions: { skip400340Retry?: boolean } = {},
   ) => {
     const connection = wsConnections.value[tokenId];
     if (!connection || connection.status !== "connected") {
@@ -1130,11 +1130,15 @@ export const useTokenStore = defineStore("tokens", () => {
 
         return result;
       } catch (error) {
+        const isRateLimit400340 = is400340Error(error);
         if (
-          retryOptions.skip400340Retry ||
-          !is400340Error(error) ||
+          !isRateLimit400340 ||
           retryCount >= RATE_LIMIT_MAX_RETRIES
         ) {
+          if (isRateLimit400340 && retryCount >= RATE_LIMIT_MAX_RETRIES) {
+            return Promise.reject(markRateLimitRetriesExhausted(error));
+          }
+
           // 特殊日志：fight_starttower 错误
           if (cmd === "fight_starttower") {
             wsLogger.error(

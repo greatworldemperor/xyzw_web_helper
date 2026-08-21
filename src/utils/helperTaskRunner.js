@@ -29,6 +29,15 @@ export function getErrorMessage(error) {
   return error instanceof Error ? error.message : String(error || "未知错误");
 }
 
+export function markRateLimitRetriesExhausted(error) {
+  const retryError =
+    error && typeof error === "object"
+      ? error
+      : new Error(getErrorMessage(error));
+  retryError.rateLimitRetriesExhausted = true;
+  return retryError;
+}
+
 export function getErrorDetails(error) {
   const details = [];
   const code = error?.code ?? error?.errorCode;
@@ -83,6 +92,8 @@ export function isCarSendUnavailableError(error) {
 }
 
 export function isRateLimitError(error) {
+  if (error?.rateLimitRetriesExhausted) return false;
+
   const message = getErrorSearchText(error);
 
   return (

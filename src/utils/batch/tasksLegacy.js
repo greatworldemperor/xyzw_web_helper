@@ -3,6 +3,8 @@
  * 包含: batchLegacyClaim, batchLegacyGiftSendEnhanced
  */
 
+import { is400340Error } from "../helperTaskRunner.js";
+
 /**
  * 创建功法类任务执行器
  * @param {Object} deps - 依赖项
@@ -291,6 +293,17 @@ export function createTasksLegacy(deps) {
           totalSuccess++;
           break;
         } catch (error) {
+          if (is400340Error(error)) {
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${token.name} 触发400340冷却，已按每秒重试100次仍失败，停止赠送功法残卷`,
+              type: "error",
+            });
+            tokenStatus.value[tokenId] = "failed";
+            totalFailed++;
+            break;
+          }
+
           consecutiveErrors++;
           console.error(`赠送失败: ${error.message}`);
 

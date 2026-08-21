@@ -1,4 +1,8 @@
 import { getTowerActId } from "../towerActId.js";
+import {
+  is400340Error,
+  RATE_LIMIT_MAX_RETRIES,
+} from "../helperTaskRunner.js";
 
 /**
  * 爬塔类任务
@@ -169,6 +173,15 @@ export function createTasksTower(deps) {
                }
             }
           } catch (err) {
+            if (is400340Error(err)) {
+              addLog({
+                time: new Date().toLocaleTimeString(),
+                message: `${token.name} 触发400340冷却，已按每秒重试${RATE_LIMIT_MAX_RETRIES}次仍失败，停止爬塔`,
+                type: "error",
+              });
+              break;
+            }
+
             if (err.message && err.message.includes("200400")) {
               addLog({
                 time: new Date().toLocaleTimeString(),
@@ -493,6 +506,15 @@ export function createTasksTower(deps) {
               // 忽略刷新失败
             }
           } catch (err) {
+            if (is400340Error(err)) {
+              addLog({
+                time: new Date().toLocaleTimeString(),
+                message: `${token.name} 触发400340冷却，已按每秒重试${RATE_LIMIT_MAX_RETRIES}次仍失败，停止爬怪异塔`,
+                type: "error",
+              });
+              break;
+            }
+
             consecutiveFailures++;
             addLog({
               time: new Date().toLocaleTimeString(),
@@ -543,7 +565,9 @@ export function createTasksTower(deps) {
         tokenStatus.value[tokenId] = "failed";
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `${token.name} 爬怪异塔失败: ${error.message}`,
+          message: is400340Error(error)
+            ? `${token.name} 触发400340冷却，已按每秒重试${RATE_LIMIT_MAX_RETRIES}次仍失败，停止爬怪异塔`
+            : `${token.name} 爬怪异塔失败: ${error.message}`,
           type: "error",
         });
       } finally {

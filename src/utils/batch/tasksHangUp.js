@@ -61,9 +61,7 @@ export function createTasksHangUp(deps) {
   ) =>
     runWithRateLimitRetry({
       execute: () =>
-        tokenStore.sendMessageWithPromise(tokenId, command, params, timeout, {
-          skip400340Retry: true,
-        }),
+        tokenStore.sendMessageWithPromise(tokenId, command, params, timeout),
       retryDelayMs: hangUpRetryDelayMs,
       maxRetries: RATE_LIMIT_MAX_RETRIES,
       shouldRetry,
