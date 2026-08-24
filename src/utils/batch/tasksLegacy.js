@@ -211,7 +211,11 @@ export function createTasksLegacy(deps) {
               totalFailed++;
               break;
             }
-            giftConfig.quantity = legacyFragmentCount;
+            const configuredQuantity = Number(batchSettings.giftQuantity);
+            giftConfig.quantity =
+              Number.isFinite(configuredQuantity) && configuredQuantity > 0
+                ? Math.min(configuredQuantity, legacyFragmentCount)
+                : legacyFragmentCount;
           }
 
           if (legacyFragmentCount < giftConfig.quantity) {

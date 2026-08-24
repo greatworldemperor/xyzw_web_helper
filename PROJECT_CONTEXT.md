@@ -339,9 +339,10 @@ wss://xxz-xyzw.hortorgames.com/agent?p=<encoded-token>&e=x&lang=chinese
 
 ### 任务层
 
-- [src/utils/dailyTaskRunner.js](src/utils/dailyTaskRunner.js)：单账号任务编排，按照角色信息和任务设置生成任务列表，顺序执行游戏命令。
+- [src/utils/dailyTaskRunner.js](src/utils/dailyTaskRunner.js)：单账号任务编排，按照角色信息和任务设置生成任务列表，顺序执行游戏命令；可通过 `selectedTaskIds` 只生成自由模板勾选的日常任务，未传该字段时保持原完整日常行为。
 - [src/utils/helperTaskRunner.js](src/utils/helperTaskRunner.js)：批量命令、重试、限流和库存校验等相对独立的纯工具逻辑。
-- [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue)：多账号批量任务、定时任务、连接准备、日志和大量业务任务入口，目前是超大单文件。
+- [src/utils/batch/flexibleTemplate.js](src/utils/batch/flexibleTemplate.js)：自由模板的完整任务目录、参数规范化、持久化解析和共享连接协调器；目录显式包含 32 组原完整日常内部任务和 39 个原批量功能入口。
+- [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue)：多账号批量任务、定时任务、连接准备、日志和大量业务任务入口，目前是超大单文件；旧任务模板和批量功能列表继续保留，新增独立的自由模板管理、复选编辑和组合执行入口。
 - [src/views/DailyTasks.vue](src/views/DailyTasks.vue)：单账号日常任务页面，部分状态仍与 Mock/localStorage 逻辑耦合。
 
 ### 事件与界面层
@@ -414,6 +415,8 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 
 批量日常主流程按 `maxActive` 分成账号波次：同一波账号并发执行，但下一波必须等待当前波全部结束后才启动。每个账号内部由 `DailyTaskRunner` 线性执行任务，日常任务完成后先逐项领取每日任务积分奖励，再领取每日完成奖励，随后处理周常和通行证奖励。连接失败时先由批量流程刷新 Token，再使用最新 Token 重连；刷新遇到限流或 HTTP 429 时每隔 1 秒重试直到成功。任务执行遇到限流、模块未开启、已知屏蔽或其他服务器错误时，都记录警告并只跳过当前任务，继续执行后续任务；批量车辆、挂机奖励和加钟流程中的 `400340` 统一视为限流，相关命令按 1 秒间隔重试，最多重试 100 次并记录当前重试次数；领取挂机奖励的 `system_claimhangupreward` 遇到请求超时也按同样策略重试；车辆和挂机初始化也遵循该策略，耗尽后才跳过当前车辆或账号。智能发车只使用免费刷新和刷新券，不使用金砖刷新，策略默认是逻辑 A，也可在批量设置中选择逻辑 B。智能发车按角色逐辆处理车辆。只有用户主动停止批处理或连接初始化失败才会结束当前账号。流程结束后在页面弹窗显示完成数量、总数量和最终失败角色清单，并可一键重新选中最终失败的账号。错误账号按最终状态汇总，不记录中间重试失败。
 
+自由模板是与旧任务模板并存的第二套模板，不修改旧 `task-templates` 或账号 `daily-settings:*` 引用。自由模板可任意复选完整任务目录并保存阵容、BOSS 次数、开箱/钓鱼/招募、怪异塔、竞猜、功法赠送和月赛助威等参数；导入数据会过滤未知任务并规范化参数。执行时仍按 `maxActive` 分账号波次，同一波中的账号并发；同一模板内的多个任务同步启动，使任务自身的等待和冷却时间互相重叠。每个账号只占一个连接槽位并共享一个 WebSocket 生命周期，最慢任务结束后才统一断开；底层客户端继续通过独立发送队列和请求 `seq` 顺序发包、匹配响应。任一子任务失败只计入对应账号，不会把同一波其他账号误判为失败。每个任务的 UI 标签、实际命令、条件、循环和 `completed` 语义详见 [docs/flexible-batch-template-task-logic.md](docs/flexible-batch-template-task-logic.md)。
+
 批处理工具层已覆盖批次拆分、限流重试、库存前后校验等场景，并有 Node 原生测试；核心 Store、WebSocket、路由和大部分页面交互尚未形成系统化测试。
 
 ## 5. 路由结构
@@ -439,6 +442,7 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 浏览器端主要使用：
 
 - `localStorage`：游戏 Token、选中 Token、分组、主题和跨标签页连接状态。
+- `localStorage` 的 `flexible-task-templates`：自由模板定义；旧模板仍使用 `task-templates`，两者独立保存。配置导入/导出版本 `1.2` 包含自由模板。
 - IndexedDB：部分二进制数据和辅助存储。
 - WebSocket：直接连接游戏服务。
 - HTTP/HTTPS：Token 转换、服务器列表和 Worker/开发代理相关请求。
@@ -488,6 +492,13 @@ node --test test/helperTaskRunner.test.js test/towerClimbLimit.test.js
 - `pnpm testd` 成功。
 - `node --check src/utils/batch/connectionManager.js` 成功。
 - `pnpm testr` 仍因测试脚本使用未配置的 `@utils/bonProtocol.js` 路径别名失败，与本次改动无关。
+
+截至 2026-08-24 的自由模板功能验证：
+
+- `node --test` 执行仓库全部 `test/*.test.js`，共 42 个用例全部通过；其中新增用例覆盖 32 组隐藏日常、39 个原批量入口、模板参数规范化、损坏存储处理、共享连接只建立/关闭一次、连接失败释放槽位后可重试，以及 `DailyTaskRunner` 只生成勾选任务。
+- `pnpm run build` 成功；仍有既有的自动路由、`eval`、Sass legacy API 和大 chunk 警告。
+- 使用本地 Vite 页面验证自由模板新增、编辑、71 项全选/清空、独立存储和旧模板存储不变；桌面及 `390 × 844` 移动视口均无横向溢出，编辑器任务网格在移动端降为单列并使用内部滚动。
+- `git diff --check` 通过；编辑器未报告本次触及文件的语法或类型诊断。仓库未安装可执行的 `prettier`，因此未运行 Prettier 检查。
 
 ## 8. 部署信息
 
