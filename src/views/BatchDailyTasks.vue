@@ -93,7 +93,15 @@
               type="info"
               size="medium"
             >
-              任务模板
+              旧任务模板
+            </n-button>
+            <n-button
+              @click="openFlexibleTemplateManager"
+              type="primary"
+              secondary
+              size="medium"
+            >
+              自由模板
             </n-button>
             <n-button @click="openBatchSettings" type="default" size="medium">
               <template #icon>
@@ -336,6 +344,39 @@
               </n-grid>
             </n-checkbox-group>
           </n-space>
+        </n-card>
+
+        <n-card title="自由组合模板" class="flexible-template-runner">
+          <div class="flexible-template-runner__content">
+            <n-select
+              v-model:value="selectedFlexibleTemplateId"
+              :options="flexibleTemplateOptions"
+              placeholder="选择自由模板"
+              :disabled="isRunning"
+              class="flexible-template-select"
+            />
+            <n-button
+              type="primary"
+              :disabled="
+                isRunning ||
+                selectedTokens.length === 0 ||
+                !selectedFlexibleTemplate
+              "
+              @click="executeSelectedFlexibleTemplate"
+            >
+              {{ isRunning ? "执行中..." : "执行所选模板" }}
+            </n-button>
+            <n-button :disabled="isRunning" @click="openFlexibleTemplateManager">
+              管理模板
+            </n-button>
+          </div>
+          <div class="flexible-template-runner__meta">
+            <span v-if="selectedFlexibleTemplate">
+              已选 {{ getFlexibleTemplateTaskCount(selectedFlexibleTemplate) }}
+              项任务，将用于 {{ selectedTokens.length }} 个账号
+            </span>
+            <span v-else>尚未创建自由模板</span>
+          </div>
         </n-card>
 
         <!-- Batch Functions -->
@@ -1252,6 +1293,305 @@
         <div class="modal-actions" style="margin-top: 20px; text-align: right">
           <n-button @click="showAccountTemplateModal = false">关闭</n-button>
         </div>
+      </div>
+    </n-modal>
+
+    <!-- Flexible Template Manager Modal -->
+    <n-modal
+      v-model:show="showFlexibleTemplateManagerModal"
+      preset="card"
+      title="自由模板管理"
+      style="width: 92%; max-width: 860px"
+    >
+      <div class="flexible-manager-toolbar">
+        <div>
+          <div class="flexible-manager-title">完整任务自由组合</div>
+        </div>
+        <n-button type="primary" @click="openNewFlexibleTemplate">
+          新增自由模板
+        </n-button>
+      </div>
+
+      <div class="flexible-template-list">
+        <div
+          v-for="template in flexibleTemplates"
+          :key="template.id"
+          class="flexible-template-row"
+        >
+          <div class="flexible-template-row__main">
+            <div class="flexible-template-row__name">{{ template.name }}</div>
+            <div class="flexible-template-row__meta">
+              {{ getFlexibleTemplateTaskCount(template) }} 项任务
+              <span v-if="template.updatedAt">
+                · 更新于 {{ new Date(template.updatedAt).toLocaleString() }}
+              </span>
+            </div>
+          </div>
+          <div class="flexible-template-row__actions">
+            <n-button
+              size="small"
+              type="primary"
+              :disabled="isRunning || selectedTokens.length === 0"
+              @click="runFlexibleTemplate(template)"
+            >
+              执行
+            </n-button>
+            <n-button size="small" @click="openEditFlexibleTemplate(template)">
+              编辑
+            </n-button>
+            <n-button
+              size="small"
+              type="error"
+              secondary
+              @click="deleteFlexibleTemplate(template.id)"
+            >
+              删除
+            </n-button>
+          </div>
+        </div>
+        <n-empty
+          v-if="flexibleTemplates.length === 0"
+          description="暂无自由模板"
+          class="flexible-template-empty"
+        />
+      </div>
+
+      <div class="modal-actions flexible-manager-footer">
+        <n-button @click="showFlexibleTemplateManagerModal = false">
+          关闭
+        </n-button>
+      </div>
+    </n-modal>
+
+    <!-- Flexible Template Editor Modal -->
+    <n-modal
+      v-model:show="showFlexibleTemplateEditorModal"
+      preset="card"
+      :title="editingFlexibleTemplateId ? '编辑自由模板' : '新增自由模板'"
+      style="width: 94%; max-width: 980px"
+    >
+      <div class="flexible-template-editor">
+        <div class="flexible-editor-name">
+          <label class="setting-label">模板名称</label>
+          <n-input
+            v-model:value="flexibleTemplateName"
+            placeholder="请输入模板名称"
+            maxlength="40"
+            show-count
+          />
+        </div>
+
+        <div class="flexible-editor-heading">
+          <div>
+            <div class="flexible-editor-heading__title">选择任务</div>
+            <div class="flexible-editor-heading__meta">
+              已选择 {{ flexibleTemplateTasks.length }} 项
+            </div>
+          </div>
+          <n-space size="small">
+            <n-button size="small" @click="selectAllFlexibleTasks">
+              全选
+            </n-button>
+            <n-button size="small" @click="clearFlexibleTasks">
+              清空
+            </n-button>
+          </n-space>
+        </div>
+
+        <n-checkbox-group v-model:value="flexibleTemplateTasks">
+          <section
+            v-for="group in flexibleTaskGroups"
+            :key="group.name"
+            class="flexible-task-group"
+          >
+            <div class="flexible-task-group__header">
+              <span>{{ group.label }}</span>
+              <span>{{ group.tasks.length }} 项</span>
+            </div>
+            <div class="flexible-task-grid">
+              <n-checkbox
+                v-for="task in group.tasks"
+                :key="task.value"
+                :value="task.value"
+                class="flexible-task-option"
+              >
+                <span>{{ task.label }}</span>
+                <n-tag v-if="task.requires" size="tiny" type="warning">
+                  需参数
+                </n-tag>
+              </n-checkbox>
+            </div>
+          </section>
+        </n-checkbox-group>
+
+        <n-divider title-placement="left">模板参数</n-divider>
+        <div class="flexible-settings-grid">
+          <div class="setting-item">
+            <label class="setting-label">竞技场阵容</label>
+            <n-select
+              v-model:value="flexibleTemplateSettings.arenaFormation"
+              :options="formationOptions"
+            />
+          </div>
+          <div class="setting-item">
+            <label class="setting-label">爬塔阵容</label>
+            <n-select
+              v-model:value="flexibleTemplateSettings.towerFormation"
+              :options="formationOptions"
+            />
+          </div>
+          <div class="setting-item">
+            <label class="setting-label">BOSS阵容</label>
+            <n-select
+              v-model:value="flexibleTemplateSettings.bossFormation"
+              :options="formationOptions"
+            />
+          </div>
+          <div class="setting-item">
+            <label class="setting-label">军团BOSS次数</label>
+            <n-select
+              v-model:value="flexibleTemplateSettings.bossTimes"
+              :options="bossTimesOptions"
+            />
+          </div>
+          <div class="setting-item">
+            <label class="setting-label">宝箱类型</label>
+            <n-select
+              v-model:value="flexibleTemplateSettings.boxType"
+              :options="boxTypeOptions"
+            />
+          </div>
+          <div class="setting-item">
+            <label class="setting-label">开箱数量</label>
+            <n-input-number
+              v-model:value="flexibleTemplateSettings.boxCount"
+              :min="10"
+              :max="10000"
+              :step="10"
+              style="width: 100%"
+            />
+          </div>
+          <div class="setting-item">
+            <label class="setting-label">开箱目标积分</label>
+            <n-input-number
+              v-model:value="flexibleTemplateSettings.targetBoxPoints"
+              :min="1"
+              :max="1000000"
+              :step="100"
+              style="width: 100%"
+            />
+          </div>
+          <div class="setting-item">
+            <label class="setting-label">鱼竿类型</label>
+            <n-select
+              v-model:value="flexibleTemplateSettings.fishType"
+              :options="fishTypeOptions"
+            />
+          </div>
+          <div class="setting-item">
+            <label class="setting-label">钓鱼数量</label>
+            <n-input-number
+              v-model:value="flexibleTemplateSettings.fishCount"
+              :min="10"
+              :max="10000"
+              :step="10"
+              style="width: 100%"
+            />
+          </div>
+          <div class="setting-item">
+            <label class="setting-label">招募数量</label>
+            <n-input-number
+              v-model:value="flexibleTemplateSettings.recruitCount"
+              :min="10"
+              :max="10000"
+              :step="10"
+              style="width: 100%"
+            />
+          </div>
+          <div class="setting-item">
+            <label class="setting-label">怪异塔次数</label>
+            <n-input-number
+              v-model:value="flexibleTemplateSettings.weirdTowerMaxClimb"
+              :min="1"
+              :max="10000"
+              :precision="0"
+              style="width: 100%"
+            />
+          </div>
+          <div class="setting-item">
+            <label class="setting-label">竞猜选项</label>
+            <n-select
+              v-model:value="flexibleTemplateSettings.footballPick"
+              :options="footballPickOptions"
+            />
+          </div>
+        </div>
+
+        <div
+          v-if="flexibleTemplateTasks.includes('batchLegacyGiftSendEnhanced')"
+          class="flexible-conditional-settings"
+        >
+          <div class="flexible-conditional-settings__title">功法残卷赠送</div>
+          <div class="flexible-settings-grid">
+            <div class="setting-item">
+              <label class="setting-label">接收者ID</label>
+              <n-input-number
+                v-model:value="flexibleTemplateSettings.legacyRecipientId"
+                :min="1"
+                :show-button="false"
+                style="width: 100%"
+              />
+            </div>
+            <div class="setting-item">
+              <label class="setting-label">赠送数量</label>
+              <n-input-number
+                v-model:value="flexibleTemplateSettings.legacyGiftQuantity"
+                :min="1"
+                :max="9999"
+                style="width: 100%"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div
+          v-if="flexibleTemplateTasks.includes('batchWarGuessCheer')"
+          class="flexible-conditional-settings"
+        >
+          <div class="flexible-conditional-settings__title">月赛助威</div>
+          <div class="flexible-settings-grid">
+            <div class="setting-item">
+              <label class="setting-label">俱乐部ID</label>
+              <n-input-number
+                v-model:value="flexibleTemplateSettings.warGuessLegionId"
+                :min="1"
+                :show-button="false"
+                style="width: 100%"
+              />
+            </div>
+            <div class="setting-item">
+              <label class="setting-label">拍手器数量</label>
+              <n-input-number
+                v-model:value="flexibleTemplateSettings.warGuessCoin"
+                :min="1"
+                :max="20"
+                style="width: 100%"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions flexible-editor-footer">
+        <n-button
+          @click="showFlexibleTemplateEditorModal = false"
+          style="margin-right: 8px"
+        >
+          取消
+        </n-button>
+        <n-button type="primary" @click="saveFlexibleTemplate">
+          保存模板
+        </n-button>
       </div>
     </n-modal>
 
@@ -2950,6 +3290,16 @@ import { useMessage } from "naive-ui";
 import { Settings } from "@vicons/ionicons5";
 import { DEFAULT_WEIRD_TOWER_MAX_CLIMB } from "@/utils/towerClimbLimit.js";
 import { compareTokensByServerAndRole } from "@/utils/tokenSort.js";
+import {
+  FLEXIBLE_TEMPLATE_STORAGE_KEY,
+  createSharedConnectionCoordinator,
+  defaultFlexibleTemplateSettings,
+  flexibleTaskGroups,
+  getFlexibleTask,
+  getFlexibleTemplateTaskCount,
+  normalizeFlexibleTemplate,
+  parseFlexibleTemplates,
+} from "@/utils/batch/flexibleTemplate.js";
 
 // Import batch task modules
 import {
@@ -3454,6 +3804,161 @@ const currentTemplate = reactive({
   claimEmail: true,
   blackMarketPurchase: true,
 });
+
+// Flexible templates intentionally use separate storage and do not alter legacy templates.
+const showFlexibleTemplateManagerModal = ref(false);
+const showFlexibleTemplateEditorModal = ref(false);
+const flexibleTemplates = ref([]);
+const selectedFlexibleTemplateId = ref(null);
+const editingFlexibleTemplateId = ref(null);
+const flexibleTemplateName = ref("");
+const flexibleTemplateTasks = ref([]);
+const flexibleTemplateSettings = reactive({
+  ...defaultFlexibleTemplateSettings,
+});
+
+const flexibleTemplateOptions = computed(() =>
+  flexibleTemplates.value.map((template) => ({
+    label: `${template.name}（${getFlexibleTemplateTaskCount(template)} 项）`,
+    value: template.id,
+  })),
+);
+
+const selectedFlexibleTemplate = computed(() =>
+  flexibleTemplates.value.find(
+    (template) => template.id === selectedFlexibleTemplateId.value,
+  ),
+);
+
+const saveFlexibleTemplates = () => {
+  localStorage.setItem(
+    FLEXIBLE_TEMPLATE_STORAGE_KEY,
+    JSON.stringify(flexibleTemplates.value),
+  );
+};
+
+const loadFlexibleTemplates = () => {
+  const templates = parseFlexibleTemplates(
+    localStorage.getItem(FLEXIBLE_TEMPLATE_STORAGE_KEY),
+  );
+  flexibleTemplates.value = templates;
+
+  if (
+    !templates.some(
+      (template) => template.id === selectedFlexibleTemplateId.value,
+    )
+  ) {
+    selectedFlexibleTemplateId.value = templates[0]?.id || null;
+  }
+
+  return templates;
+};
+
+const resetFlexibleTemplateForm = () => {
+  editingFlexibleTemplateId.value = null;
+  flexibleTemplateName.value = "";
+  flexibleTemplateTasks.value = [];
+  Object.assign(flexibleTemplateSettings, defaultFlexibleTemplateSettings);
+};
+
+const openFlexibleTemplateManager = () => {
+  loadFlexibleTemplates();
+  showFlexibleTemplateManagerModal.value = true;
+};
+
+const openNewFlexibleTemplate = () => {
+  resetFlexibleTemplateForm();
+  showFlexibleTemplateEditorModal.value = true;
+};
+
+const openEditFlexibleTemplate = (template) => {
+  const normalized = normalizeFlexibleTemplate(template);
+  if (!normalized) return;
+
+  editingFlexibleTemplateId.value = normalized.id;
+  flexibleTemplateName.value = normalized.name;
+  flexibleTemplateTasks.value = [...normalized.selectedTasks];
+  Object.assign(flexibleTemplateSettings, normalized.settings);
+  showFlexibleTemplateEditorModal.value = true;
+};
+
+const selectAllFlexibleTasks = () => {
+  flexibleTemplateTasks.value = flexibleTaskGroups.flatMap((group) =>
+    group.tasks.map((task) => task.value),
+  );
+};
+
+const clearFlexibleTasks = () => {
+  flexibleTemplateTasks.value = [];
+};
+
+const saveFlexibleTemplate = () => {
+  const name = flexibleTemplateName.value.trim();
+  if (!name) {
+    message.error("请输入模板名称");
+    return;
+  }
+  if (flexibleTemplateTasks.value.length === 0) {
+    message.error("请至少选择一个任务");
+    return;
+  }
+  if (
+    flexibleTemplateTasks.value.includes("batchLegacyGiftSendEnhanced") &&
+    !flexibleTemplateSettings.legacyRecipientId
+  ) {
+    message.error("请填写功法残卷接收者ID");
+    return;
+  }
+  if (
+    flexibleTemplateTasks.value.includes("batchWarGuessCheer") &&
+    !flexibleTemplateSettings.warGuessLegionId
+  ) {
+    message.error("请填写月赛助威俱乐部ID");
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const existingTemplate = flexibleTemplates.value.find(
+    (template) => template.id === editingFlexibleTemplateId.value,
+  );
+  const normalized = normalizeFlexibleTemplate({
+    ...existingTemplate,
+    id: existingTemplate?.id || `flexible-${Date.now()}`,
+    name,
+    selectedTasks: flexibleTemplateTasks.value,
+    settings: { ...flexibleTemplateSettings },
+    createdAt: existingTemplate?.createdAt || now,
+    updatedAt: existingTemplate ? now : undefined,
+  });
+
+  if (existingTemplate) {
+    const index = flexibleTemplates.value.findIndex(
+      (template) => template.id === existingTemplate.id,
+    );
+    flexibleTemplates.value.splice(index, 1, normalized);
+  } else {
+    flexibleTemplates.value.push(normalized);
+  }
+
+  saveFlexibleTemplates();
+  selectedFlexibleTemplateId.value = normalized.id;
+  showFlexibleTemplateEditorModal.value = false;
+  message.success(`已保存自由模板“${normalized.name}”`);
+  resetFlexibleTemplateForm();
+};
+
+const deleteFlexibleTemplate = (templateId) => {
+  if (!confirm("确定要删除这个自由模板吗？")) return;
+
+  flexibleTemplates.value = flexibleTemplates.value.filter(
+    (template) => template.id !== templateId,
+  );
+  saveFlexibleTemplates();
+  if (selectedFlexibleTemplateId.value === templateId) {
+    selectedFlexibleTemplateId.value = flexibleTemplates.value[0]?.id || null;
+  }
+  message.success("自由模板已删除");
+};
 
 const templateColorPalette = [
   "#c92a2a",
@@ -4202,7 +4707,7 @@ const exportConfig = () => {
     });
 
     const exportData = {
-      version: "1.1",
+      version: "1.2",
       exportTime: new Date().toISOString(),
       tokens: tokens.value.map((t) => ({
         id: t.id,
@@ -4243,6 +4748,7 @@ const exportConfig = () => {
         smartArenaMode: batchSettings.smartArenaMode,
       },
       tokenSettings: tokenSettings,
+      flexibleTemplates: flexibleTemplates.value,
     };
 
     const blob = new Blob([JSON.stringify(exportData, null, 2)], {
@@ -4347,6 +4853,20 @@ const importConfig = async ({ file }) => {
               );
             }
           });
+        }
+
+        if (Array.isArray(importData.flexibleTemplates)) {
+          const importedFlexibleTemplates = parseFlexibleTemplates(
+            importData.flexibleTemplates,
+          );
+          const templatesById = new Map(
+            flexibleTemplates.value.map((template) => [template.id, template]),
+          );
+          importedFlexibleTemplates.forEach((template) => {
+            templatesById.set(template.id, template);
+          });
+          flexibleTemplates.value = [...templatesById.values()];
+          saveFlexibleTemplates();
         }
 
         message.success(
@@ -4636,6 +5156,7 @@ onMounted(() => {
   // Start countdown timer
   startCountdown();
   loadTaskTemplates();
+  loadFlexibleTemplates();
   // 监听Token刷新等待事件
   $emit.on("token:refresh:waiting", handleTokenRefreshWaiting);
 });
@@ -6357,6 +6878,468 @@ const { batchLegacyClaim, batchLegacyGiftSendEnhanced } = tasksLegacy;
 const tasksFootball = createTasksFootball(createTaskDeps());
 const { batchFootballBet } = tasksFootball;
 
+const createFlexibleTaskHandlers = (deps) => ({
+  ...createTasksHangUp(deps),
+  ...createTasksBottle(deps),
+  ...createTasksTower(deps),
+  ...createTasksCar(deps),
+  ...createTasksItem(deps),
+  ...createTasksDungeon(deps),
+  ...createTasksArena(deps),
+  ...createTasksStore(deps),
+  ...createTasksLegacy(deps),
+  ...createTasksFootball(deps),
+});
+
+const getFlexibleTaskUnavailableReason = (taskId, settings) => {
+  if (
+    ["batchbaoku13", "batchbaoku45"].includes(taskId) &&
+    !isbaokuActivityOpen.value
+  ) {
+    return "不在宝库开放时间";
+  }
+  if (
+    ["batchmengjing", "batchBuyDreamItems"].includes(taskId) &&
+    !ismengjingActivityOpen.value
+  ) {
+    return "不在梦境开放时间";
+  }
+  if (
+    ["batchSmartSendCar", "batchClaimCars"].includes(taskId) &&
+    !isCarActivityOpen.value
+  ) {
+    return "不在发车开放时间";
+  }
+  if (
+    ["batchTopUpArena", "batcharenafight"].includes(taskId) &&
+    !isarenaActivityOpen.value
+  ) {
+    return "不在竞技场开放时间";
+  }
+  if (
+    [
+      "climbWeirdTower",
+      "batchUseItems",
+      "batchMergeItems",
+      "batchClaimFreeEnergy",
+    ].includes(taskId) &&
+    !isWeirdTowerActivityOpen.value
+  ) {
+    return "不在怪异塔开放时间";
+  }
+  if (taskId === "batchWarGuessCheer" && !isWarGuessActivityOpen.value) {
+    return warGuessActivityTip.value;
+  }
+  return "";
+};
+
+const getFlexibleTemplateValidationError = (template) => {
+  if (
+    template.selectedTasks.includes("batchLegacyGiftSendEnhanced") &&
+    !template.settings.legacyRecipientId
+  ) {
+    return "自由模板缺少功法残卷接收者ID";
+  }
+  if (
+    template.selectedTasks.includes("batchLegacyGiftSendEnhanced") &&
+    !batchSettings.password
+  ) {
+    return "请先在批量设置中配置功法赠送安全密码";
+  }
+  if (
+    template.selectedTasks.includes("batchWarGuessCheer") &&
+    !template.settings.warGuessLegionId
+  ) {
+    return "自由模板缺少月赛助威俱乐部ID";
+  }
+  return "";
+};
+
+const createFlexibleTokenStore = () =>
+  new Proxy(tokenStore, {
+    get(target, property, receiver) {
+      if (property === "closeWebSocketConnection") {
+        return async () => {};
+      }
+
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+
+const createFlexibleMessage = () =>
+  new Proxy(message, {
+    get(target, property, receiver) {
+      if (property === "success") return () => {};
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+
+const createFlexibleTaskDeps = (
+  template,
+  tokenIds,
+  taskStatus,
+  coordinator,
+  sharedTokenStore,
+) => {
+  const settings = template.settings;
+  const addFlexibleTaskLog = (log) => {
+    if (
+      log?.message?.includes("连接已关闭") ||
+      log?.message?.includes("任务槽位已释放")
+    ) {
+      return;
+    }
+    addLog(log);
+  };
+  const loadFlexibleTokenSettings = (tokenId) => ({
+    ...loadSettings(tokenId),
+    arenaFormation: settings.arenaFormation,
+    towerFormation: settings.towerFormation,
+    bossFormation: settings.bossFormation,
+    bossTimes: settings.bossTimes,
+  });
+  const localBatchSettings = {
+    ...batchSettings,
+    boxCount: settings.boxCount,
+    fishCount: settings.fishCount,
+    recruitCount: settings.recruitCount,
+    defaultBoxType: settings.boxType,
+    defaultFishType: settings.fishType,
+    targetBoxPoints: settings.targetBoxPoints,
+    receiverId: settings.legacyRecipientId,
+    giftQuantity: settings.legacyGiftQuantity,
+  };
+
+  return {
+    ...createTaskDeps(),
+    selectedTokens: ref([...tokenIds]),
+    tokenStatus: taskStatus,
+    isRunning: ref(false),
+    waitForConnectionSlot: async () => {},
+    ensureConnection: coordinator.ensureConnection,
+    releaseConnectionSlot: () => {},
+    batchSettings: localBatchSettings,
+    tokenStore: sharedTokenStore,
+    addLog: addFlexibleTaskLog,
+    message: createFlexibleMessage(),
+    currentRunningTokenId: ref(null),
+    batchResult: reactive({
+      completedCount: 0,
+      totalCount: tokenIds.length,
+      failedTokenIds: [],
+    }),
+    showBatchResultModal: ref(false),
+    loadSettings: loadFlexibleTokenSettings,
+    currentSettings: reactive({
+      ...currentSettings,
+      arenaFormation: settings.arenaFormation,
+      towerFormation: settings.towerFormation,
+      bossFormation: settings.bossFormation,
+      bossTimes: settings.bossTimes,
+    }),
+    helperSettings: reactive({
+      boxType: settings.boxType,
+      fishType: settings.fishType,
+      count: settings.boxCount,
+      targetPoints: settings.targetBoxPoints,
+    }),
+    weirdTowerMaxClimb: ref(settings.weirdTowerMaxClimb),
+    recipientIdInput: ref(settings.legacyRecipientId),
+    recipientInfo: ref(null),
+    securityPassword: ref(batchSettings.password),
+    giftQuantity: ref(settings.legacyGiftQuantity),
+  };
+};
+
+const runFlexibleBatchTask = async (
+  task,
+  template,
+  tokenIds,
+  coordinator,
+  sharedTokenStore,
+) => {
+  const taskStatus = ref({});
+  const deps = createFlexibleTaskDeps(
+    template,
+    tokenIds,
+    taskStatus,
+    coordinator,
+    sharedTokenStore,
+  );
+  const handler = createFlexibleTaskHandlers(deps)[task.handler];
+  if (typeof handler !== "function") {
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `[自由模板] 任务函数不存在: ${task.handler}`,
+      type: "error",
+    });
+    return [...tokenIds];
+  }
+
+  addLog({
+    time: new Date().toLocaleTimeString(),
+    message: `[自由模板] 开始并行任务: ${task.label}`,
+    type: "info",
+  });
+
+  try {
+    if (task.handler === "batchFootballBet") {
+      await handler(template.settings.footballPick);
+    } else if (task.handler === "batchWarGuessCheer") {
+      await handler(
+        template.settings.warGuessLegionId,
+        template.settings.warGuessCoin,
+      );
+    } else if (task.scheduledArgument) {
+      await handler(true);
+    } else {
+      await handler();
+    }
+  } catch (error) {
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `[自由模板] ${task.label} 异常: ${getErrorDetails(error)}`,
+      type: "error",
+    });
+
+    return tokenIds.filter(
+      (tokenId) => taskStatus.value[tokenId] !== "completed",
+    );
+  }
+
+  return tokenIds.filter((tokenId) => taskStatus.value[tokenId] === "failed");
+};
+
+const runFlexibleDailyTasks = async (
+  template,
+  dailyTaskIds,
+  tokenIds,
+  coordinator,
+) => {
+  const failedTokenIds = [];
+
+  await Promise.all(
+    tokenIds.map(async (tokenId) => {
+      const token = tokens.value.find((item) => item.id === tokenId);
+      try {
+        await coordinator.ensureConnection(tokenId);
+        const runner = new DailyTaskRunner(tokenStore, {
+          commandDelay: batchSettings.commandDelay,
+          taskDelay: batchSettings.taskDelay,
+        });
+        const result = await runner.run(
+          tokenId,
+          {
+            onLog: (log) => addLog(log),
+            shouldStop: () => shouldStop.value,
+            maxWebSocketReconnectRetries: 2,
+            onWebSocketReconnect: async () => {
+              await tokenStore.closeWebSocketConnection(tokenId);
+              await ensureConnection(tokenId, 2, true, true);
+            },
+          },
+          {
+            ...loadSettings(tokenId),
+            arenaFormation: template.settings.arenaFormation,
+            towerFormation: template.settings.towerFormation,
+            bossFormation: template.settings.bossFormation,
+            bossTimes: template.settings.bossTimes,
+            claimBottle: true,
+            payRecruit: true,
+            openBox: true,
+            arenaEnable: true,
+            claimHangUp: true,
+            claimEmail: true,
+            blackMarketPurchase: true,
+            freeGachaEnable: true,
+            selectedTaskIds: dailyTaskIds,
+          },
+        );
+
+        if (!result.success) failedTokenIds.push(tokenId);
+      } catch (error) {
+        failedTokenIds.push(tokenId);
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `[自由模板] ${token?.name || tokenId} 完整日常任务失败: ${getErrorDetails(error)}`,
+          type: "error",
+        });
+      }
+    }),
+  );
+
+  return failedTokenIds;
+};
+
+const runFlexibleTemplate = async (rawTemplate) => {
+  const template = normalizeFlexibleTemplate(rawTemplate);
+  if (!template || template.selectedTasks.length === 0) {
+    message.error("自由模板不存在或没有选择任务");
+    return;
+  }
+  if (selectedTokens.value.length === 0) {
+    message.warning("请先选择要执行的账号");
+    return;
+  }
+  const validationError = getFlexibleTemplateValidationError(template);
+  if (validationError) {
+    message.error(validationError);
+    return;
+  }
+  if (isRunning.value) return;
+
+  const batchTokenIds = [...selectedTokens.value];
+  const dailyTaskIds = template.selectedTasks.filter((taskId) =>
+    taskId.startsWith("daily."),
+  );
+  const batchTasks = template.selectedTasks
+    .map(getFlexibleTask)
+    .filter((task) => task?.kind === "batch")
+    .filter((task) => {
+      const reason = getFlexibleTaskUnavailableReason(task.value, template.settings);
+      if (!reason) return true;
+
+      addLog({
+        time: new Date().toLocaleTimeString(),
+        message: `[自由模板] 跳过 ${task.label}: ${reason}`,
+        type: "warning",
+      });
+      return false;
+    });
+  const failedTokenIds = new Set();
+  const batchSize = Math.max(
+    1,
+    Math.trunc(Number(batchSettings.maxActive) || 1),
+  );
+
+  isRunning.value = true;
+  shouldStop.value = false;
+  currentProgress.value = 0;
+  batchResult.totalCount = batchTokenIds.length;
+  batchResult.completedCount = 0;
+  batchResult.failedTokenIds = [];
+  batchTokenIds.forEach((tokenId) => {
+    tokenStatus.value[tokenId] = "waiting";
+  });
+  showFlexibleTemplateManagerModal.value = false;
+
+  addLog({
+    time: new Date().toLocaleTimeString(),
+    message: `=== 开始自由模板“${template.name}”: ${template.selectedTasks.length} 项任务，${batchTokenIds.length} 个账号 ===`,
+    type: "info",
+  });
+
+  try {
+    for (
+      let startIndex = 0;
+      startIndex < batchTokenIds.length && !shouldStop.value;
+      startIndex += batchSize
+    ) {
+      const currentBatch = batchTokenIds.slice(
+        startIndex,
+        startIndex + batchSize,
+      );
+      currentBatch.forEach((tokenId) => {
+        tokenStatus.value[tokenId] = "running";
+      });
+
+      const coordinator = createSharedConnectionCoordinator({
+        acquireSlot: () => waitForConnectionSlot(),
+        connect: (tokenId) => ensureConnection(tokenId, 2, true, true),
+        close: async (tokenId) => {
+          await tokenStore.closeWebSocketConnection(tokenId);
+          const tokenName =
+            tokens.value.find((token) => token.id === tokenId)?.name || tokenId;
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `[自由模板] ${tokenName} 所有并行任务结束，连接已关闭`,
+            type: "info",
+          });
+        },
+        releaseSlot: () => releaseConnectionSlot(),
+      });
+      const sharedTokenStore = createFlexibleTokenStore();
+      const executions = [];
+
+      if (dailyTaskIds.length > 0) {
+        executions.push(
+          runFlexibleDailyTasks(
+            template,
+            dailyTaskIds,
+            currentBatch,
+            coordinator,
+          ),
+        );
+      }
+
+      batchTasks.forEach((task) => {
+        executions.push(
+          runFlexibleBatchTask(
+            task,
+            template,
+            currentBatch,
+            coordinator,
+            sharedTokenStore,
+          ),
+        );
+      });
+
+      try {
+        const results = await Promise.all(executions);
+        results.forEach((taskFailedTokenIds) => {
+          taskFailedTokenIds.forEach((tokenId) => failedTokenIds.add(tokenId));
+        });
+      } finally {
+        await coordinator.cleanup();
+      }
+
+      currentBatch.forEach((tokenId) => {
+        tokenStatus.value[tokenId] = failedTokenIds.has(tokenId)
+          ? "failed"
+          : "completed";
+      });
+      currentProgress.value = Math.floor(
+        (Math.min(startIndex + currentBatch.length, batchTokenIds.length) /
+          batchTokenIds.length) *
+          100,
+      );
+    }
+  } finally {
+    if (shouldStop.value) {
+      batchTokenIds
+        .filter((tokenId) => tokenStatus.value[tokenId] !== "completed")
+        .forEach((tokenId) => {
+          failedTokenIds.add(tokenId);
+          tokenStatus.value[tokenId] = "failed";
+        });
+    }
+
+    batchResult.failedTokenIds = [...failedTokenIds];
+    batchResult.completedCount =
+      batchTokenIds.length - batchResult.failedTokenIds.length;
+    isRunning.value = false;
+    currentRunningTokenId.value = null;
+    showBatchResultModal.value = true;
+  }
+
+  addLog({
+    time: new Date().toLocaleTimeString(),
+    message: `=== 自由模板“${template.name}”执行结束: 成功 ${batchResult.completedCount}/${batchResult.totalCount} ===`,
+    type: batchResult.failedTokenIds.length > 0 ? "warning" : "success",
+  });
+  message.success("自由模板执行结束");
+};
+
+const executeSelectedFlexibleTemplate = () => {
+  if (!selectedFlexibleTemplate.value) {
+    message.warning("请选择自由模板");
+    return;
+  }
+  return runFlexibleTemplate(selectedFlexibleTemplate.value);
+};
+
 // 盐杯竞猜 pick 选择
 const footballPick = ref(3);
 const footballPickOptions = [
@@ -6671,6 +7654,156 @@ const stopBatch = () => {
   overflow: hidden;
   flex-wrap: nowrap;
 }
+
+.flexible-template-runner {
+  margin-top: 16px;
+  border-top: 3px solid #0b7285;
+}
+
+.flexible-template-runner__content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.flexible-template-select {
+  width: min(420px, 100%);
+}
+
+.flexible-template-runner__meta {
+  margin-top: 10px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.flexible-manager-toolbar,
+.flexible-editor-heading,
+.flexible-template-row,
+.flexible-manager-footer,
+.flexible-editor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.flexible-manager-toolbar {
+  padding-bottom: 14px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.flexible-manager-title,
+.flexible-editor-heading__title,
+.flexible-conditional-settings__title {
+  color: var(--text-primary, #1f2937);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.flexible-manager-subtitle,
+.flexible-editor-heading__meta,
+.flexible-template-row__meta {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.flexible-template-list {
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.flexible-template-row {
+  min-height: 68px;
+  padding: 12px 4px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.flexible-template-row__main {
+  min-width: 0;
+}
+
+.flexible-template-row__name {
+  overflow: hidden;
+  color: var(--text-primary, #1f2937);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flexible-template-row__actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.flexible-template-empty {
+  padding: 42px 0;
+}
+
+.flexible-manager-footer,
+.flexible-editor-footer {
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.flexible-template-editor {
+  max-height: min(72vh, 760px);
+  padding-right: 6px;
+  overflow-y: auto;
+}
+
+.flexible-editor-name {
+  max-width: 520px;
+}
+
+.flexible-editor-heading {
+  margin: 20px 0 8px;
+}
+
+.flexible-task-group {
+  padding: 14px 0;
+  border-top: 1px solid #e5e7eb;
+}
+
+.flexible-task-group__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: var(--text-primary, #1f2937);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.flexible-task-grid,
+.flexible-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 18px;
+}
+
+.flexible-task-option {
+  min-width: 0;
+}
+
+.flexible-task-option :deep(.n-checkbox__label) {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  white-space: normal;
+}
+
+.flexible-conditional-settings {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.flexible-conditional-settings__title {
+  margin-bottom: 10px;
+}
+
 
 .group-tag {
   max-width: 96px;
@@ -7018,6 +8151,26 @@ const stopBatch = () => {
   .page-header .actions {
     display: flex;
     gap: 8px;
+  }
+
+  .flexible-template-runner__content,
+  .flexible-manager-toolbar,
+  .flexible-template-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .flexible-template-select {
+    width: 100%;
+  }
+
+  .flexible-template-row__actions {
+    flex-wrap: wrap;
+  }
+
+  .flexible-task-grid,
+  .flexible-settings-grid {
+    grid-template-columns: 1fr;
   }
 
   .log-card {
