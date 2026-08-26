@@ -87,7 +87,7 @@ H5 方法
 - `lx`、`x`、`xtm` 加解密方案及自动检测。
 - `g_utils.encode()`、`g_utils.parse()` 和游戏消息模板。
 
-手机号登录的两批抓包分析、与微信扫码登录的字段对照、已确认的 `combUser -> bin -> Token` 复用链路以及下一次响应抓包清单，记录在 [docs/mobile-phone-login-protocol-research.md](docs/mobile-phone-login-protocol-research.md)。当前只有出站请求，组合登录和验证码接口的响应错误码仍待补抓。
+手机号登录的三批抓包分析、与微信扫码登录的字段对照、已确认的 `combUser -> bin -> Token` 复用链路以及后续失败分支抓包清单，记录在 [docs/mobile-phone-login-protocol-research.md](docs/mobile-phone-login-protocol-research.md)。成功响应链已闭环；验证码错误、过期和发送限流等失败响应仍待补抓。
 
 消息通常包含以下字段：
 

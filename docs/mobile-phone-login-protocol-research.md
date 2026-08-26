@@ -1,10 +1,10 @@
 # 手机号登录协议抓包研究
 
-> 记录日期：2026-08-25
+> 首次记录：2026-08-25；最近更新：2026-08-26
 >
-> 本文基于 `mobile_login` 和 `mobile_login1` 两批本地抓包，以及当前仓库源码交叉验证。所有手机号、短信验证码、设备标识、签名、Token 和账号身份数据均不记录原值。
+> 本文基于 `mobile_login`、`mobile_login1` 和 `mobile1` 三批本地抓包，以及当前仓库源码交叉验证。所有手机号、短信验证码、设备标识、签名、Token、角色 ID 和账号身份数据均不记录原值。
 >
-> 当前抓包工具只保存了出站请求。每组 `_raw` 都是 `_header + _body`，不包含 HTTP 响应。因此本文会明确区分已验证事实、合理推断和待响应包确认的内容。
+> 前两批抓包只保存了出站请求；第三批同时保存了请求和响应。每组 `_raw` 都是对应方向的 `_header + _body`。本文明确区分已验证事实、合理推断和待错误响应确认的内容。
 
 ## 1. 结论
 
@@ -37,7 +37,7 @@ POST https://comb-platform.hortorgames.com/comb-login-server/api/v1/login
 
 并使用 [wxqrcode.vue](../src/views/TokenImport/wxqrcode.vue) 中现有的 `encodePayload()` 算法。组合登录成功后的 `combUser -> bin -> 角色列表 -> 角色 Token` 路径可以复用。
 
-当前还不能准确实现服务端错误提示、发送频率限制和验证码过期处理，因为两批抓包都没有保存响应。
+第三批抓包已经确认发送验证码、组合登录和游戏角色认证的成功响应契约，成功主链已闭环。当前仍不能准确实现错误验证码、验证码过期和发送限流等失败提示，因为尚未抓到失败响应。
 
 ## 2. 数据来源与边界
 
@@ -74,9 +74,26 @@ Content-Type: application/json; charset=utf-8
 - 响应正文。
 - `/login/authuser` 的二进制响应。
 
-因此组合登录的响应结构目前是由现有扫码源码和后续认证包共同反证，尚未由手机号登录响应包直接确认。
+因此在第二批分析时，组合登录响应结构只能由现有扫码源码和后续认证包共同反证；第三批响应随后完成了直接确认。
 
-## 3. 请求时间线
+### 2.3 第三批抓包
+
+目录：`mobile1`
+
+共捕获 10 组请求与响应，覆盖第二批中的同一条成功登录链。20 个 header 声明的 `Content-Length` 均与对应 body 文件大小一致，没有发现截断。所有响应均为 `HTTP/1.1 200 OK`。
+
+这批数据直接确认了：
+
+1. 发送验证码成功响应包含 `sendSuccess`、`waitSecond` 和提示文本。
+2. 组合登录成功响应外层确实为 `meta/data`，`data.combUser` 可直接用于生成游戏认证 bin。
+3. 组合登录响应中的 `combUser` 三个字段被逐字段原样写入后续 bin 的 `info`。
+4. `/login/authuser` 成功响应是可由现有 BON/LZ4 实现解析的二进制包，业务体包含 `roleToken` 和 `roleId`。
+
+第三批仍未包含失败响应，也没有出现 `/login/serverlist` 请求。
+
+## 3. 抓包时间线
+
+### 3.1 第二批请求时间线
 
 | 抓包 ID | 主机与路径 | 正文格式 | 判断 |
 | --- | --- | --- | --- |
@@ -93,6 +110,21 @@ Content-Type: application/json; charset=utf-8
 | `1787589917277` | `platform-apm.hortorgames.com/apm/api/v1/collect` | JSON | APM 日志 |
 
 两次验证码请求正文的 SHA-256 完全相同，间隔约 81.8 秒。第二次验证码请求约 9.9 秒后发起组合登录，符合“重发验证码后输入验证码并登录”的操作顺序。
+
+### 3.2 第三批请求与响应配对
+
+| 请求 ID | 响应 ID | 接口 | 响应格式 | 结果 |
+| --- | --- | --- | --- | --- |
+| `1787674701945` | `1787674704496` | `/login/verify/code` | 116 字节 JSON | 验证码发送成功 |
+| `1787674711982` | `1787674714471` | `/comb-login-server/api/v1/login` | 1186 字节 JSON | 手机号登录成功 |
+| `1787674720999` | `1787674723315` | `/wxlog/api/v1/collect` | JSON | 日志上报成功 |
+| `1787674728695` | `1787674731027` | `/anti_addiction-server/api/v1/comb/upload/login` | JSON | 防沉迷登录上报成功 |
+| `1787674739348` | `1787674741524` | `/anti_addiction-server/api/v1/comb/config/mobile/uniq` | JSON | 返回防沉迷配置 |
+| `1787674750162` | `1787674752032` | `/anti_addiction-server/api/v1/comb/ping` | JSON | 防沉迷心跳成功 |
+| `1787674759622` | `1787674761943` | `/htlog/api/v1/log/comb` | JSON | 统计上报成功 |
+| `1787674770762` | `1787674772923` | `/comb-custom-switch-server/api/v1/switch/multi/status` | JSON | 返回平台开关列表 |
+| `1787674779570` | `1787674781625` | `/apm/api/v1/collect` | JSON | APM 上报成功 |
+| `1787674791554` | `1787674793650` | `/login/authuser?_seq=1` | 305 字节 `lx` 二进制 | 返回角色认证信息 |
 
 ## 4. 发送验证码请求
 
@@ -136,6 +168,41 @@ Content-Type: application/json; charset=utf-8
 ```
 
 数字前缀并不等于本次抓包请求时间，因此不能直接认定它是当前的 `Date.now()`。它可能在 SDK 初始化或更早的登录尝试中生成。生成时机、有效期以及是否允许前端自行生成仍待确认。
+
+第三批进一步确认：
+
+- 两批完整流程使用了不同的 `distinctId`，对应的 `activeLoginMatchId` 也不同。
+- 每个 `activeLoginMatchId` 都以 `_` 加本次 `distinctId` 结尾。
+- 第三批的数字前缀比本次登录请求早约 242 天，不可能是点击登录时生成的时间戳。
+
+因此更合理的工作假设是：`activeLoginMatchId` 与 DID 在设备或 SDK 初始化阶段一起生成并持久化。手机号实现不应每次发送验证码时重新生成它们；在服务端生成规则确认前，也不能假定任意当前时间前缀都有效。
+
+### 4.3 发送成功响应
+
+第三批响应为：
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+```
+
+JSON 契约已直接确认：
+
+```json
+{
+  "meta": {
+    "errCode": 0,
+    "errMsg": "success"
+  },
+  "data": {
+    "sendSuccess": true,
+    "waitSecond": 120,
+    "msg": "消息可正常发送"
+  }
+}
+```
+
+前端倒计时应使用响应的 `data.waitSecond`，不能固定假设为 60 秒。HTTP 200 只代表请求成功送达，业务成功仍应同时检查 `meta.errCode === 0` 和 `data.sendSuccess === true`。
 
 ## 5. 提交手机号和短信验证码
 
@@ -206,6 +273,43 @@ verifyRequest.signPrint === loginRequest.signPrint
 
 这说明发送验证码和提交验证码必须共享同一套登录上下文，不能在两步之间重新生成设备标识或匹配 ID。
 
+### 5.4 登录成功响应
+
+第三批组合登录响应为 HTTP 200、JSON，外层契约已直接确认：
+
+```text
+meta
+  errCode: 0
+  errMsg: "success"
+data
+  combUser
+    encryptCombUser: string
+    timestamp: number
+    sign: string
+  combSdkInfo
+    isNewUser: boolean
+    isRealName: boolean
+    birthday: YYYYMMDD string
+    channel: string
+    h_shareCode: string
+    loginTp: "app-mobile"
+    alias: string
+    uniqueId: string
+  envCombSdkInfo: null
+```
+
+Token 导入主链只需要 `data.combUser`。`combSdkInfo` 包含实名状态、生日等个人数据，不应为了生成 Token 而额外持久化。
+
+成功判定应为：
+
+```text
+HTTP 200
+  && response.meta.errCode === 0
+  && response.data.combUser 存在且字段完整
+```
+
+组合登录响应头的 `Access-Control-Allow-Origin` 为空，验证码响应的该头也不是当前网页 Origin，因此浏览器仍必须经受控代理访问这些接口。
+
 ## 6. 与微信扫码登录的字段对照
 
 当前微信扫码实现位于 [wxqrcode.vue](../src/views/TokenImport/wxqrcode.vue)。两种登录方式的组合登录对比如下：
@@ -266,16 +370,50 @@ O4e-Encoding: lx
 
 这与当前扫码代码期望的 `combUser` 结构一致。捕获到的原生 bin 比扫码页面当前生成的对象多出 `oriPlatform` 和 `deviceUniqueId`。手机号模式生成 bin 时建议保留这两个字段，以尽量贴近原生请求。
 
-由于抓包没有保存组合登录响应，当前证据链是：
+第三批已经把数据传递关系直接闭环：
 
 ```text
-手机号组合登录请求
-  -> 后续出现可解析的 authuser bin
-  -> bin.info 是标准 combUser
-  -> 因此组合登录已经成功返回了 combUser
+combLoginResponse.data.combUser.encryptCombUser
+  === JSON.parse(authRequest.info).encryptCombUser
+
+combLoginResponse.data.combUser.sign
+  === JSON.parse(authRequest.info).sign
+
+combLoginResponse.data.combUser.timestamp
+  === JSON.parse(authRequest.info).timestamp
 ```
 
-这是强间接证据，但响应的外层 `meta/data` 格式仍需响应包直接确认。
+认证 bin 的 `deviceUniqueId` 也与组合登录正文的 `distinctId` 及查询参数 `deviceUniqueId` 完全相同。
+
+### 7.1 游戏认证成功响应
+
+`/login/authuser?_seq=1` 的第三批响应为：
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/octet-stream
+Content-Length: 305
+```
+
+使用 [bonProtocol.js](../src/utils/bonProtocol.js) 的 `g_utils.parse()` 可以直接解析，顶层字段为：
+
+```text
+seq: 0
+ack: 0
+time: number
+resp: 1
+cmd: "login_authuserresp"
+body: 205 字节 BON 数据
+```
+
+解码 `body` 后得到：
+
+| 字段 | 类型 |
+| --- | --- |
+| `roleToken` | string，第三批长度为 172 |
+| `roleId` | number |
+
+这与 [token.ts](../src/utils/token.ts) 的 `transformToken()` 当前处理方式完全一致：解析响应业务体后，再由本地补充 `sessId`、`connId` 和 `isRestore`。因此手机号登录不需要新增游戏认证协议解析器。
 
 ## 8. 可复用的现有代码
 
@@ -342,37 +480,34 @@ https://ucenter-app-server.hortorgames.com
 
 ### 10.1 阻塞稳健实现的问题
 
-1. `/login/verify/code` 成功响应的 HTTP 状态和 JSON 结构。
-2. 发送过于频繁、手机号格式错误和达到每日上限时的错误码。
-3. 组合登录成功响应是否与扫码实现一致，是否为 `meta.errCode` 和 `data.combUser`。
-4. 短信验证码错误、过期和已使用时的错误码及文案。
-5. `activeLoginMatchId` 的生成时机、有效期和服务端校验规则。
+1. 发送过于频繁、手机号格式错误和达到每日上限时的错误码。
+2. 短信验证码错误、过期和已使用时的错误码及文案。
+3. `activeLoginMatchId` 的生成时机、有效期和服务端校验规则。
+4. `waitSecond` 是否始终由服务端强制执行，以及提前重发时的响应语义。
 
 ### 10.2 不阻塞主链、但值得补充的问题
 
-1. `/login/authuser` 成功响应的实际二进制结构。
-2. 新账号没有历史角色时，原生 App 是否先调用 `/login/serverlist`。
-3. `limit: true` 是否控制发送频率、手机号绑定范围或其他账号中心策略。
-4. `oaId` 和 `oaid` 是否必须同时存在，还是 SDK 兼容字段。
-5. `oriPlatform` 和 `deviceUniqueId` 对游戏登录是否强制。
+1. 新账号没有历史角色时，原生 App 是否先调用 `/login/serverlist`。
+2. `limit: true` 是否控制发送频率、手机号绑定范围或其他账号中心策略。
+3. `oaId` 和 `oaid` 是否必须同时存在，还是 SDK 兼容字段。
+4. `oriPlatform` 和 `deviceUniqueId` 对游戏登录是否强制。
 
 ## 11. 下一次抓包清单
 
-下次应启用同时保存请求和响应，并从点击“获取验证码”前开始，持续到角色进入游戏。优先保留以下数据：
+成功主链已经完整，下次抓包应优先补齐失败分支，并继续同时保存请求和响应。
 
 ### 必需
 
-1. `/ucenter-app-server/api/v1/login/verify/code` 的成功响应：状态码、响应头、原始响应体。
-2. `/comb-login-server/api/v1/login` 的成功响应：状态码、响应头、原始响应体。
-3. `/login/authuser?_seq=1` 的成功响应：响应头和未经转换的二进制响应体。
+1. 输入错误验证码时的组合登录请求和响应。
+2. 验证码过期后的组合登录请求和响应。
+3. 连续发送验证码触发限流时的验证码接口响应。
 
 ### 建议补充
 
-1. 输入错误验证码时的组合登录请求和响应。
-2. 验证码过期后的组合登录响应。
-3. 连续发送验证码触发限流时的响应。
-4. 一次全新启动或清除 App 数据后的完整流程，用于确认 `activeLoginMatchId` 的生成来源。
-5. 如果出现 `/login/serverlist`，保存其请求和响应二进制。
+1. 非法手机号或未注册手机号的验证码接口响应。
+2. 一次全新启动或清除 App 数据后的完整流程，用于确认 DID 和 `activeLoginMatchId` 的生成来源。
+3. 如果出现 `/login/serverlist`，保存其请求和响应二进制。
+4. 新账号首次创建角色前后的流程，用于确认 `isNewUser` 分支。
 
 每条建议继续按以下形式保存：
 
@@ -392,11 +527,13 @@ https://ucenter-app-server.hortorgames.com
 | 结论 | 等级 | 依据 |
 | --- | --- | --- |
 | `/login/verify/code` 在本流程中用于发送验证码 | 已验证 | 正文无验证码、请求顺序、重复发送行为 |
+| 验证码发送成功响应为 `meta/data`，倒计时由 `waitSecond` 给出 | 已验证 | 第三批 HTTP 响应 |
 | 手机号登录正文包含 `mobile` 和 6 位 `smsCode` | 已验证 | 使用仓库现有算法成功解码 |
 | 手机号登录使用 `tp: app-mobile` | 已验证 | 解码后的真实请求 |
 | 手机号和扫码登录复用 `encodePayload()` | 已验证 | 现有算法可无损解码手机号请求 |
 | 手机号和扫码登录复用同一组合登录接口 | 已验证 | 请求主机和路径 |
-| 手机号组合登录成功产生标准 `combUser` | 强间接证据 | 后续 authuser bin 的 `info` 可解析为标准 combUser |
-| 手机号组合登录响应外层为 `meta/data` | 待确认 | 当前仅由扫码源码推断，没有响应包 |
+| 手机号组合登录响应外层为 `meta/data` | 已验证 | 第三批 HTTP 响应 |
+| 手机号组合登录成功产生标准 `combUser` | 已验证 | 第三批响应及与 authuser bin 的逐字段相等检查 |
+| `/login/authuser` 响应包含 `roleToken` 和 `roleId` | 已验证 | 第三批二进制响应由现有解析器成功解码 |
 | 当前项目可复用 bin、serverlist 和 authuser 后半程 | 已验证 | 现有解析器成功解析原生手机号登录 bin |
 | `activeLoginMatchId` 可以自行用当前时间生成 | 未验证 | 数字前缀与本次请求时间不一致 |
