@@ -45,9 +45,6 @@
           <n-button type="primary" size="small" block @click="emit('add', row)">
             添加
           </n-button>
-          <n-button type="info" size="small" block @click="emit('download', row)">
-            下载
-          </n-button>
         </div>
       </div>
     </div>
@@ -99,7 +96,6 @@ const props = withDefaults(
 const emit = defineEmits<{
   add: [row: any];
   "add-all": [];
-  download: [row: any];
 }>();
 
 function getServerIdDisplay(row: any) {
@@ -227,15 +223,6 @@ const columns = computed(() => [
               onClick: () => emit("add", row),
             },
             { default: () => "添加" }
-          ),
-          h(
-            NButton,
-            {
-              size: "small",
-              type: "info",
-              onClick: () => emit("download", row),
-            },
-            { default: () => "下载" }
           ),
         ]
       );

@@ -110,8 +110,16 @@
         :add-all-loading="isAddingAll"
         @add="addSelectedRole"
         @add-all="addAllRoles"
-        @download="handleDownload"
       />
+
+      <div v-if="accountBinData" class="form-actions">
+        <n-button type="info" block @click="handleDownloadAccountBin">
+          <template #icon>
+            <n-icon :component="DownloadOutline" />
+          </template>
+          导出账号 BIN
+        </n-button>
+      </div>
 
       <div v-if="pendingRoles.length" class="pending-roles">
         <div class="pending-header">
@@ -187,6 +195,7 @@ import {
   PhonePortraitOutline,
   RefreshOutline,
   TrashOutline,
+  DownloadOutline,
 } from "@vicons/ionicons5";
 import {
   NAlert,
@@ -252,6 +261,7 @@ const statusMessage = ref("");
 const statusType = ref<"info" | "success" | "warning" | "error">("info");
 const serverListData = ref<ServerRole[]>([]);
 const pendingRoles = ref<PendingRole[]>([]);
+const accountBinData = ref<ArrayBuffer | null>(null);
 const originalBinData = ref<Record<string, unknown> | null>(null);
 let countdownTimer: ReturnType<typeof setInterval> | null = null;
 let requestController: AbortController | null = null;
@@ -360,10 +370,11 @@ const handleLogin = async () => {
       { signal: requestController.signal },
     );
     const loginBin = createHortorLoginBin(combUser, deviceProfile);
+    accountBinData.value = loginBin.slice(0);
     const parsed = g_utils.parse(loginBin.slice(0));
     originalBinData.value = { ...(parsed as any)._raw };
 
-    const listText = await getServerList(loginBin);
+    const listText = await getServerList(loginBin.slice(0));
     const parsedList = JSON.parse(listText);
     serverListData.value = Object.values(parsedList || {}).sort(
       (left: any, right: any) => Number(right.power || 0) - Number(left.power || 0),
@@ -390,6 +401,27 @@ const handleLogin = async () => {
 const createRoleBin = (serverId: string | number) => {
   if (!originalBinData.value) throw new Error("登录数据已失效，请重新登录");
   return g_utils.encode({ ...originalBinData.value, serverId }, "lx") as ArrayBuffer;
+};
+
+const handleDownloadAccountBin = () => {
+  const accountBin = accountBinData.value;
+  if (!accountBin) {
+    message.error("账号 BIN 数据丢失，请重新登录");
+    return;
+  }
+
+  const fileName = `xyzw-account-bin-${new Date().toISOString().slice(0, 10)}.bin`;
+  const url = URL.createObjectURL(
+    new Blob([accountBin], { type: "application/octet-stream" }),
+  );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+  message.success(`已开始下载: ${fileName}`);
 };
 
 const addSelectedRole = async (
@@ -458,28 +490,6 @@ const removePendingRole = (tokenId: string) => {
   pendingRoles.value = pendingRoles.value.filter((role) => role.id !== tokenId);
 };
 
-const handleDownload = (roleInfo: ServerRole) => {
-  try {
-    const roleBin = createRoleBin(roleInfo.serverId);
-    const { serverNumber, roleIndex } = decodeServerRoleId(roleInfo.serverId);
-    const safeName = String(roleInfo.name || "未命名角色").replace(
-      /[\\/:*?"<>|]/g,
-      "_",
-    );
-    const fileName = `bin-${serverNumber}服-${roleIndex}-${roleInfo.roleId}-${safeName}.bin`;
-    const url = URL.createObjectURL(
-      new Blob([new Uint8Array(roleBin)], { type: "application/octet-stream" }),
-    );
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = fileName;
-    link.click();
-    URL.revokeObjectURL(url);
-  } catch (error: any) {
-    message.error(error?.message || "下载失败");
-  }
-};
-
 const handleImport = async () => {
   if (pendingRoles.value.length === 0) return;
   isImporting.value = true;
@@ -507,6 +517,7 @@ const resetLogin = () => {
   loginForm.smsCode = "";
   serverListData.value = [];
   pendingRoles.value = [];
+  accountBinData.value = null;
   originalBinData.value = null;
   statusMessage.value = "";
 };
@@ -514,6 +525,8 @@ const resetLogin = () => {
 onUnmounted(() => {
   requestController?.abort();
   stopCountdown();
+  accountBinData.value = null;
+  originalBinData.value = null;
   loginForm.mobile = "";
   loginForm.smsCode = "";
 });

@@ -27,7 +27,6 @@
       :add-all-loading="isAddingAll"
       @add="addSelectedRole"
       @add-all="addAllRoles"
-      @download="handleDownload"
     />
 
     <a-list>
@@ -75,8 +74,6 @@ import {
   NInput,
   NButton,
   NIcon,
-  NCollapse,
-  NCollapseItem,
   useMessage,
 } from "naive-ui";
 
@@ -119,7 +116,7 @@ const roleList = ref<
     server: string;
     roleIndex?: number;
     wsUrl: string;
-    importMethod: string;
+    importMethod: "bin";
   }>
 >([]);
 const serverListData = ref<any[]>([]);
@@ -128,61 +125,6 @@ const binDecodedResult = ref("");
 const originalBinData = ref<any>(null);
 
 const tQueue = new PQueue({ concurrency: 1, interval: 1000 });
-
-const initName = (fileName: string) => {
-  if (!fileName) return;
-  fileName = fileName.trim();
-  let binRes = fileName.match(/^bin-(.*?)服-([0-2])-([0-9]{6,12})-(.*)\.bin$/);
-  console.log(binRes);
-  if (binRes) {
-    importForm.name = `${binRes[1]}_${binRes[2]}_${binRes[4]}`;
-    return {
-      server: binRes[1],
-      roleIndex: binRes[2],
-      roleId: binRes[3],
-      roleName: binRes[4],
-    };
-  }
-  return {
-    server: "",
-    roleIndex: "",
-    roleId: "",
-    roleName: importForm.name || "",
-  };
-};
-
-const handleDownload = (roleInfo: any) => {
-  if (!originalBinData.value) {
-    message.error("Bin数据丢失，请重新上传");
-    return;
-  }
-  try {
-    const newData = { ...originalBinData.value };
-    newData.serverId = roleInfo.serverId; // 确保类型一致
-    const newBinBuffer = g_utils.encode(newData) as ArrayBuffer;
-    
-    // 构造文件名: bin-{server}-0-{roleId}-{name}.bin
-    let sid = Number(roleInfo.serverId);
-    let roleIndex = 0;
-    
-    if (sid >= 2000000) {
-      roleIndex = 2;
-      sid -= 2000000;
-    } else if (sid >= 1000000) {
-      roleIndex = 1;
-      sid -= 1000000;
-    }
-    
-    const serverNum = sid - 27;
-    const fileName = `bin-${serverNum}服-${roleIndex}-${roleInfo.roleId}-${roleInfo.name}.bin`;
-    
-    downloadBinFile(fileName, newBinBuffer);
-    message.success(`已开始下载: ${fileName}`);
-  } catch (e: any) {
-    console.error("下载失败", e);
-    message.error("下载失败: " + e.message);
-  }
-};
 
 const addSelectedRole = async (
   roleInfo: any,
@@ -376,22 +318,6 @@ const handleImport = async () => {
   $emit("ok");
 };
 
-const downloadBinFile = (fileName, bin) => {
-  const blob = new Blob([new Uint8Array(bin)], {
-    type: "application/octet-stream",
-  });
-
-  const url = URL.createObjectURL(blob);
-
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-
-  URL.revokeObjectURL(url);
-};
 </script>
 
 <style scoped lang="scss">

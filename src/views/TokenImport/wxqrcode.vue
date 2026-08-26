@@ -61,8 +61,18 @@
       :add-all-loading="isAddingAll"
       @add="addSelectedRole"
       @add-all="addAllRoles"
-      @download="handleDownload"
     />
+
+    <div v-if="currentBinData" class="form-actions">
+      <n-button type="info" block @click="handleDownloadAccountBin">
+        <template #icon>
+          <n-icon>
+            <DownloadOutline />
+          </n-icon>
+        </template>
+        导出账号 BIN
+      </n-button>
+    </div>
 
     <a-list>
       <a-list-item v-for="(role, index) in roleList" :key="index">
@@ -106,7 +116,13 @@
 
 <script lang="ts" setup>
 import { ref, onMounted, onUnmounted, reactive } from "vue";
-import { Scan, Refresh, Close, CloudUpload } from "@vicons/ionicons5";
+import {
+  Scan,
+  Refresh,
+  Close,
+  CloudUpload,
+  DownloadOutline,
+} from "@vicons/ionicons5";
 import { NIcon, useMessage, NButton, NForm, NFormItem, NInput } from "naive-ui";
 import { getTokenId, transformToken, getServerList } from "@/utils/token";
 import useIndexedDB from "@/hooks/useIndexedDB";
@@ -162,37 +178,16 @@ const roleList = ref<
   }>
 >([]);
 
-const handleDownload = (roleInfo: any) => {
-  if (!originalBinData.value) {
-    message.error("Bin数据丢失，请重新扫码");
+const handleDownloadAccountBin = () => {
+  const accountBin = currentBinData.value;
+  if (!accountBin) {
+    message.error("账号 BIN 数据丢失，请重新扫码");
     return;
   }
-  try {
-    const newData = { ...originalBinData.value };
-    newData.serverId = roleInfo.serverId; // 确保类型一致
-    const newBinBuffer = g_utils.encode(newData) as ArrayBuffer;
-    
-    // 构造文件名: bin-{server}-0-{roleId}-{name}.bin
-    let sid = Number(roleInfo.serverId);
-    let roleIndex = 0;
-    
-    if (sid >= 2000000) {
-      roleIndex = 2;
-      sid -= 2000000;
-    } else if (sid >= 1000000) {
-      roleIndex = 1;
-      sid -= 1000000;
-    }
-    
-    const serverNum = sid - 27;
-    const fileName = `bin-${serverNum}服-${roleIndex}-${roleInfo.roleId}-${roleInfo.name}.bin`;
-    
-    downloadBinFile(fileName, newBinBuffer);
-    message.success(`已开始下载: ${fileName}`);
-  } catch (e: any) {
-    console.error("下载失败", e);
-    message.error("下载失败: " + e.message);
-  }
+
+  const fileName = `xyzw-account-bin-${new Date().toISOString().slice(0, 10)}.bin`;
+  downloadBinFile(fileName, accountBin);
+  message.success(`已开始下载: ${fileName}`);
 };
 
 const addSelectedRole = async (
@@ -712,12 +707,13 @@ const saveAccount = async (arrBuf: ArrayBuffer, nickname = "") => {
 
   console.log("name:", name);
 
-  const bin = new Uint8Array(arrBuf);
+  const accountBin = arrBuf.slice(0);
+  const bin = new Uint8Array(accountBin);
   // console.log("bin:", bin);
-  currentBinData.value = bin.buffer;
+  currentBinData.value = accountBin;
 
   try {
-    const listStr = await getServerList(bin.buffer);
+    const listStr = await getServerList(accountBin.slice(0));
     const parsedList = JSON.parse(listStr);
     // 转换为数组并排序
     if (parsedList && typeof parsedList === 'object') {
@@ -734,7 +730,7 @@ const saveAccount = async (arrBuf: ArrayBuffer, nickname = "") => {
   }
   // 尝试解析 bin 文件内容
   try {
-    const binMsg = g_utils.parse(bin.buffer);
+    const binMsg = g_utils.parse(accountBin.slice(0));
     let binData = binMsg.getData();
     if (!binData && (binMsg as any)._raw) {
       console.log("Bin文件 getData() 为空，尝试使用 _raw");
