@@ -27,6 +27,8 @@ const my_routes = [
       token: route.query.token,
       name: route.query.name,
       server: route.query.server,
+      serverId: route.query.serverId,
+      roleId: route.query.roleId,
       wsUrl: route.query.wsUrl,
       api: route.query.api,
       auto: route.query.auto === 'true'

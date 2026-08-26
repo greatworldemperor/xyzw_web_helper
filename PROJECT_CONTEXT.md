@@ -62,6 +62,7 @@ H5 方法
 [src/stores/tokenStore.ts](src/stores/tokenStore.ts) 是当前主要状态中枢，负责：
 
 - `gameTokens`、`selectedTokenId`、`tokenGroups` 等本地持久化状态。
+- Token 分组使用 `tokenKeys` 持久化 `serverId:roleId` 稳定身份键；界面需要的当前 `token.id` 由 Store 运行时解析，所有导入入口都必须保留 `serverId` 和 `roleId`。
 - Token 导入、Base64 解析、校验、选择、更新和删除。
 - 自动 Token 刷新：URL、BIN 和微信扫码来源均由 `attemptTokenRefresh()` 统一处理；刷新结果必须是包含有效 `roleToken` 的 JSON 加密 Token。
 - WebSocket 连接状态、连接锁、跨标签页连接协调。

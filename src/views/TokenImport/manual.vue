@@ -43,6 +43,24 @@
       </n-input>
     </n-form-item>
 
+    <div class="optional-fields">
+      <n-form-item label="服务器ID（必填）">
+        <n-input
+          v-model:value="importForm.serverId"
+          placeholder="例如：1000027"
+          clearable
+        />
+      </n-form-item>
+
+      <n-form-item label="角色ID（必填）">
+        <n-input
+          v-model:value="importForm.roleId"
+          placeholder="例如：123456789"
+          clearable
+        />
+      </n-form-item>
+    </div>
+
     <!-- 角色详情 -->
     <n-collapse>
       <n-collapse-item title="角色详情 (可选)" name="optional">
@@ -114,6 +132,8 @@ const isImporting = ref(false);
 const importForm = reactive({
   name: "",
   base64Token: "",
+  serverId: "",
+  roleId: "",
   server: "",
   wsUrl: "",
 });
@@ -135,15 +155,28 @@ const importRules = {
 const handleImport = () => {
   isImporting.value = true;
   try {
+    const serverId = importForm.serverId.trim();
+    const roleId = importForm.roleId.trim();
+
+    if (!serverId || !roleId) {
+      message.error("请输入服务器ID和角色ID，分组需要使用这两个稳定身份字段");
+      return;
+    }
+
     tokenStore.addToken({
       name: importForm.name,
       token: importForm.base64Token,
+      serverId,
+      roleId,
       server: importForm.server,
       wsUrl: importForm.wsUrl,
+      importMethod: "manual",
     });
     message.success("Token添加成功");
     importForm.name = "";
     importForm.base64Token = "";
+    importForm.serverId = "";
+    importForm.roleId = "";
     importForm.server = "";
     importForm.wsUrl = "";
     $emit("ok");
