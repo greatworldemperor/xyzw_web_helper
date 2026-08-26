@@ -931,7 +931,9 @@ export function createTasksTower(deps) {
         tokenStatus.value[tokenId] = "failed";
 
         let errorMessage = error.message;
-        if (errorMessage && errorMessage.includes("200330")) {
+        if (is400340Error(error)) {
+          errorMessage = `触发400340限流，已按每秒重试${RATE_LIMIT_MAX_RETRIES}次仍失败，跳过该账号`;
+        } else if (errorMessage && errorMessage.includes("200330")) {
            errorMessage = "存在未完成的挑战，需要手动处理";
         }
 
