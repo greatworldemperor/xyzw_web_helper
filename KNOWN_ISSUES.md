@@ -30,11 +30,11 @@
 
 ### 3. Worker 代理允许任意来源跨域调用
 
-- **位置**：`worker.js:8`
-- **现状**：`Access-Control-Allow-Origin` 设置为 `*`。
+- **位置**：`worker.js`
+- **现状**：旧微信二维码和长轮询代理仍统一返回 `Access-Control-Allow-Origin: *`。2026-08-26，手机号验证码与 Hortor 组合登录路由已限制为同源、精确路径、POST、指定 Content-Type 和有界请求/JSON 响应；验证码路由另有 120 秒 IP + 手机号摘要内存限流。
 - **风险**：任意站点都可以调用代理接口，可能增加接口滥用、配额消耗和跨站数据访问风险。
-- **后续方向**：限制允许来源、请求方法、请求头、代理路径和请求频率；生产环境不要使用无条件的通配来源。
-- **状态**：未处理。
+- **后续方向**：将同样的来源、方法、路径和响应边界推广到旧微信代理。验证码内存限流只在单个 Worker 实例内有效；公开部署应使用 Cloudflare Rate Limiting、Durable Object 或其他共享状态实现全局限制。
+- **状态**：两个 Hortor 登录路由已处理；旧微信代理未处理。
 
 ### 4. README 暴露默认管理员账号密码
 
@@ -103,9 +103,17 @@
 - **后续方向**：按功能拆分动态导入，配置合理的 Rollup manual chunks，并排查协议与大型功能模块是否被过早打入公共 chunk。
 - **状态**：未处理。
 
+### 12. 手机号登录的 `activeLoginMatchId` 生成规则未实网确认
+
+- **位置**：`src/utils/hortorLogin.js`、`src/views/TokenImport/mobile.vue`
+- **现状**：抓包确认该字段与 DID 一起跨验证码和组合登录复用，但真实样本的数字前缀明显早于请求时间。网页实现按当前时间生成一次并持久化设备档案，协议测试和浏览器 mock 已通过，尚未向真实上游验证该生成方式。
+- **风险**：服务端若校验该字段的 SDK 生成规则或生命周期，真实发送验证码或组合登录可能被拒绝。
+- **后续方向**：用实际手机号执行一次端到端集成测试；若失败，补抓清除 App 数据后的首次启动流程，确认该字段来源与校验规则。
+- **状态**：待实网验证。
+
 ## P2：维护与行为一致性
 
-### 12. 批量任务页面职责过重
+### 13. 批量任务页面职责过重
 
 - **位置**：`src/views/BatchDailyTasks.vue`
 - **现状**：单文件同时包含界面、定时调度、多账号编排、连接管理、日志和大量游戏业务策略，文件规模超过 5900 行。
@@ -113,7 +121,7 @@
 - **后续方向**：按任务编排、连接上下文、调度器、任务注册表和展示组件拆分，优先抽出无 UI 的纯业务模块。
 - **状态**：未处理。
 
-### 13. DailyTasks 页面仍包含 Mock 数据和本地缓存逻辑
+### 14. DailyTasks 页面仍包含 Mock 数据和本地缓存逻辑
 
 - **位置**：`src/views/DailyTasks.vue:329`、`src/views/DailyTasks.vue:349`
 - **现状**：页面部分任务状态来自 Mock 数据或 `localStorage`，与真实 WebSocket 任务状态并非完全闭环。
@@ -121,7 +129,7 @@
 - **后续方向**：明确 Mock 模式和真实模式的边界，统一由任务状态源驱动 UI，并为缓存增加版本和失效策略。
 - **状态**：未处理。
 
-### 14. 周几判断误用了位运算符
+### 15. 周几判断误用了位运算符
 
 - **位置**：`src/utils/dailyTaskRunner.js:621-624`
 - **现状**：使用 `|` 代替逻辑或 `||` 判断多个星期值。
@@ -129,7 +137,7 @@
 - **后续方向**：改为 `includes` 或 `||`，并补充星期边界测试。
 - **状态**：未处理。
 
-### 15. 文档描述的 Python 服务在当前仓库中不完整
+### 16. 文档描述的 Python 服务在当前仓库中不完整
 
 - **位置**：`README.md:171` 起、`server/`
 - **现状**：README 描述了 `server/app.py`、配置文件、用户认证和 Token URL 服务，但当前 `server/` 目录只有 `requirements.txt`。
@@ -146,6 +154,14 @@
 - `pnpm run build`：成功，但报告自动路由热更新导出、`eval` 和大 chunk 警告；构建同时生成 `dist/_worker.js`。
 - `pnpm exec tsc --noEmit -p tsconfig.app.json`：失败，14 个文件共 139 个错误。
 - `pnpm exec eslint src --ext .vue,.js,.ts`：失败，找不到 `eslint` 命令。
+
+验证日期：2026-08-26
+
+- `node --test test/hortorLogin.test.js test/serverRole.test.js test/worker.test.js`：7 个测试全部通过。
+- 浏览器 mock：发送验证码、组合登录、服务器角色列表、两个角色认证和 Token 入库全部通过；IndexedDB bin 与 localStorage 均不含手机号或验证码。
+- `pnpm run build`：成功，手机号页面独立产出；仍有已记录的大 chunk 警告。
+- 目标文件编辑器诊断：无错误。
+- `pnpm exec eslint ...`：失败，当前安装仍找不到 `eslint` 命令。
 
 ## 处理约定
 

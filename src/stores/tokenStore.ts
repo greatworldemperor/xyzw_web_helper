@@ -37,7 +37,7 @@ declare interface TokenData {
   serverId?: string | number;
   roleId?: string | number;
   remark?: string; // 备注信息
-  importMethod?: "manual" | "bin" | "url" | "wxQrcode"; // 导入方式：manual（手动）、bin文件或url链接
+  importMethod?: "manual" | "bin" | "url" | "wxQrcode" | "mobile";
   sourceUrl?: string; // 当importMethod为url时，存储url链接
   avatar?: string; // 用户头像URL
   upgradedToPermanent?: boolean; // 是否升级为长期有效
@@ -415,7 +415,8 @@ export const useTokenStore = defineStore("tokens", () => {
         }
       } else if (
         gameToken.importMethod === "bin" ||
-        gameToken.importMethod === "wxQrcode"
+        gameToken.importMethod === "wxQrcode" ||
+        gameToken.importMethod === "mobile"
       ) {
         // Bin形式token刷新
         let userToken: ArrayBuffer | null = await getArrayBuffer(tokenId);
@@ -1356,6 +1357,7 @@ export const useTokenStore = defineStore("tokens", () => {
         token.importMethod === "url" ||
         token.importMethod === "bin" ||
         token.importMethod === "wxQrcode" ||
+        token.importMethod === "mobile" ||
         token.upgradedToPermanent
       ) {
         return false;
@@ -1383,7 +1385,8 @@ export const useTokenStore = defineStore("tokens", () => {
       !token.upgradedToPermanent &&
       token.importMethod !== "url" &&
       token.importMethod !== "bin" &&
-      token.importMethod !== "wxQrcode"
+      token.importMethod !== "wxQrcode" &&
+      token.importMethod !== "mobile"
     ) {
       updateToken(tokenId, {
         upgradedToPermanent: true,

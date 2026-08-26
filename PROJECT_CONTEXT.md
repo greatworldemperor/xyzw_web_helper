@@ -2,7 +2,7 @@
 
 > 这是一份面向后续开发和代码分析的快速交接文档。
 >
-> 内容基于 2026-08-20 对当前工作区源码、配置和测试结果的核对。遇到本文与源码冲突时，以当前源码和验证结果为准；已知问题集中记录在 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。
+> 内容首次基于 2026-08-20 对工作区核对，最近更新于 2026-08-26。遇到本文与源码冲突时，以当前源码和验证结果为准；已知问题集中记录在 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。
 
 ## 1. 项目定位
 
@@ -64,7 +64,7 @@ H5 方法
 - `gameTokens`、`selectedTokenId`、`tokenGroups` 等本地持久化状态。
 - Token 分组使用 `tokenKeys` 持久化 `serverId:roleId` 稳定身份键；界面需要的当前 `token.id` 由 Store 运行时解析，所有导入入口都必须保留 `serverId` 和 `roleId`。
 - Token 导入、Base64 解析、校验、选择、更新和删除。
-- 自动 Token 刷新：URL、BIN 和微信扫码来源均由 `attemptTokenRefresh()` 统一处理；刷新结果必须是包含有效 `roleToken` 的 JSON 加密 Token。
+- 自动 Token 刷新：URL、BIN、微信扫码和手机号登录来源均由 `attemptTokenRefresh()` 统一处理；后三者从 IndexedDB 中读取登录 bin，刷新结果必须是包含有效 `roleToken` 的 JSON 加密 Token。
 - WebSocket 连接状态、连接锁、跨标签页连接协调。
 - 角色信息、军团信息、活动、塔、队伍、战斗版本和学习状态等 `gameData`。
 - 消息处理、事件分发、任务运行状态和部分连接池逻辑。
@@ -87,7 +87,7 @@ H5 方法
 - `lx`、`x`、`xtm` 加解密方案及自动检测。
 - `g_utils.encode()`、`g_utils.parse()` 和游戏消息模板。
 
-手机号登录的三批抓包分析、与微信扫码登录的字段对照、已确认的 `combUser -> bin -> Token` 复用链路以及后续失败分支抓包清单，记录在 [docs/mobile-phone-login-protocol-research.md](docs/mobile-phone-login-protocol-research.md)。成功响应链已闭环；验证码错误、过期和发送限流等失败响应仍待补抓。
+手机号登录的三批抓包分析、与微信扫码登录的字段对照、已确认的 `combUser -> bin -> Token` 复用链路以及后续失败分支抓包清单，记录在 [docs/mobile-phone-login-protocol-research.md](docs/mobile-phone-login-protocol-research.md)。当前实现位于 [src/utils/hortorLogin.js](src/utils/hortorLogin.js) 和 [src/views/TokenImport/mobile.vue](src/views/TokenImport/mobile.vue)，支持发送验证码、组合登录、角色选择、bin 下载和批量 Token 导入；手机号和验证码不会持久化。成功链已由协议测试和浏览器 mock 闭环，真实上游仍需确认网页生成的 `activeLoginMatchId` 可被接受；验证码错误、过期和上游限流等失败响应仍待补抓。
 
 消息通常包含以下字段：
 
@@ -357,6 +357,7 @@ wss://xxz-xyzw.hortorgames.com/agent?p=<encoded-token>&e=x&lang=chinese
 - [src/views/Home.vue](src/views/Home.vue)：首页。
 - [src/views/TokenImport/index.vue](src/views/TokenImport/index.vue)：Token 导入和管理。
 - [src/views/TokenImport/bin.vue](src/views/TokenImport/bin.vue)：BIN 多角色导入；角色表桌面端每页显示 50 条，并支持顺序“全部添加”到待导入列表。
+- [src/views/TokenImport/mobile.vue](src/views/TokenImport/mobile.vue)：手机号验证码登录；获取角色后为每个角色生成并持久化独立登录 bin，再导入可刷新的 Token。
 - [src/views/Dashboard.vue](src/views/Dashboard.vue)：控制台和连接/角色状态。
 - [src/views/GameFeatures.vue](src/views/GameFeatures.vue)：游戏功能入口。
 - [src/views/DailyTasks.vue](src/views/DailyTasks.vue)：单账号任务。
@@ -450,7 +451,7 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 - WebSocket：直接连接游戏服务。
 - HTTP/HTTPS：Token 转换、服务器列表和 Worker/开发代理相关请求。
 
-Vite 开发代理位于 [vite.config.js](vite.config.js)，当前配置了微信登录、微信长轮询和 Hortor 接口代理。Cloudflare Worker 位于 [worker.js](worker.js)，当前只代理固定的三个前缀并为其添加 CORS 响应头。
+Vite 开发代理位于 [vite.config.js](vite.config.js)，当前配置了微信登录、微信长轮询、Hortor 组合登录和 Hortor 账号中心代理。Cloudflare Worker 位于 [worker.js](worker.js)，当前代理固定的四个前缀；两个 Hortor 登录代理均限制为同源、精确路径、POST、指定 Content-Type 和有界请求/JSON 响应。验证码路由还校验手机号并按 IP 和手机号摘要执行单实例内存限流。旧微信代理仍使用通配 CORS，详见 [KNOWN_ISSUES.md](KNOWN_ISSUES.md)。
 
 ## 7. 常用命令和当前验证状态
 
@@ -502,6 +503,13 @@ node --test test/helperTaskRunner.test.js test/towerClimbLimit.test.js
 - `pnpm run build` 成功；仍有既有的自动路由、`eval`、Sass legacy API 和大 chunk 警告。
 - 使用本地 Vite 页面验证自由模板新增、编辑、71 项全选/清空、独立存储和旧模板存储不变；桌面及 `390 × 844` 移动视口均无横向溢出，编辑器任务网格在移动端降为单列并使用内部滚动。
 - `git diff --check` 通过；编辑器未报告本次触及文件的语法或类型诊断。仓库未安装可执行的 `prettier`，因此未运行 Prettier 检查。
+
+截至 2026-08-26 的手机号登录功能验证：
+
+- `node --test test/hortorLogin.test.js test/serverRole.test.js test/worker.test.js`：7 个用例全部通过。
+- 浏览器 mock 完整通过发送验证码、组合登录、服务器角色列表、两个角色认证和 Token 入库；IndexedDB bin 与 localStorage 均不含手机号或验证码。
+- `pnpm run build` 成功，手机号页面独立产出；仍有已记录的大 chunk 警告。
+- `git diff --check` 和目标文件编辑器诊断通过；`pnpm exec eslint ...` 仍因当前安装找不到 `eslint` 命令而无法执行。
 
 ## 8. 部署信息
 

@@ -39,6 +39,8 @@ POST https://comb-platform.hortorgames.com/comb-login-server/api/v1/login
 
 第三批抓包已经确认发送验证码、组合登录和游戏角色认证的成功响应契约，成功主链已闭环。当前仍不能准确实现错误验证码、验证码过期和发送限流等失败提示，因为尚未抓到失败响应。
 
+仓库现已按本文协议实现手机号登录。自动化测试和浏览器 mock 已验证完整静态链路；真实上游仍需用实际手机号做一次集成验证，重点确认网页生成的 `activeLoginMatchId` 是否被服务端接受。
+
 ## 2. 数据来源与边界
 
 ### 2.1 第一批抓包
@@ -426,55 +428,42 @@ body: 205 字节 BON 数据
 - 微信扫码页面现有的服务器角色列表、角色选择、bin 重编码和 Token 入库逻辑。
 - [bonProtocol.js](../src/utils/bonProtocol.js) 的 `g_utils.encode()` 与 `g_utils.parse()`。
 
-### 8.2 实现时建议拆出的共享能力
+### 8.2 当前实现
 
-当前 `encodePayload()`、`decodePayload()` 和 `combUser -> bin` 都写在微信扫码组件内部。新增手机号登录时，不应复制整套算法，建议先提取为共享登录工具，例如：
-
-```text
-src/utils/hortorLogin.ts
-```
-
-共享工具可以负责：
-
-- `encodePayload(payload)`。
-- 开发环境下受控的 `decodePayload(payload)`，生产代码不记录明文。
-- `createLoginBin(combUser, options)`。
-- 组合登录 URL 和公共设备字段构造。
-
-手机号组件只负责：
-
-- 手机号输入和本地格式校验。
-- 发送验证码。
-- 验证码倒计时。
-- 提交验证码。
-- 调用共享的角色列表和 Token 导入流程。
+- [hortorLogin.js](../src/utils/hortorLogin.js) 实现自定义载荷编解码、稳定设备身份、两个请求构造、响应校验和 `combUser -> bin`。
+- [mobile.vue](../src/views/TokenImport/mobile.vue) 实现手机号校验、服务端倒计时、登录、角色选择、bin 下载和批量导入。
+- [serverRole.js](../src/utils/serverRole.js) 提取区服与角色序号换算，避免继续复制旧组件中的计算代码。
+- [tokenStore.ts](../src/stores/tokenStore.ts) 将 `mobile` 作为 IndexedDB bin 支持的长期 Token 来源，可沿用现有刷新流程。
+- 手机号和短信验证码只保留在组件内存中；持久化 bin 的 `info` 只有 `combUser`，不会写入手机号或短信验证码。
+- 解析登录 bin 时使用副本，因为 `g_utils.parse()` 会原地改写传入缓冲区；原始加密 bin 保留给 `/login/serverlist` 请求。
 
 ## 9. 代理与安全约束
 
-当前 [vite.config.js](../vite.config.js) 和 [worker.js](../worker.js) 的 `/api/hortor` 只代理到：
+当前 [vite.config.js](../vite.config.js) 和 [worker.js](../worker.js) 使用两个独立前缀：
 
 ```text
-https://comb-platform.hortorgames.com
+/api/hortor         -> https://comb-platform.hortorgames.com
+/api/hortor-ucenter -> https://ucenter-app-server.hortorgames.com
 ```
 
-手机号登录还需要单独代理：
+生产 Worker 对两个 Hortor 登录前缀都要求本站同源调用，并只开放各自的精确登录路径。验证码代理执行以下约束：
 
-```text
-https://ucenter-app-server.hortorgames.com
-```
+- 只允许 `POST application/json`。
+- 要求浏览器 `Origin` 与当前站点同源。
+- 请求正文上限为 4 KiB，并校验手机号、`gameId` 和 `verifyCodeTp`。
+- 按来源 IP 与手机号摘要执行 120 秒内存限流。
+- 上游响应必须是 JSON，且不得超过 64 KiB。
+- 不记录或持久化手机号、短信验证码、DID、`combUser` 或 Token。
 
-建议使用独立前缀，例如 `/api/hortor-ucenter`，避免把两个上游混在同一重写规则中。
+组合登录代理只允许 `POST text/plain`，校验游戏、版本、加密版本、系统、包名、时间戳和 DID 查询参数，请求正文不得超过 16 KiB；两个登录代理的上游响应都必须是 JSON 且不得超过 64 KiB。旧微信二维码页面和手机号页面均使用同一个受限组合登录路径。
 
-短信接口不能直接接入当前允许任意来源的 Worker 代理。至少需要：
+账号中心上游没有提供 Node 本地可验证的完整证书链，因此 Vite 开发代理对该目标设置 `secure: false`，否则本地会报 `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`。该设置只影响本地开发代理；生产 Cloudflare Worker 仍使用平台 `fetch()` 的 TLS 校验。
 
-- 限制允许的前端 Origin。
-- 按来源 IP 和手机号摘要限流。
-- 不在日志中记录手机号、短信验证码、DID、`combUser` 或 Token。
-- 不持久化短信验证码。
-- 不把抓包中的设备标识和签名值当作用户身份凭据。
-- 对上游返回体大小和 Content-Type 做限制。
+内存限流仅在单个 Worker 实例存活期间有效，不是跨实例、跨地域或重启后仍有效的强限流。若公开部署面临滥用，应增加 Cloudflare Rate Limiting、Durable Object 或 KV 等共享状态能力。
 
 手机号只应用于本次登录。成功生成 bin 后，应保存 bin 供现有刷新流程使用，不应保存手机号或短信验证码来尝试自动重新登录。
+
+专项测试位于 [hortorLogin.test.js](../test/hortorLogin.test.js)、[serverRole.test.js](../test/serverRole.test.js) 和 [worker.test.js](../test/worker.test.js)。浏览器 mock 已验证：发送验证码、组合登录、角色列表、逐角色认证、两个 Token 入库，以及持久化数据不含手机号和验证码。
 
 ## 10. 尚未确认的问题
 

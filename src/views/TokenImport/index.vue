@@ -38,7 +38,7 @@
             添加游戏Token
           </h2>
         </template>
-        <div class="card-header">
+        <div class="card-header import-method-header">
           <!-- 导入方式选择 -->
           <n-radio-group
             v-model:value="importMethod"
@@ -48,6 +48,7 @@
             <n-radio-button value="manual"> 手动输入 </n-radio-button>
             <n-radio-button value="url"> URL获取 </n-radio-button>
             <n-radio-button value="wxQrcode"> 微信扫码获取 </n-radio-button>
+            <n-radio-button value="mobile"> 手机号登录 </n-radio-button>
             <n-radio-button value="bin"> BIN多角色获取 </n-radio-button>
             <n-radio-button value="singlebin"> BIN单角色获取 </n-radio-button>
           </n-radio-group>
@@ -67,6 +68,11 @@
             @cancel="() => (showImportForm = false)"
             @ok="() => (showImportForm = false)"
             v-if="importMethod === 'wxQrcode'"
+          />
+          <mobile-login-form
+            @cancel="() => (showImportForm = false)"
+            @ok="() => (showImportForm = false)"
+            v-if="importMethod === 'mobile'"
           />
           <bin-token-form
             @cancel="() => (showImportForm = false)"
@@ -284,6 +290,7 @@
                       token.importMethod === 'url' ||
                       token.importMethod === 'bin' ||
                       token.importMethod === 'wxQrcode' ||
+                      token.importMethod === 'mobile' ||
                       token.upgradedToPermanent
                         ? 'success'
                         : 'warning'
@@ -293,6 +300,7 @@
                       token.importMethod === "url" ||
                       token.importMethod === "bin" ||
                       token.importMethod === "wxQrcode" ||
+                      token.importMethod === "mobile" ||
                       token.upgradedToPermanent
                         ? "长期有效"
                         : "临时存储"
@@ -307,6 +315,7 @@
                       token.importMethod === 'url' ||
                       token.importMethod === 'bin' ||
                       token.importMethod === 'wxQrcode' ||
+                      token.importMethod === 'mobile' ||
                       token.upgradedToPermanent
                     )
                   "
@@ -465,6 +474,7 @@
                     token.importMethod === 'url' ||
                     token.importMethod === 'bin' ||
                     token.importMethod === 'wxQrcode' ||
+                    token.importMethod === 'mobile' ||
                     token.upgradedToPermanent
                       ? 'success'
                       : 'warning'
@@ -474,6 +484,7 @@
                     token.importMethod === "url" ||
                     token.importMethod === "bin" ||
                     token.importMethod === "wxQrcode" ||
+                    token.importMethod === "mobile" ||
                     token.upgradedToPermanent
                       ? "长期"
                       : "临时"
@@ -487,6 +498,7 @@
                       token.importMethod === 'url' ||
                       token.importMethod === 'bin' ||
                       token.importMethod === 'wxQrcode' ||
+                      token.importMethod === 'mobile' ||
                       token.upgradedToPermanent
                     )
                   "
@@ -616,6 +628,7 @@ import UrlTokenForm from "./url.vue";
 import BinTokenForm from "./bin.vue";
 import singleBinTokenForm from "./singlebin.vue";
 import WxQrcodeForm from "./wxqrcode.vue";
+import MobileLoginForm from "./mobile.vue";
 
 import { useTokenStore, selectedTokenId } from "@/stores/tokenStore";
 import {
@@ -888,7 +901,8 @@ const refreshToken = async (token) => {
       message.success("Token刷新成功");
     } else if (
       token.importMethod === "wxQrcode" ||
-      token.importMethod === "bin"
+      token.importMethod === "bin" ||
+      token.importMethod === "mobile"
     ) {
       let userToken = await getArrayBuffer(token.id);
       let usedOldKey = false;
@@ -1245,7 +1259,8 @@ const refreshAllTokens = async () => {
     (token) =>
       token.importMethod === "url" ||
       token.importMethod === "wxQrcode" ||
-      token.importMethod === "bin",
+      token.importMethod === "bin" ||
+      token.importMethod === "mobile",
   );
   const manualTokens = tokenStore.gameTokens.filter(
     (token) => token.importMethod === "manual",
@@ -2282,6 +2297,42 @@ onUnmounted(() => {
   .storage-info {
     flex-direction: column;
     gap: var(--spacing-sm);
+  }
+}
+
+.import-method-header {
+  display: block;
+  width: 100%;
+}
+
+.import-method-header .import-method-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--spacing-xs);
+  height: auto;
+  width: 100%;
+}
+
+.import-method-tabs :deep(.n-radio-group__splitor) {
+  display: none;
+}
+
+.import-method-tabs :deep(.n-radio-button) {
+  justify-content: center;
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--border-light);
+  border-radius: var(--border-radius-small) !important;
+}
+
+@media (max-width: 560px) {
+  .import-method-header .import-method-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .import-method-tabs :deep(.n-radio__label) {
+    padding: 0 6px;
+    font-size: var(--font-size-xs);
   }
 }
 
