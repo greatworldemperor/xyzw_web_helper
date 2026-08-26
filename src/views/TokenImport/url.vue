@@ -31,6 +31,24 @@
       </template>
     </n-form-item>
 
+    <div class="optional-fields">
+      <n-form-item label="服务器ID（API未返回时必填）">
+        <n-input
+          v-model:value="urlForm.serverId"
+          placeholder="例如：1000027"
+          clearable
+        />
+      </n-form-item>
+
+      <n-form-item label="角色ID（API未返回时必填）">
+        <n-input
+          v-model:value="urlForm.roleId"
+          placeholder="例如：123456789"
+          clearable
+        />
+      </n-form-item>
+    </div>
+
     <!-- 角色详情 -->
     <n-collapse>
       <n-collapse-item title="角色详情 (可选)" name="optional">
@@ -102,6 +120,8 @@ const cancel = () => {
 const urlForm = reactive({
   name: "",
   url: "",
+  serverId: "",
+  roleId: "",
   server: "",
   wsUrl: "",
 });
@@ -136,9 +156,31 @@ const handleUrlImport = async () => {
   try {
     const response = await axios.get(urlForm.url);
     if (response.status === 200 && response.data && response.data.token) {
+      const responseData = response.data;
+      const serverId =
+        String(
+          responseData.serverId ??
+            responseData.data?.serverId ??
+            responseData.role?.serverId ??
+            "",
+        ).trim() || urlForm.serverId.trim();
+      const roleId =
+        String(
+          responseData.roleId ??
+            responseData.data?.roleId ??
+            responseData.role?.roleId ??
+            "",
+        ).trim() || urlForm.roleId.trim();
+
+      if (!serverId || !roleId) {
+        throw new Error("接口未返回serverId和roleId，请在角色详情中填写");
+      }
+
       const newToken = {
         name: urlForm.name,
         token: response.data.token,
+        serverId,
+        roleId,
         server: urlForm.server || "未知",
         wsUrl: urlForm.wsUrl || "",
         id: Date.now().toString(),
@@ -150,6 +192,8 @@ const handleUrlImport = async () => {
       // 重置表单
       urlForm.name = "";
       urlForm.url = "";
+      urlForm.serverId = "";
+      urlForm.roleId = "";
       urlForm.server = "";
       urlForm.wsUrl = "";
       $emit("ok");

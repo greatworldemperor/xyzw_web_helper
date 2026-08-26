@@ -9,6 +9,7 @@ import { XyzwWebSocketClient } from "@/utils/xyzwWebSocket";
 import useIndexedDB from "@/hooks/useIndexedDB";
 import { generateRandomSeed } from "@/utils/randomSeed";
 import {
+  getStableTokenKey,
   transformToken,
   validateEncryptedToken,
   setAuthUserRateLimiterCallback,
@@ -86,7 +87,7 @@ declare interface TokenGroup {
   id: string;
   name: string;
   color: string; // 分组颜色，用于UI显示
-  tokenIds: string[]; // 属于该分组的token ID列表
+  tokenKeys: string[]; // 属于该分组的稳定身份键列表（serverId:roleId）
   createdAt?: string;
   updatedAt?: string;
 }
@@ -1611,6 +1612,11 @@ export const useTokenStore = defineStore("tokens", () => {
   // Token分组管理方法
   // =====================
 
+  const getTokenGroupKey = (tokenId: string) => {
+    const token = gameTokens.value.find((item) => item.id === tokenId);
+    return token ? getStableTokenKey(token.serverId, token.roleId) : null;
+  };
+
   /**
    * 创建新的分组
    */
@@ -1619,7 +1625,7 @@ export const useTokenStore = defineStore("tokens", () => {
       id: "group_" + Date.now() + Math.random().toString(36).slice(2),
       name,
       color,
-      tokenIds: [],
+      tokenKeys: [],
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -1654,10 +1660,17 @@ export const useTokenStore = defineStore("tokens", () => {
    */
   const addTokenToGroup = (groupId: string, tokenId: string) => {
     const group = tokenGroups.value.find((g) => g.id === groupId);
-    if (group && !group.tokenIds.includes(tokenId)) {
-      group.tokenIds.push(tokenId);
+    const tokenKey = getTokenGroupKey(tokenId);
+
+    if (!group || !tokenKey) return false;
+
+    const tokenKeys = group.tokenKeys || (group.tokenKeys = []);
+    if (!tokenKeys.includes(tokenKey)) {
+      group.tokenKeys.push(tokenKey);
       group.updatedAt = new Date().toISOString();
     }
+
+    return true;
   };
 
   /**
@@ -1665,46 +1678,78 @@ export const useTokenStore = defineStore("tokens", () => {
    */
   const removeTokenFromGroup = (groupId: string, tokenId: string) => {
     const group = tokenGroups.value.find((g) => g.id === groupId);
-    if (group) {
-      const index = group.tokenIds.indexOf(tokenId);
-      if (index !== -1) {
-        group.tokenIds.splice(index, 1);
-        group.updatedAt = new Date().toISOString();
-      }
+    const tokenKey = getTokenGroupKey(tokenId);
+
+    if (!group || !tokenKey) return false;
+
+    const index = (group.tokenKeys || []).indexOf(tokenKey);
+    if (index !== -1) {
+      group.tokenKeys.splice(index, 1);
+      group.updatedAt = new Date().toISOString();
     }
+
+    return true;
   };
 
   /**
    * 获取token所属的分组
    */
   const getTokenGroups = (tokenId: string): TokenGroup[] => {
-    return tokenGroups.value.filter((g) => g.tokenIds.includes(tokenId));
+    const tokenKey = getTokenGroupKey(tokenId);
+    if (!tokenKey) return [];
+
+    return tokenGroups.value.filter((g) =>
+      (g.tokenKeys || []).includes(tokenKey),
+    );
   };
 
   /**
-   * 获取分组中的所有token ID
+   * 获取分组中的当前token ID列表
    */
   const getGroupTokenIds = (groupId: string): string[] => {
     const group = tokenGroups.value.find((g) => g.id === groupId);
-    return group ? group.tokenIds : [];
+    if (!group) return [];
+
+    const tokenKeys = group.tokenKeys || [];
+    const matchedTokenKeys = new Set<string>();
+    const tokenIds: string[] = [];
+
+    gameTokens.value.forEach((token) => {
+      const tokenKey = getStableTokenKey(token.serverId, token.roleId);
+      if (
+        tokenKey &&
+        tokenKeys.includes(tokenKey) &&
+        !matchedTokenKeys.has(tokenKey)
+      ) {
+        matchedTokenKeys.add(tokenKey);
+        tokenIds.push(token.id);
+      }
+    });
+
+    return tokenIds;
   };
 
   /**
    * 获取分组中有效的（存在于gameTokens中的）token ID
    */
   const getValidGroupTokenIds = (groupId: string): string[] => {
-    const tokenIds = getGroupTokenIds(groupId);
-    const validTokenIds = gameTokens.value.map((t) => t.id);
-    return tokenIds.filter((id) => validTokenIds.includes(id));
+    return getGroupTokenIds(groupId);
   };
 
   /**
    * 移除不存在的token从所有分组
    */
   const cleanupInvalidTokens = () => {
-    const validTokenIds = new Set(gameTokens.value.map((t) => t.id));
+    const validTokenKeys = new Set(
+      gameTokens.value
+        .map((token) => getStableTokenKey(token.serverId, token.roleId))
+        .filter((key): key is string => key !== null),
+    );
+
     tokenGroups.value.forEach((group) => {
-      group.tokenIds = group.tokenIds.filter((id) => validTokenIds.has(id));
+      group.tokenKeys = (group.tokenKeys || []).filter((key) =>
+        validTokenKeys.has(key),
+      );
     });
   };
 

@@ -646,6 +646,8 @@ const props = defineProps({
   token: String,
   name: String,
   server: String,
+  serverId: [String, Number],
+  roleId: [String, Number],
   wsUrl: String,
   api: String,
   auto: Boolean,
@@ -1551,6 +1553,9 @@ const handleUrlParams = async () => {
           data.token,
           {
             server: props.server || data.server,
+            serverId:
+              props.serverId || data.serverId || data.data?.serverId,
+            roleId: props.roleId || data.roleId || data.data?.roleId,
             wsUrl: props.wsUrl,
             sourceUrl: props.api,
             importMethod: "url",
@@ -1566,6 +1571,8 @@ const handleUrlParams = async () => {
           props.token,
           {
             server: props.server,
+            serverId: props.serverId,
+            roleId: props.roleId,
             wsUrl: props.wsUrl,
             importMethod: "url",
           },

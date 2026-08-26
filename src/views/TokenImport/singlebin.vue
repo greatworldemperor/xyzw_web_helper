@@ -98,8 +98,11 @@ const roleList = ref<
   Array<{
     id: string;
     name: string;
+    roleId: string;
+    serverId: string | number;
     token: string;
     server: string;
+    roleIndex: number;
     wsUrl: string;
     importMethod: string;
   }>
@@ -137,6 +140,20 @@ const uploadBin = (binFile: File) => {
     reader.onload = async (e) => {
       const userToken = e.target?.result as ArrayBuffer;
       // console.log('转换Token:', userToken);
+      const roleId = String(roleMeta.roleId || "").trim();
+      const serverNumber = Number(roleMeta.server);
+      const roleIndex = Number(roleMeta.roleIndex);
+
+      if (
+        !roleId ||
+        !Number.isFinite(serverNumber) ||
+        !Number.isInteger(roleIndex)
+      ) {
+        message.error("单角色BIN文件名必须符合 bin-区服-序号-角色ID-角色名.bin 格式");
+        return;
+      }
+
+      const serverId = serverNumber + 27 + roleIndex * 1000000;
       const tokenId = getTokenId(userToken);
       const roleToken = await transformToken(userToken);
       const roleName = roleMeta.roleName || binFile.name.split(".")?.[0] || "";
@@ -162,9 +179,12 @@ const uploadBin = (binFile: File) => {
       message.success("Token读取成功，请检查角色名称等信息后提交");
       roleList.value.push({
         id: tokenId,
+        roleId,
+        serverId,
         token: roleToken,
         name: roleName,
-        server: roleMeta.server + "" + roleMeta.roleIndex || "",
+        server: `${roleMeta.server}服`,
+        roleIndex,
         wsUrl: importForm.wsUrl || "",
         importMethod: "bin",
       });

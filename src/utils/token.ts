@@ -7,6 +7,18 @@ export const getTokenId = (token: string | ArrayBuffer | Uint8Array) => {
   return binHash;
 };
 
+export const getStableTokenKey = (
+  serverId: string | number | null | undefined,
+  roleId: string | number | null | undefined,
+) => {
+  const normalizedServerId = String(serverId ?? "").trim();
+  const normalizedRoleId = String(roleId ?? "").trim();
+
+  if (!normalizedServerId || !normalizedRoleId) return null;
+
+  return `${normalizedServerId}:${normalizedRoleId}`;
+};
+
 type WaitCallback = (waitTimeMs: number, queueSize: number) => void;
 
 class RateLimiter {
