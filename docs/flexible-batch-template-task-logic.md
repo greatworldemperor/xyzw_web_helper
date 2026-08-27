@@ -1,12 +1,12 @@
 # 自由模板任务逻辑核查
 
-> 本文以当前源码为准，供确认自由模板 UI 文案与实际执行行为是否一致。本文只记录事实和差异，不在本次变更中修改 UI 或任务 handler。
+> 本文以当前源码为准，供确认自由模板 UI 文案与实际执行行为是否一致。已移除的旧任务 ID 只在导入和编辑时作为兼容别名，不会重新出现在任务目录中。
 >
 > 核查入口：[`flexibleTemplate.js`](../src/utils/batch/flexibleTemplate.js)、[`BatchDailyTasks.vue`](../src/views/BatchDailyTasks.vue)、[`dailyTaskRunner.js`](../src/utils/dailyTaskRunner.js) 和各批量任务模块。
 
 ## 1. 阅读约定
 
-- 自由模板当前包含 71 个任务：完整日常 32 个、日常批量 12 个、副本 6 个、宝库 2 个、怪异塔 4 个、资源 10 个、功法 2 个、月度与活动 3 个。
+- 自由模板当前包含 57 个任务：完整日常分组 33 个（30 个 daily 任务、答题/智能发车/收车 3 个批量入口）、副本 5 个、宝库 2 个、怪异塔 2 个、资源 10 个、功法 2 个、月度与活动 3 个。
 - 下文的“调用参数”是 handler 调用 `sendMessageWithPromise()` 时传入的参数。报文最终还会与 `CommandRegistry` 中对应命令的默认 body 合并。
 - “完成”优先指源码把账号状态设为 `completed`，不等于业务目标一定达到。例如没有库存、活动未开放、达到安全上限或没有可操作对象时，多个 handler 仍会把账号标为 `completed`。
 - “准确”表示 UI 标签大体描述了会发送的动作；“需确认”表示动作存在但范围、成功含义或协议语义需要在 UI 上说明；“不准确”表示标签明显超过了当前实现。
@@ -47,8 +47,8 @@
 
 - 竞技场、爬塔、BOSS 阵容。
 - 军团 BOSS 次数。
-- 箱子类型、开箱数量、目标箱子积分。
-- 鱼竿类型、钓鱼数量、招募数量。
+- 批量开箱宝箱类型、批量开箱数量、批量开箱目标积分。
+- 批量钓鱼鱼竿类型、批量钓鱼数量、批量招募数量。
 - 怪异塔最大爬塔次数。
 - 盐杯竞猜选项。
 - 功法接收者 ID、赠送数量。
@@ -64,7 +64,7 @@
 
 自由模板执行完整日常时，`createFlexibleTaskDeps()` 会强制打开以下旧日常开关：`claimBottle`、`payRecruit`、`openBox`、`arenaEnable`、`claimHangUp`、`claimEmail`、`blackMarketPurchase`、`freeGachaEnable`。因此勾选了对应 `daily.*` 任务后，旧设置不能再关闭这些行为，UI 目前没有对此作出提示。
 
-## 4. 完整日常：32 项
+## 4. 完整日常：30 项 daily 任务
 
 实现：[`dailyTaskRunner.js`](../src/utils/dailyTaskRunner.js)。选择任意 `daily.*` 任务时，runner 都会先获取角色信息，并尝试读取当前阵容；这些初始化请求不受 checkbox 单项限制。
 
@@ -78,7 +78,7 @@
 - **条件**：任务完成表中的 ID `2` 不是 `-1`，且选中了该任务。
 - **循环**：一次。
 - **失败行为**：当前任务记录失败并继续日常队列。
-- **文案核查**：**需确认**。该命令与 `daily.addHangUpTime` 完全相同，当前源码不能仅凭命令确认它一定代表“分享一次游戏”。
+- **文案核查**：**需确认**。该命令也用于挂机加钟，当前源码不能仅凭命令确认它一定代表“分享一次游戏”。
 
 #### 2. `daily.friendGold`：赠送好友金币
 
@@ -113,24 +113,15 @@
 - **循环**：固定加入 3 次任务，实际每次失败后由 runner 跳过当前项；不会根据中途响应动态缩短后续次数。
 - **文案核查**：**基本准确**，但“3 次”是请求计划，不保证 3 次都成功。
 
-#### 6. `daily.claimHangUp`：领取挂机奖励
+#### 6. `daily.claimHangUp`：领取挂机并加钟
 
-- **命令**：`system_claimhangupreward`。
-- **参数**：调用参数 `{}`。
+- **命令顺序**：先发送 `system_claimhangupreward`，再串行发送 4 次 `system_mysharecallback`。
+- **参数**：领取调用 `{}`；加钟调用 `{ isSkipShareCard: true, type: 2 }`。
 - **条件**：任务完成表 ID `5` 不是 `-1`，且 `settings.claimHangUp` 为真。
-- **循环**：一次。
+- **循环**：领取一次，加钟固定 4 次。
 - **文案核查**：**准确**；自由模板会强制打开 `claimHangUp`。
 
-#### 7. `daily.addHangUpTime`：挂机加钟 4 次
-
-- **命令**：`system_mysharecallback`。
-- **参数**：`{ isSkipShareCard: true, type: 2 }`。
-- **条件**：任务完成表 ID `5` 不是 `-1`，且 `settings.claimHangUp` 为真。
-- **循环**：固定 4 次。
-- **特殊行为**：与 `daily.share` 使用完全相同的命令和参数；源码依靠任务位置和业务上下文区分日志名称。
-- **文案核查**：**需确认**。次数描述准确，但协议语义与“分享一次游戏”相同，不能把两者当作已验证的不同服务端动作。
-
-#### 8. `daily.openBox`：开启木质宝箱 10 个
+#### 7. `daily.openBox`：开启木质宝箱 10 个
 
 - **命令**：`item_openbox`。
 - **参数**：`{ itemId: 2001, number: 10 }`。
@@ -138,7 +129,7 @@
 - **循环**：一次；不预检查木质宝箱库存。
 - **文案核查**：**准确**，但库存不足时由服务端返回失败。
 
-#### 9. `daily.resetBottleTimer`：重置盐罐计时
+#### 8. `daily.resetBottleTimer`：重置盐罐计时
 
 - **命令**：先 `bottlehelper_stop`，再 `bottlehelper_start`。
 - **参数**：调用参数均为 `{}`；命令注册表会为瓶子命令补入默认 `bottleType: -1`。
@@ -146,7 +137,7 @@
 - **循环**：停止和开始各一次，中间按命令延迟执行。
 - **文案核查**：**准确**；它重置的是计时，不领取盐罐奖励。
 
-#### 10. `daily.claimBottle`：领取盐罐奖励
+#### 9. `daily.claimBottle`：领取盐罐奖励
 
 - **命令**：`bottlehelper_claim`。
 - **参数**：调用参数 `{}`。
@@ -156,7 +147,7 @@
 
 ### 4.2 竞技场与 BOSS
 
-#### 11. `daily.arena`：竞技场战斗 3 次
+#### 10. `daily.arena`：竞技场战斗 3 次
 
 - **命令顺序**：`presetteam_getinfo`/必要时 `presetteam_saveteam`，`arena_startarea`，重复 `arena_getareatarget` 和 `fight_startareaarena`。
 - **参数**：切阵容使用 `{ teamId: settings.arenaFormation }`；战斗使用 `{ targetId }`。
@@ -166,7 +157,7 @@
 - **失败行为**：非限流错误通常只结束当前竞技场任务，runner 继续后续任务。
 - **文案核查**：**基本准确**，但“3 次”是最多 3 次；时间、目标缺失和战斗失败都可能少于 3 次。
 
-#### 12. `daily.legionBoss`：军团 BOSS
+#### 11. `daily.legionBoss`：军团 BOSS
 
 - **命令顺序**：必要时 `presetteam_saveteam`，然后重复 `fight_startlegionboss`。
 - **参数**：切阵容 `{ teamId: settings.bossFormation }`；BOSS 命令调用参数 `{}`。
@@ -174,7 +165,7 @@
 - **循环**：`max(settings.bossTimes - alreadyLegionBoss, 0)` 次，模板设置被规范化到 `0-4`。
 - **文案核查**：**准确**；实际次数会受已完成统计和模板次数限制。
 
-#### 13. `daily.dailyBoss`：每日 BOSS 3 次
+#### 12. `daily.dailyBoss`：每日 BOSS 3 次
 
 - **命令顺序**：必要时切换 BOSS 阵容，重复 `fight_startboss`。
 - **参数**：`{ bossId: todayBossId }`；BOSS ID 由星期映射为 `9901-9905`。
@@ -186,49 +177,42 @@
 
 以下任务都在固定奖励阶段按源码数组顺序加入；通常没有单独的每日完成状态预检查，服务端已领取时会返回错误并由 runner 跳过当前任务。
 
-#### 14. `daily.welfareSignIn`：福利签到
+#### 13. `daily.welfareSignIn`：福利签到
 
 - **命令**：`system_signinreward`。
 - **参数**：调用参数 `{}`。
 - **循环**：一次。
 - **文案核查**：**准确**。
 
-#### 15. `daily.clubSignIn`：俱乐部签到
+#### 14. `daily.clubSignIn`：俱乐部签到
 
 - **命令**：`legion_signin`。
 - **参数**：调用参数 `{}`。
 - **循环**：一次。
 - **文案核查**：**准确**。
 
-#### 16. `daily.discountGift`：领取每日礼包
+#### 15. `daily.discountGift`：领取每日礼包
 
 - **命令**：`discount_claimreward`。
 - **参数**：调用参数 `{}`；注册表默认 `discountId: 1`。
 - **循环**：一次。
 - **文案核查**：**准确**，商品 ID 由命令默认值决定。
 
-#### 17. `daily.collectionReward`：领取每日免费奖励
-
-- **命令**：`collection_claimfreereward`。
-- **参数**：调用参数 `{}`。
-- **循环**：一次。
-- **文案核查**：**基本准确**。
-
-#### 18. `daily.freeCardGift`：领取免费礼包
+#### 16. `daily.freeCardGift`：领取免费礼包
 
 - **命令**：`card_claimreward`。
 - **参数**：调用参数 `{}`；注册表默认 `cardId: 1`。
 - **循环**：一次。
 - **文案核查**：**基本准确**，具体卡 ID 依赖命令默认值。
 
-#### 19. `daily.permanentCardGift`：领取永久卡礼包
+#### 17. `daily.permanentCardGift`：领取永久卡礼包
 
 - **命令**：`card_claimreward`。
 - **参数**：`{ cardId: 4003 }`。
 - **循环**：一次。
 - **文案核查**：**准确**，前提是 `4003` 确实对应永久卡礼包。
 
-#### 20. `daily.claimEmail`：领取邮件奖励
+#### 18. `daily.claimEmail`：领取邮件奖励
 
 - **命令**：`mail_claimallattachment`。
 - **参数**：调用参数 `{}`；注册表默认 `category: 0`。
@@ -236,16 +220,16 @@
 - **循环**：一次，领取该分类的全部附件。
 - **文案核查**：**准确**。
 
-#### 21. `daily.collectionGift`：领取珍宝阁免费礼包
+#### 19. `daily.collectionGift`：领取珍宝阁礼包
 
 - **命令顺序**：`collection_goodslist`，再 `collection_claimfreereward`。
 - **参数**：两个调用参数均为 `{}`。
 - **循环**：每个命令一次。
-- **文案核查**：**准确**；与 `daily.collectionReward` 共享领取命令，同时选中可能产生重复请求。
+- **文案核查**：**准确**；它是自由模板中唯一保留的珍宝阁领取入口，包含列表查询和免费奖励领取。
 
 ### 4.4 免费活动、黑市与梦境
 
-#### 22. `daily.freeGacha`：免费扭蛋
+#### 20. `daily.freeGacha`：免费扭蛋
 
 - **命令**：`gacha_drawreward`。
 - **参数**：`{ num: 1, isGroup: false }`。
@@ -253,7 +237,7 @@
 - **循环**：一次。
 - **文案核查**：**准确**；自由模板会强制打开该开关。
 
-#### 23. `daily.freeFishing`：免费钓鱼 3 次
+#### 21. `daily.freeFishing`：免费钓鱼 3 次
 
 - **命令**：`artifact_lottery`。
 - **参数**：`{ lotteryNumber: 1, newFree: true, type: 1 }`。
@@ -261,7 +245,7 @@
 - **循环**：固定加入 3 次。
 - **文案核查**：**需确认**。标签和请求次数明确，但时间字段来源与其他免费活动不一致，需确认服务端字段语义。
 
-#### 24. `daily.genieSweep`：四国灯神免费扫荡
+#### 22. `daily.genieSweep`：四国灯神免费扫荡
 
 - **命令**：对灯神 ID `1-4` 分别调用 `genie_sweep`。
 - **参数**：`{ genieId: 1 }` 至 `{ genieId: 4 }`。
@@ -269,7 +253,7 @@
 - **循环**：最多四个国家，每个国家一次；已领取的国家不会加入队列。
 - **文案核查**：**准确**，不包含深海灯神 ID `5`。
 
-#### 25. `daily.freeGenieTickets`：领取免费扫荡券 3 次
+#### 23. `daily.freeGenieTickets`：领取免费扫荡券 3 次
 
 - **命令**：`genie_buysweep`。
 - **参数**：调用参数 `{}`。
@@ -277,7 +261,7 @@
 - **循环**：固定 3 次，服务端决定是否还有可领取次数。
 - **文案核查**：**基本准确**，3 次是请求上限而不是保证成功次数。
 
-#### 26. `daily.blackMarket`：黑市购买 1 次
+#### 24. `daily.blackMarket`：黑市采购
 
 - **命令**：`store_purchase`。
 - **参数**：`{ goodsId: 1 }`；这也是命令注册表默认商品。
@@ -285,16 +269,16 @@
 - **循环**：一次。
 - **文案核查**：**准确**；自由模板会强制打开黑市购买开关。
 
-#### 27. `daily.dream`：咸王梦境
+#### 25. `daily.dream`：咸王梦境（选择阵容）
 
 - **命令**：`dungeon_selecthero`。
 - **参数**：`{ battleTeam: { 0: 107 } }`。
 - **条件**：只在周日、周一、周三、周四加入任务队列。
 - **循环**：一次。
 - **实际范围**：没有梦境战斗、推进关卡、购买商品或领取奖励命令，只提交梦境阵容。
-- **文案核查**：**不准确**。建议 UI 明确写成“梦境选择阵容”或在实现补齐真正的梦境流程后再使用“一键梦境”。
+- **文案核查**：**准确**。自由模板中不再提供旧的 `batchmengjing` 重复入口。
 
-#### 28. `daily.deepSeaGenie`：深海灯神
+#### 26. `daily.deepSeaGenie`：深海灯神免费扫荡
 
 - **命令**：`genie_sweep`。
 - **参数**：`{ genieId: 5, sweepCnt: 1 }`。
@@ -302,7 +286,7 @@
 - **循环**：一次。
 - **文案核查**：**准确**；这是完整日常中的深海灯神免费扫荡，不同于批量灯神 handler 的 1-4 国选择。
 
-#### 29. `daily.restoreFormation`：还原初始阵容
+#### 27. `daily.restoreFormation`：还原初始阵容
 
 - **命令顺序**：必要时 `presetteam_getinfo`，再 `presetteam_saveteam`。
 - **参数**：`{ teamId: originalFormation }`。
@@ -313,7 +297,7 @@
 
 ### 4.5 日常、周常与通行证奖励
 
-#### 30. `daily.dailyRewards`：领取每日任务积分及完成奖励
+#### 28. `daily.dailyRewards`：领取每日任务积分及完成奖励
 
 - **命令顺序**：`task_claimdailypoint` 的 `taskId=1..10`，再 `task_claimdailyreward`。
 - **参数**：积分请求 `{ taskId: 1 }` 至 `{ taskId: 10 }`；完成奖励调用参数 `{}`。
@@ -322,14 +306,14 @@
 - **失败行为**：每个请求由 runner 单独处理，某一项失败不会阻止后续项。
 - **文案核查**：**准确**，但“领取”表示尝试请求，不保证每个积分档位都有奖励。
 
-#### 31. `daily.weeklyReward`：领取周常任务奖励
+#### 29. `daily.weeklyReward`：领取周常任务奖励
 
 - **命令**：`task_claimweekreward`。
 - **参数**：调用参数 `{}`；注册表默认 `rewardId: 0`。
 - **循环**：一次。
 - **文案核查**：**准确**。
 
-#### 32. `daily.passReward`：领取通行证奖励
+#### 30. `daily.passReward`：领取通行证奖励
 
 - **命令**：`activity_recyclewarorderrewardclaim`。
 - **参数**：`{ actId: 1 }`。
@@ -354,9 +338,9 @@
   -> 通行证奖励
 ```
 
-## 5. 日常批量：12 项
+## 5. 批量 handler 与兼容入口
 
-实现主要位于 [`tasksHangUp.js`](../src/utils/batch/tasksHangUp.js)、[`tasksBottle.js`](../src/utils/batch/tasksBottle.js)、[`tasksArena.js`](../src/utils/batch/tasksArena.js)、[`tasksCar.js`](../src/utils/batch/tasksCar.js)、[`tasksStore.js`](../src/utils/batch/tasksStore.js) 和 [`tasksItem.js`](../src/utils/batch/tasksItem.js)。
+实现主要位于 [`tasksHangUp.js`](../src/utils/batch/tasksHangUp.js)、[`tasksBottle.js`](../src/utils/batch/tasksBottle.js)、[`tasksArena.js`](../src/utils/batch/tasksArena.js)、[`tasksCar.js`](../src/utils/batch/tasksCar.js)、[`tasksStore.js`](../src/utils/batch/tasksStore.js) 和 [`tasksItem.js`](../src/utils/batch/tasksItem.js)。这些 handler 仍由页面的独立批量功能列表使用；`batchStudy`、`batchSmartSendCar` 和 `batchClaimCars` 同时作为完整日常分组中的保留批量入口，其他与完整日常重复的入口已从自由模板目录移除，旧自由模板 ID 只作为兼容别名归一化。
 
 ### 33. `claimHangUpRewards`：领取挂机并加钟
 
@@ -462,7 +446,7 @@
 - **完成条件**：无券或没有可选关卡时也标记 `completed`；扫荡中途失败后刷新一次角色信息，通常仍标记完成。
 - **文案核查**：**需修正**。泛称“一键灯神扫荡”容易让用户以为包含深海灯神，但当前只处理四国灯神。
 
-## 6. 副本与活动：6 项
+## 6. 副本与活动（独立批量功能）
 
 实现：[`tasksDungeon.js`](../src/utils/batch/tasksDungeon.js)、[`tasksTower.js`](../src/utils/batch/tasksTower.js)、[`tasksItem.js`](../src/utils/batch/tasksItem.js) 和 [`tasksFootball.js`](../src/utils/batch/tasksFootball.js)。
 
@@ -543,9 +527,9 @@
 - **循环**：固定 2 次；不发送 `bosstower_startbox`。
 - **文案核查**：**需确认**。名称只表达目标层范围，但实现没有逐层状态校验，也没有箱子命令或奖励领取。
 
-## 8. 怪异塔：3 项
+## 8. 怪异塔相关 handler
 
-实现：[`tasksTower.js`](../src/utils/batch/tasksTower.js)。自由模板外层只在怪异塔活动开放时启动相关任务。
+实现：[`tasksTower.js`](../src/utils/batch/tasksTower.js)。自由模板只提供爬塔和智能道具处理两个选项；独立批量功能列表仍保留单独的免费道具领取入口。
 
 ### 53. `climbWeirdTower`：一键爬怪异塔
 
@@ -724,18 +708,18 @@
 
 以下项目建议在用户确认后再决定改 UI 还是改 handler：
 
-1. **一键梦境**：`daily.dream` 和 `batchmengjing` 都只选择梦境阵容，没有真正执行梦境战斗、推进或奖励领取。
+1. **咸王梦境**：自由模板的 `daily.dream` 只选择梦境阵容，没有真正执行梦境战斗、推进或奖励领取；独立批量列表仍保留同样行为的 `batchmengjing`，但它不再是自由模板选项。
 2. **宝库前 3 层、4/5 层**：handler 只按 `towerId` 区间发送固定次数的 BOSS/宝箱命令，没有逐层读取结果；4/5 层还不发送 `startbox`。
 3. **梦境商品清单**：`batchBuyDreamItems` 使用旧的 `batchSettings.dreamPurchaseList`，自由模板编辑器没有自己的清单字段。
 4. **完整日常开关**：自由模板会强制打开付费招募、开箱、竞技场、挂机、邮件、黑市等旧开关，UI 没有逐项展示这种覆盖关系。
-5. **灯神范围**：`batchGenieSweep` 只处理 ID `1-4`，不处理深海灯神 ID `5`；“一键灯神扫荡”范围过宽。
+5. **灯神范围**：自由模板的 `daily.genieSweep` 明确只处理四国灯神 ID `1-4`，`daily.deepSeaGenie` 单独处理深海灯神 ID `5`；独立批量 handler `batchGenieSweep` 仍只处理 ID `1-4`。
 6. **每日 BOSS 次数**：`daily.dailyBoss` 固定发送 3 次，没有读取每日已完成次数；“3 次”与实现一致，但可能重复请求。
-7. **分享与加钟命令相同**：`daily.share`、`daily.addHangUpTime`、`claimHangUpRewards` 和 `batchAddHangUpTime` 都会发送 `system_mysharecallback` 的同一组参数，文案不应暗示已验证为不同底层动作。
+7. **分享与加钟命令相同**：自由模板已将 `daily.addHangUpTime` 合并到 `daily.claimHangUp`；`daily.share` 与独立批量 handler 仍会发送 `system_mysharecallback` 的同一组参数，文案不应暗示已验证为不同底层动作。
 8. **免费钓鱼时间字段**：`daily.freeFishing` 读取 `statistics["artifact:normal:lottery:time"]`，而其他任务多读取 `statisticsTime`；需要用真实响应确认。
 9. **“完成”语义**：没有库存、活动不开放、没有目标、没有可合成对象、达到安全上限或目标未达成时，多个 handler 仍标记账号完成。UI 结果最好区分“执行完成”和“业务目标达成”。
 10. **补齐任务的配置与结果**：月度钓鱼、竞技场补齐会受库存和安全上限限制；钓鱼补齐固定普通鱼竿；竞技场补齐的智能选敌和阈值配置来自旧设置。
 11. **自由模板并发风险**：同一账号的多个顶层任务会并发切换阵容、读取角色信息并访问共享 `gameData`；共享 WebSocket 只保证队列发送，不保证业务操作互斥。
-12. **重复领取命令**：`daily.collectionReward`、`daily.collectionGift` 和批量 `collection_claimfreereward` 可能在同一模板中重复请求同一领取接口。
+12. **旧模板兼容**：`daily.collectionReward`、`daily.addHangUpTime` 以及独立批量重复入口会在规范化时映射到自由模板保留任务并去重；新建模板不会显示这些旧 ID。
 
 ## 13. 建议的确认口径
 

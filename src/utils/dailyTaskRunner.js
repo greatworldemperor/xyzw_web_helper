@@ -254,6 +254,9 @@ export class DailyTaskRunner {
       : null;
     const isTaskEnabled = (taskId) =>
       selectedTaskIds === null || selectedTaskIds.has(taskId);
+    const isCollectionGiftEnabled =
+      isTaskEnabled("daily.collectionGift") ||
+      isTaskEnabled("daily.collectionReward");
 
     // 获取角色信息以确认 roleId 和 任务状态
     this.log("正在获取角色信息...");
@@ -380,34 +383,25 @@ export class DailyTaskRunner {
       settings.claimHangUp
     ) {
       taskList.push({
-        name: "领取挂机奖励",
-        execute: () =>
-          this.executeGameCommand(
+        name: "领取挂机并加钟",
+        execute: async () => {
+          await this.executeGameCommand(
             tokenId,
             "system_claimhangupreward",
             {},
             "领取挂机奖励",
-          ),
-      });
-    }
+          );
 
-    if (
-      isTaskEnabled("daily.addHangUpTime") &&
-      !isTaskCompleted(5) &&
-      settings.claimHangUp
-    ) {
-      for (let i = 0; i < 4; i++) {
-        taskList.push({
-          name: `挂机加钟 ${i + 1}/4`,
-          execute: () =>
-            this.executeGameCommand(
+          for (let i = 0; i < 4; i++) {
+            await this.executeGameCommand(
               tokenId,
               "system_mysharecallback",
               { isSkipShareCard: true, type: 2 },
-              `挂机加钟 ${i + 1}`,
-            ),
-        });
-      }
+              `挂机加钟 ${i + 1}/4`,
+            );
+          }
+        },
+      });
     }
 
     if (
@@ -620,11 +614,6 @@ export class DailyTaskRunner {
         cmd: "discount_claimreward",
       },
       {
-        taskId: "daily.collectionReward",
-        name: "领取每日免费奖励",
-        cmd: "collection_claimfreereward",
-      },
-      {
         taskId: "daily.freeCardGift",
         name: "领取免费礼包",
         cmd: "card_claimreward",
@@ -658,7 +647,7 @@ export class DailyTaskRunner {
       });
     });
 
-    if (isTaskEnabled("daily.collectionGift")) {
+    if (isCollectionGiftEnabled) {
       taskList.push({
         name: "开始领取珍宝阁礼包",
         execute: () =>

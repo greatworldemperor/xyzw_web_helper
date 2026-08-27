@@ -344,7 +344,7 @@ wss://xxz-xyzw.hortorgames.com/agent?p=<encoded-token>&e=x&lang=chinese
 
 - [src/utils/dailyTaskRunner.js](src/utils/dailyTaskRunner.js)：单账号任务编排，按照角色信息和任务设置生成任务列表，顺序执行游戏命令；可通过 `selectedTaskIds` 只生成自由模板勾选的日常任务，未传该字段时保持原完整日常行为。
 - [src/utils/helperTaskRunner.js](src/utils/helperTaskRunner.js)：批量命令、重试、限流和库存校验等相对独立的纯工具逻辑。
-- [src/utils/batch/flexibleTemplate.js](src/utils/batch/flexibleTemplate.js)：自由模板的完整任务目录、参数规范化、持久化解析和共享连接协调器；目录显式包含 32 组原完整日常内部任务和 39 个原批量功能入口。
+- [src/utils/batch/flexibleTemplate.js](src/utils/batch/flexibleTemplate.js)：自由模板的完整任务目录、参数规范化、持久化解析和共享连接协调器；当前目录共 57 个任务 ID（30 个 daily 任务、27 个批量 handler），重复入口通过旧 ID 别名归一化。
 - [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue)：多账号批量任务、定时任务、连接准备、日志和大量业务任务入口，目前是超大单文件；旧任务模板和批量功能列表继续保留，新增独立的自由模板管理、复选编辑和组合执行入口。
 - [src/views/DailyTasks.vue](src/views/DailyTasks.vue)：单账号日常任务页面，部分状态仍与 Mock/localStorage 逻辑耦合。
 
@@ -419,8 +419,8 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 
 批量日常主流程按 `maxActive` 分成账号波次：同一波账号并发执行，但下一波必须等待当前波全部结束后才启动。每个账号内部由 `DailyTaskRunner` 线性执行任务，日常任务完成后先逐项领取每日任务积分奖励，再领取每日完成奖励，随后处理周常和通行证奖励。连接失败时先由批量流程刷新 Token，再使用最新 Token 重连；刷新遇到限流或 HTTP 429 时每隔 1 秒重试直到成功。任务执行遇到限流、模块未开启、已知屏蔽或其他服务器错误时，都记录警告并只跳过当前任务，继续执行后续任务；批量车辆、挂机奖励和加钟流程中的 `400340` 统一视为限流，相关命令按 1 秒间隔重试，最多重试 100 次并记录当前重试次数；领取挂机奖励的 `system_claimhangupreward` 遇到请求超时也按同样策略重试；车辆和挂机初始化也遵循该策略，耗尽后才跳过当前车辆或账号。智能发车只使用免费刷新和刷新券，不使用金砖刷新，策略默认是逻辑 A，也可在批量设置中选择逻辑 B。智能发车按角色逐辆处理车辆。只有用户主动停止批处理或连接初始化失败才会结束当前账号。流程结束后在页面弹窗显示完成数量、总数量和最终失败角色清单，并可一键重新选中最终失败的账号。错误账号按最终状态汇总，不记录中间重试失败。
 
-自由模板是与旧任务模板并存的第二套模板，不修改旧 `task-templates` 或账号 `daily-settings:*` 引用。自由模板可任意复选完整任务目录并保存阵容、BOSS 次数、开箱/钓鱼/招募、怪异塔、竞猜、功法赠送和月赛助威等参数；导入数据会过滤未知任务并规范化参数。执行时仍按 `maxActive` 分账号波次，同一波中的账号并发；同一模板内的多个任务同步启动，使任务自身的等待和冷却时间互相重叠。每个账号只占一个连接槽位并共享一个 WebSocket 生命周期，最慢任务结束后才统一断开；底层客户端继续通过独立发送队列和请求 `seq` 顺序发包、匹配响应。任一子任务失败只计入对应账号，不会把同一波其他账号误判为失败。每个任务的 UI 标签、实际命令、条件、循环和 `completed` 语义详见 [docs/flexible-batch-template-task-logic.md](docs/flexible-batch-template-task-logic.md)。
-自由模板中的怪异塔道具任务使用单一的 `batchSmartItemHandling`；它先领取免费道具，再按“使用至道具耗尽或格子已满 -> 合成 -> 继续使用”的顺序处理，并在道具耗尽后执行最后一次合成。批量功能列表仍保留独立的使用和合成按钮，同时提供同样流程的智能道具处理按钮；旧自由模板中的两个任务 ID 会在规范化时合并为智能任务。
+自由模板是与旧任务模板并存的第二套模板，不修改旧 `task-templates` 或账号 `daily-settings:*` 引用。自由模板当前分为完整日常、副本、宝库、怪异塔、资源、功法和月度与活动 7 个分组，共 57 个任务；日常批量分组已取消，重复的挂机、竞技场、俱乐部签到、黑市、珍宝阁和四国灯神入口统一保留完整日常任务，答题、智能发车和收车也放入完整日常组。导入数据会过滤未知任务、把旧任务 ID 归一化到保留任务并规范化参数。执行时仍按 `maxActive` 分账号波次，同一波中的账号并发；同一模板内的多个任务同步启动，使任务自身的等待和冷却时间互相重叠。每个账号只占一个连接槽位并共享一个 WebSocket 生命周期，最慢任务结束后才统一断开；底层客户端继续通过独立发送队列和请求 `seq` 顺序发包、匹配响应。任一子任务失败只计入对应账号，不会把同一波其他账号误判为失败。每个任务的 UI 标签、实际命令、条件、循环和 `completed` 语义详见 [docs/flexible-batch-template-task-logic.md](docs/flexible-batch-template-task-logic.md)。
+自由模板中的怪异塔道具任务使用单一的 `batchSmartItemHandling`；它先领取免费道具，再按“使用至道具耗尽或格子已满 -> 合成 -> 继续使用”的顺序处理，并在道具耗尽后执行最后一次合成。批量功能列表仍保留独立的使用、合成和领取按钮，同时提供同样流程的智能道具处理按钮；旧自由模板中的使用、合成和免费道具任务 ID 会在规范化时合并为智能任务。
 
 批处理工具层已覆盖批次拆分、限流重试、库存前后校验等场景，并有 Node 原生测试；核心 Store、WebSocket、路由和大部分页面交互尚未形成系统化测试。
 
@@ -511,6 +511,12 @@ node --test test/helperTaskRunner.test.js test/towerClimbLimit.test.js
 - 浏览器 mock 完整通过发送验证码、组合登录、服务器角色列表、两个角色认证和 Token 入库；IndexedDB bin 与 localStorage 均不含手机号或验证码。
 - `pnpm run build` 成功，手机号页面独立产出；仍有已记录的大 chunk 警告。
 - `git diff --check` 和目标文件编辑器诊断通过；`pnpm exec eslint ...` 仍因当前安装找不到 `eslint` 命令而无法执行。
+
+截至 2026-08-27 的自由模板去重和参数优化验证：
+
+- `node --test test/*.test.js`：54 个用例全部通过，新增覆盖挂机领取后顺序执行 4 次加钟、重复任务 ID 归一化和日常分组目录。
+- `pnpm run build` 成功；仍有可选 Vite 插件缺失、Sass legacy API 和大 chunk 警告。
+- 编辑器诊断未报告本次触及文件错误；`pnpm exec eslint ...` 因当前安装找不到 `eslint` 命令无法执行。
 
 ## 8. 部署信息
 

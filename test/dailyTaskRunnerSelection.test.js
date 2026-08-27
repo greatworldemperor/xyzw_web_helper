@@ -59,3 +59,53 @@ test("DailyTaskRunner accepts an empty task selection", async () => {
   assert.equal(result.success, true);
   assert.deepEqual(commands, ["presetteam_getinfo"]);
 });
+
+test("DailyTaskRunner combines hang-up claim and four add-time actions", async () => {
+  const { tokenStore, commands } = createTokenStore();
+  const runner = new DailyTaskRunner(tokenStore, {
+    commandDelay: 0,
+    taskDelay: 0,
+  });
+
+  const result = await runner.run(
+    "role-1",
+    {},
+    { selectedTaskIds: ["daily.claimHangUp"], claimHangUp: true },
+  );
+
+  assert.equal(result.success, true);
+  assert.deepEqual(commands, [
+    "presetteam_getinfo",
+    "system_claimhangupreward",
+    "system_mysharecallback",
+    "system_mysharecallback",
+    "system_mysharecallback",
+    "system_mysharecallback",
+  ]);
+});
+
+test("DailyTaskRunner keeps the legacy and canonical collection tasks single", async () => {
+  for (const selectedTaskId of [
+    "daily.collectionGift",
+    "daily.collectionReward",
+  ]) {
+    const { tokenStore, commands } = createTokenStore();
+    const runner = new DailyTaskRunner(tokenStore, {
+      commandDelay: 0,
+      taskDelay: 0,
+    });
+
+    const result = await runner.run(
+      "role-1",
+      {},
+      { selectedTaskIds: [selectedTaskId] },
+    );
+
+    assert.equal(result.success, true);
+    assert.deepEqual(commands, [
+      "presetteam_getinfo",
+      "collection_goodslist",
+      "collection_claimfreereward",
+    ]);
+  }
+});

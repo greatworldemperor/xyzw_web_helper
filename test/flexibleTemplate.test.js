@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createSharedConnectionCoordinator,
+  flexibleTaskGroups,
   flexibleTasks,
   normalizeFlexibleTemplate,
   parseFlexibleTemplates,
@@ -17,7 +18,6 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "daily.paidRecruit",
     "daily.freeGold",
     "daily.claimHangUp",
-    "daily.addHangUpTime",
     "daily.openBox",
     "daily.resetBottleTimer",
     "daily.claimBottle",
@@ -27,7 +27,6 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "daily.welfareSignIn",
     "daily.clubSignIn",
     "daily.discountGift",
-    "daily.collectionReward",
     "daily.freeCardGift",
     "daily.permanentCardGift",
     "daily.claimEmail",
@@ -44,21 +43,11 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "daily.weeklyReward",
     "daily.passReward",
   ];
-  const legacyBatchActions = [
-    "claimHangUpRewards",
-    "batchAddHangUpTime",
-    "resetBottles",
-    "batchlingguanzi",
-    "batchclubsign",
+  const batchActions = [
     "batchStudy",
-    "batcharenafight",
     "batchSmartSendCar",
     "batchClaimCars",
-    "store_purchase",
-    "collection_claimfreereward",
-    "batchGenieSweep",
     "climbTower",
-    "batchmengjing",
     "skinChallenge",
     "batchClaimPeachTasks",
     "batchBuyDreamItems",
@@ -67,7 +56,6 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "batchbaoku45",
     "climbWeirdTower",
     "batchSmartItemHandling",
-    "batchClaimFreeEnergy",
     "batchOpenBox",
     "batchOpenBoxByPoints",
     "batchClaimBoxPointReward",
@@ -85,18 +73,69 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "batchWarGuessCheer",
   ];
 
-  [...hiddenDailyTasks, ...legacyBatchActions].forEach((taskId) =>
+  [...hiddenDailyTasks, ...batchActions].forEach((taskId) =>
     assert.equal(taskIds.has(taskId), true, `missing task: ${taskId}`),
   );
   assert.equal(
     flexibleTasks.filter((task) => task.kind === "batch").length,
-    legacyBatchActions.length,
+    batchActions.length,
   );
   assert.equal(
     flexibleTasks.filter((task) => task.kind === "daily").length,
     hiddenDailyTasks.length,
   );
   assert.equal(taskIds.size, flexibleTasks.length);
+  [
+    "daily.addHangUpTime",
+    "daily.collectionReward",
+    "claimHangUpRewards",
+    "batchAddHangUpTime",
+    "batchclubsign",
+    "batcharenafight",
+    "store_purchase",
+    "collection_claimfreereward",
+    "batchGenieSweep",
+    "batchmengjing",
+    "batchClaimFreeEnergy",
+  ].forEach((taskId) => assert.equal(taskIds.has(taskId), false, `removed task remains: ${taskId}`));
+  assert.equal(
+    flexibleTaskGroups.some((group) => group.name === "routine"),
+    false,
+  );
+
+  const dailyGroup = flexibleTaskGroups.find((group) => group.name === "daily");
+  assert.deepEqual(
+    dailyGroup.tasks.filter((task) => task.kind === "batch").map((task) => task.value),
+    ["batchStudy", "batchSmartSendCar", "batchClaimCars"],
+  );
+});
+
+test("normalization migrates removed duplicate task IDs to canonical tasks", () => {
+  const normalized = normalizeFlexibleTemplate({
+    id: "legacy-duplicates",
+    name: "legacy duplicates",
+    selectedTasks: [
+      "daily.claimHangUp",
+      "daily.addHangUpTime",
+      "claimHangUpRewards",
+      "batchAddHangUpTime",
+      "daily.collectionReward",
+      "collection_claimfreereward",
+      "daily.genieSweep",
+      "batchGenieSweep",
+      "batchClaimFreeEnergy",
+      "batchSmartItemHandling",
+      "batchmengjing",
+    ],
+  });
+
+  assert.deepEqual(normalized.selectedTasks, [
+    "daily.claimHangUp",
+    "daily.collectionGift",
+    "daily.genieSweep",
+    "batchSmartItemHandling",
+    "daily.dream",
+  ]);
 });
 
 test("normalization combines legacy weird-tower item tasks", () => {

@@ -8,70 +8,14 @@
           class="page-header"
           style="
             display: flex;
-            justify-content: space-between;
             align-items: center;
-            flex-wrap: wrap;
             gap: 12px;
+            padding: 8px 12px;
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
           "
         >
-          <div style="display: flex; align-items: center; gap: 16px">
-            <h2>批量日常任务</h2>
-            <div
-              style="
-                display: flex;
-                align-items: center;
-                gap: 12px;
-                padding: 8px 12px;
-                background-color: #f8f9fa;
-                border-radius: 8px;
-                border: 1px solid #e9ecef;
-              "
-            >
-              <div style="font-size: 14px; color: #495057">
-                共 {{ scheduledTasks.length }} 个定时任务
-              </div>
-              <div
-                v-if="shortestCountdownTask"
-                style="font-size: 14px; font-weight: 500; color: #1677ff"
-              >
-                即将执行：{{ shortestCountdownTask.task.name }} ({{
-                  shortestCountdownTask.countdown.formatted
-                }})
-              </div>
-              <div v-else style="font-size: 14px; color: #6c757d">
-                暂无定时任务
-              </div>
-              <div style="display: flex; gap: 8px">
-                <n-button type="primary" size="small" @click="openTaskModal">
-                  新增定时任务
-                </n-button>
-                <n-button size="small" @click="showTasksModal = true">
-                  查看定时任务
-                </n-button>
-                <n-button size="small" @click="exportConfig">
-                  导出配置
-                </n-button>
-                <n-upload
-                  :show-file-list="false"
-                  accept=".json"
-                  :custom-request="importConfig"
-                >
-                  <n-button size="small">导入配置</n-button>
-                </n-upload>
-              </div>
-            </div>
-          </div>
-          <div
-            style="
-              display: flex;
-              align-items: center;
-              gap: 12px;
-              padding: 8px 12px;
-              background-color: #f8f9fa;
-              border-radius: 8px;
-              border: 1px solid #e9ecef;
-            "
-          >
             <n-button
               type="primary"
               @click="startBatch"
@@ -112,7 +56,6 @@
               设置
             </n-button>
           </div>
-        </div>
 
         <!-- Token Selection -->
         <n-card title="账号列表" class="token-list-card">
@@ -1530,12 +1473,107 @@
               style="width: 100%"
             />
           </div>
-          <div class="setting-item">
-            <label class="setting-label">竞猜选项</label>
-            <n-select
-              v-model:value="flexibleTemplateSettings.footballPick"
-              :options="footballPickOptions"
-            />
+        </div>
+
+        <div
+          v-if="
+            flexibleTemplateTasks.includes('batchOpenBox') ||
+            flexibleTemplateTasks.includes('batchOpenBoxByPoints') ||
+            flexibleTemplateTasks.includes('batchFish') ||
+            flexibleTemplateTasks.includes('batchRecruit')
+          "
+          class="flexible-conditional-settings"
+        >
+          <div class="flexible-conditional-settings__title">批量资源参数</div>
+          <div class="flexible-settings-grid">
+            <div
+              v-if="flexibleTemplateTasks.includes('batchOpenBox')"
+              class="setting-item"
+            >
+              <label class="setting-label">批量开箱宝箱类型</label>
+              <n-select
+                v-model:value="flexibleTemplateSettings.boxType"
+                :options="boxTypeOptions"
+              />
+            </div>
+            <div
+              v-if="flexibleTemplateTasks.includes('batchOpenBox')"
+              class="setting-item"
+            >
+              <label class="setting-label">批量开箱数量</label>
+              <n-input-number
+                v-model:value="flexibleTemplateSettings.boxCount"
+                :min="10"
+                :max="10000"
+                :step="10"
+                style="width: 100%"
+              />
+            </div>
+            <div
+              v-if="flexibleTemplateTasks.includes('batchOpenBoxByPoints')"
+              class="setting-item"
+            >
+              <label class="setting-label">批量开箱目标积分</label>
+              <n-input-number
+                v-model:value="flexibleTemplateSettings.targetBoxPoints"
+                :min="1"
+                :max="1000000"
+                :step="100"
+                style="width: 100%"
+              />
+            </div>
+            <div
+              v-if="flexibleTemplateTasks.includes('batchFish')"
+              class="setting-item"
+            >
+              <label class="setting-label">批量钓鱼鱼竿类型</label>
+              <n-select
+                v-model:value="flexibleTemplateSettings.fishType"
+                :options="fishTypeOptions"
+              />
+            </div>
+            <div
+              v-if="flexibleTemplateTasks.includes('batchFish')"
+              class="setting-item"
+            >
+              <label class="setting-label">批量钓鱼数量</label>
+              <n-input-number
+                v-model:value="flexibleTemplateSettings.fishCount"
+                :min="10"
+                :max="10000"
+                :step="10"
+                style="width: 100%"
+              />
+            </div>
+            <div
+              v-if="flexibleTemplateTasks.includes('batchRecruit')"
+              class="setting-item"
+            >
+              <label class="setting-label">批量招募数量</label>
+              <n-input-number
+                v-model:value="flexibleTemplateSettings.recruitCount"
+                :min="10"
+                :max="10000"
+                :step="10"
+                style="width: 100%"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div
+          v-if="flexibleTemplateTasks.includes('batchFootballBet')"
+          class="flexible-conditional-settings"
+        >
+          <div class="flexible-conditional-settings__title">盐杯竞猜参数</div>
+          <div class="flexible-settings-grid">
+            <div class="setting-item">
+              <label class="setting-label">竞猜选项</label>
+              <n-select
+                v-model:value="flexibleTemplateSettings.footballPick"
+                :options="footballPickOptions"
+              />
+            </div>
           </div>
         </div>
 
@@ -1543,7 +1581,9 @@
           v-if="flexibleTemplateTasks.includes('batchLegacyGiftSendEnhanced')"
           class="flexible-conditional-settings"
         >
-          <div class="flexible-conditional-settings__title">功法残卷赠送</div>
+          <div class="flexible-conditional-settings__title">
+            批量功法残卷赠送参数
+          </div>
           <div class="flexible-settings-grid">
             <div class="setting-item">
               <label class="setting-label">接收者ID</label>
@@ -1563,6 +1603,15 @@
                 style="width: 100%"
               />
             </div>
+            <div class="setting-item">
+              <label class="setting-label">安全密码（批量设置）</label>
+              <n-input
+                v-model:value="batchSettings.password"
+                type="password"
+                show-password-on="click"
+                placeholder="请输入安全密码"
+              />
+            </div>
           </div>
         </div>
 
@@ -1570,7 +1619,7 @@
           v-if="flexibleTemplateTasks.includes('batchWarGuessCheer')"
           class="flexible-conditional-settings"
         >
-          <div class="flexible-conditional-settings__title">月赛助威</div>
+          <div class="flexible-conditional-settings__title">月赛助威参数</div>
           <div class="flexible-settings-grid">
             <div class="setting-item">
               <label class="setting-label">俱乐部ID</label>
@@ -6116,6 +6165,7 @@ const saveTaskTemplate = () => {
 
 const currentRunningTokenId = ref(null);
 const currentProgress = ref(0);
+const progressTokenIds = ref([]);
 const logs = ref([]);
 const logContainer = ref(null);
 const autoScrollLog = ref(true);
@@ -6135,6 +6185,37 @@ const currentRunningTokenName = computed(() => {
   const t = tokens.value.find((x) => x.id === currentRunningTokenId.value);
   return t ? t.name : "";
 });
+
+let wasRunning = false;
+const updateCurrentProgress = () => {
+  const tokenIds = progressTokenIds.value;
+  if (tokenIds.length === 0) {
+    currentProgress.value = 0;
+    return;
+  }
+
+  const finishedCount = tokenIds.filter((tokenId) =>
+    ["completed", "failed"].includes(tokenStatus.value[tokenId]),
+  ).length;
+  currentProgress.value = Math.floor((finishedCount / tokenIds.length) * 100);
+};
+
+watch(
+  [isRunning, tokenStatus],
+  ([running]) => {
+    if (running && !wasRunning) {
+      progressTokenIds.value = [...selectedTokens.value];
+      currentProgress.value = 0;
+    }
+
+    if (running) {
+      updateCurrentProgress();
+    }
+
+    wasRunning = running;
+  },
+  { deep: true },
+);
 
 // Selection logic
 const isAllSelected = computed(
@@ -7236,7 +7317,6 @@ const runFlexibleTemplate = async (rawTemplate) => {
 
   isRunning.value = true;
   shouldStop.value = false;
-  currentProgress.value = 0;
   batchResult.totalCount = batchTokenIds.length;
   batchResult.completedCount = 0;
   batchResult.failedTokenIds = [];
@@ -7320,11 +7400,6 @@ const runFlexibleTemplate = async (rawTemplate) => {
           ? "failed"
           : "completed";
       });
-      currentProgress.value = Math.floor(
-        (Math.min(startIndex + currentBatch.length, batchTokenIds.length) /
-          batchTokenIds.length) *
-          100,
-      );
     }
   } finally {
     if (shouldStop.value) {
