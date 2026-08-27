@@ -92,8 +92,7 @@ export const flexibleTaskGroups = [
     label: "怪异塔",
     tasks: [
       batchTask("climbWeirdTower", "一键爬怪异塔"),
-      batchTask("batchUseItems", "一键使用怪异塔道具"),
-      batchTask("batchMergeItems", "一键怪异塔合成"),
+      batchTask("batchSmartItemHandling", "智能道具处理"),
       batchTask("batchClaimFreeEnergy", "一键领取怪异塔免费道具"),
     ],
   },
@@ -142,6 +141,11 @@ export const flexibleTasks = flexibleTaskGroups.flatMap((group) =>
 );
 
 const flexibleTaskIds = new Set(flexibleTasks.map((task) => task.value));
+
+const legacyFlexibleTaskAliases = {
+  batchUseItems: "batchSmartItemHandling",
+  batchMergeItems: "batchSmartItemHandling",
+};
 
 export const defaultFlexibleTemplateSettings = {
   arenaFormation: 1,
@@ -273,7 +277,11 @@ export const normalizeFlexibleTemplateSettings = (settings) => {
 export const normalizeFlexibleTaskIds = (taskIds) => {
   if (!Array.isArray(taskIds)) return [];
 
-  return [...new Set(taskIds)].filter((taskId) => flexibleTaskIds.has(taskId));
+  return [
+    ...new Set(
+      taskIds.map((taskId) => legacyFlexibleTaskAliases[taskId] || taskId),
+    ),
+  ].filter((taskId) => flexibleTaskIds.has(taskId));
 };
 
 export const normalizeFlexibleTemplate = (template) => {

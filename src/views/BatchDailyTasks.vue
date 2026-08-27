@@ -616,6 +616,18 @@
                 </n-button>
                 <n-button
                   size="small"
+                  type="primary"
+                  @click="batchSmartItemHandling"
+                  :disabled="
+                    isRunning ||
+                    selectedTokens.length === 0 ||
+                    !isWeirdTowerActivityOpen
+                  "
+                >
+                  智能道具处理
+                </n-button>
+                <n-button
+                  size="small"
                   @click="batchClaimFreeEnergy"
                   :disabled="
                     isRunning ||
@@ -4337,6 +4349,7 @@ const taskGroupDefinitions = [
       "climbWeirdTower",
       "batchUseItems",
       "batchMergeItems",
+      "batchSmartItemHandling",
       "batchClaimFreeEnergy",
     ],
   },
@@ -5399,6 +5412,7 @@ const executeScheduledTask = async (task) => {
           "climbWeirdTower",
           "batchUseItems",
           "batchMergeItems",
+          "batchSmartItemHandling",
           "batchClaimFreeEnergy",
         ].includes(taskName) &&
         !isWeirdTowerActivityOpen.value
@@ -6842,6 +6856,7 @@ const {
   skinChallenge,
   batchUseItems,
   batchMergeItems,
+  batchSmartItemHandling,
 } = tasksTower;
 
 const tasksCar = createTasksCar(createTaskDeps());
@@ -6925,6 +6940,7 @@ const getFlexibleTaskUnavailableReason = (taskId, settings) => {
       "climbWeirdTower",
       "batchUseItems",
       "batchMergeItems",
+      "batchSmartItemHandling",
       "batchClaimFreeEnergy",
     ].includes(taskId) &&
     !isWeirdTowerActivityOpen.value

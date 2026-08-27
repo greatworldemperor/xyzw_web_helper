@@ -543,7 +543,7 @@
 - **循环**：固定 2 次；不发送 `bosstower_startbox`。
 - **文案核查**：**需确认**。名称只表达目标层范围，但实现没有逐层状态校验，也没有箱子命令或奖励领取。
 
-## 8. 怪异塔：4 项
+## 8. 怪异塔：3 项
 
 实现：[`tasksTower.js`](../src/utils/batch/tasksTower.js)。自由模板外层只在怪异塔活动开放时启动相关任务。
 
@@ -557,27 +557,16 @@
 - **完成条件**：循环提前停止时通常仍标记完成。
 - **文案核查**：**基本准确**，但次数是上限，且不保证通关目标。
 
-### 54. `batchUseItems`：一键使用怪异塔道具
+### 54. `batchSmartItemHandling`：智能道具处理
 
-- **读取**：`mergebox_getinfo { actType: 1 }` 和 `evotower_getinfo {}`。
-- **库存**：使用 `evoTower.lotteryLeftCnt` 作为剩余道具数，使用 `mergeBox.costTotalCnt` 决定网格位置。
-- **命令**：循环发送 `mergebox_openbox { actType: 1, pos }`；结束后尝试 `mergebox_claimcostprogress { actType: 1 }`。
-- **位置规则**：使用次数小于 2、`2-101`、达到 102 以后分别使用固定网格坐标 `{4,5}`、`{7,3}`、`{6,3}`。
-- **循环**：直到道具用完或用户停止，每次约 500ms。
-- **完成条件**：没有剩余道具也标记完成。
-- **文案核查**：**基本准确**，但“使用”是按固定位置开箱，并不展示或验证每个道具的实际产物。
+- **前置**：先读取 `mergebox_getinfo { actType: 1 }`，有可领取的免费道具时发送 `mergebox_claimfreeenergy { actType: 1 }`。
+- **使用**：读取 `evoTower.lotteryLeftCnt` 作为剩余道具数，使用 `mergeBox.costTotalCnt` 决定网格位置，循环发送 `mergebox_openbox { actType: 1, pos }`。
+- **交替**：道具使用阶段遇到 `12300040`（没有空格子）或本轮道具用完后，执行合成；合成释放格子后，若仍有道具则继续使用。
+- **合成**：遍历 `gridMap`，只收集 `gridConfId == 0`、`gridItemId > 0` 且未锁定的格子，按 `gridItemId` 分组；根据任务键 `251212208` 选择智能合成或两两手动合成。
+- **终止**：道具耗尽后仍执行当前轮最后一次合成，然后结束；格子已满但没有可合成物品时停止，避免重复请求。
+- **完成条件**：完成上述处理流程、用户停止或达到内部合成安全上限时标记完成。
 
-### 55. `batchMergeItems`：一键怪异塔合成
-
-- **读取**：每轮 `mergebox_getinfo { actType: 1 }`。
-- **领奖**：遍历 `taskMap`，对非零且未领取的任务发送 `mergebox_claimmergeprogress { actType: 1, taskId }`；失败被忽略。
-- **合成对象**：遍历 `gridMap`，只收集 `gridConfId == 0`、`gridItemId > 0` 且未锁定的格子，按 `gridItemId` 分组。
-- **命令**：当检测到特殊任务键 `251212208` 非零时发送 `mergebox_automergeitem { actType: 1 }`；否则按组两两发送 `mergebox_mergeitem { actType: 1, sourcePos, targetPos }`。
-- **循环**：最多 20 轮；没有任意一组达到 2 个物品时停止。
-- **完成条件**：没有可合成物品、合成失败被内部 catch、达到 20 轮或用户停止时通常仍标记完成。
-- **文案核查**：**基本准确**，但“完成”只表示合成循环结束；具体任务键与“8 级以上”的关系是当前代码推断，需用实际活动数据确认。
-
-### 56. `batchClaimFreeEnergy`：一键领取怪异塔免费道具
+### 55. `batchClaimFreeEnergy`：一键领取怪异塔免费道具
 
 - **读取**：`mergebox_getinfo { actType: 1 }`。
 - **条件**：`mergeBox.freeEnergy > 0` 才发送领取命令；没有免费道具时记录无可领取并标记完成。

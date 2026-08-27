@@ -66,8 +66,7 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "batchbaoku13",
     "batchbaoku45",
     "climbWeirdTower",
-    "batchUseItems",
-    "batchMergeItems",
+    "batchSmartItemHandling",
     "batchClaimFreeEnergy",
     "batchOpenBox",
     "batchOpenBoxByPoints",
@@ -98,6 +97,16 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     hiddenDailyTasks.length,
   );
   assert.equal(taskIds.size, flexibleTasks.length);
+});
+
+test("normalization combines legacy weird-tower item tasks", () => {
+  const normalized = normalizeFlexibleTemplate({
+    id: "weird-tower",
+    name: "weird tower",
+    selectedTasks: ["batchUseItems", "batchMergeItems", "batchSmartItemHandling"],
+  });
+
+  assert.deepEqual(normalized.selectedTasks, ["batchSmartItemHandling"]);
 });
 
 test("normalization removes unknown and duplicate task ids while merging settings", () => {
