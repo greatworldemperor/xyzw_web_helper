@@ -1,3 +1,5 @@
+import { normalizeSkinChallengeTargets } from "./skinChallengeUtils.js";
+
 export const FLEXIBLE_TEMPLATE_STORAGE_KEY = "flexible-task-templates";
 export const FLEXIBLE_TEMPLATE_VERSION = 1;
 
@@ -148,6 +150,7 @@ export const defaultFlexibleTemplateSettings = {
   towerFormation: 1,
   bossFormation: 1,
   bossTimes: 2,
+  skinChallengeTargets: [],
   boxType: 2001,
   boxCount: 100,
   targetBoxPoints: 1000,
@@ -207,6 +210,9 @@ export const normalizeFlexibleTemplateSettings = (settings) => {
       0,
       4,
       defaults.bossTimes,
+    ),
+    skinChallengeTargets: normalizeSkinChallengeTargets(
+      source.skinChallengeTargets,
     ),
     boxType: normalizeEnum(
       source.boxType,

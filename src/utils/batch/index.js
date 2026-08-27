@@ -1,5 +1,6 @@
 // Constants
 export * from './constants.js';
+export * from './skinChallengeUtils.js';
 
 // Cron utilities
 export * from './cronUtils.js';

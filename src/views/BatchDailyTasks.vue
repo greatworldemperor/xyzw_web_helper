@@ -806,6 +806,20 @@
               size="small"
             />
           </div>
+          <div class="setting-item" style="grid-column: 1 / -1">
+            <label class="setting-label">换皮闯关目标（不选则跳过）</label>
+            <n-checkbox-group v-model:value="currentSettings.skinChallengeTargets">
+              <n-space :size="12" :wrap="true">
+                <n-checkbox
+                  v-for="option in skinChallengeTargetOptions"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </n-checkbox>
+              </n-space>
+            </n-checkbox-group>
+          </div>
           <div class="setting-switches">
             <div class="switch-row">
               <span class="switch-label">领罐子</span
@@ -932,6 +946,20 @@
               :options="bossTimesOptions"
               size="small"
             />
+          </div>
+          <div class="setting-item" style="grid-column: 1 / -1">
+            <label class="setting-label">换皮闯关目标（不选则跳过）</label>
+            <n-checkbox-group v-model:value="currentTemplate.skinChallengeTargets">
+              <n-space :size="12" :wrap="true">
+                <n-checkbox
+                  v-for="option in skinChallengeTargetOptions"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </n-checkbox>
+              </n-space>
+            </n-checkbox-group>
           </div>
           <div class="setting-switches">
             <div class="switch-row">
@@ -1408,6 +1436,22 @@
               v-model:value="flexibleTemplateSettings.bossTimes"
               :options="bossTimesOptions"
             />
+          </div>
+          <div class="setting-item" style="grid-column: 1 / -1">
+            <label class="setting-label">换皮闯关目标（不选则跳过）</label>
+            <n-checkbox-group
+              v-model:value="flexibleTemplateSettings.skinChallengeTargets"
+            >
+              <n-space :size="12" :wrap="true">
+                <n-checkbox
+                  v-for="option in skinChallengeTargetOptions"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </n-checkbox>
+              </n-space>
+            </n-checkbox-group>
           </div>
           <div class="setting-item">
             <label class="setting-label">宝箱类型</label>
@@ -3379,6 +3423,8 @@ import {
   defaultTemplate,
   defaultTaskForm,
   defaultHelperSettings,
+  defaultSkinChallengeTargets,
+  skinChallengeTargetOptions,
   smartArenaModeOptions,
   // Cron utilities
   validateCronField,
@@ -3831,6 +3877,7 @@ const currentSettings = reactive({
   towerFormation: 1,
   bossFormation: 1,
   bossTimes: 2,
+  skinChallengeTargets: [...defaultSkinChallengeTargets],
   claimBottle: true,
   payRecruit: true,
   openBox: true,
@@ -3857,6 +3904,7 @@ const currentTemplate = reactive({
   towerFormation: 1,
   bossFormation: 1,
   bossTimes: 2,
+  skinChallengeTargets: [...defaultSkinChallengeTargets],
   claimBottle: true,
   payRecruit: true,
   openBox: true,
@@ -3876,6 +3924,9 @@ const flexibleTemplateName = ref("");
 const flexibleTemplateTasks = ref([]);
 const flexibleTemplateSettings = reactive({
   ...defaultFlexibleTemplateSettings,
+  skinChallengeTargets: [
+    ...defaultFlexibleTemplateSettings.skinChallengeTargets,
+  ],
 });
 
 const flexibleTemplateOptions = computed(() =>
@@ -5858,6 +5909,7 @@ const loadSettings = (tokenId) => {
       towerFormation: 1,
       bossFormation: 1,
       bossTimes: 2,
+      skinChallengeTargets: [...defaultSkinChallengeTargets],
       claimBottle: true,
       payRecruit: true,
       openBox: true,
@@ -5902,6 +5954,7 @@ const openTaskTemplateModal = () => {
     towerFormation: 1,
     bossFormation: 1,
     bossTimes: 2,
+    skinChallengeTargets: [...defaultSkinChallengeTargets],
     claimBottle: true,
     payRecruit: true,
     openBox: true,
@@ -6051,6 +6104,7 @@ const resetTemplateForm = () => {
     towerFormation: 1,
     bossFormation: 1,
     bossTimes: 2,
+    skinChallengeTargets: [...defaultSkinChallengeTargets],
     claimBottle: true,
     payRecruit: true,
     openBox: true,
@@ -7100,6 +7154,7 @@ const createFlexibleTaskDeps = (
     towerFormation: settings.towerFormation,
     bossFormation: settings.bossFormation,
     bossTimes: settings.bossTimes,
+    skinChallengeTargets: [...settings.skinChallengeTargets],
   });
   const localBatchSettings = {
     ...batchSettings,
@@ -7139,6 +7194,7 @@ const createFlexibleTaskDeps = (
       towerFormation: settings.towerFormation,
       bossFormation: settings.bossFormation,
       bossTimes: settings.bossTimes,
+      skinChallengeTargets: [...settings.skinChallengeTargets],
     }),
     helperSettings: reactive({
       boxType: settings.boxType,
@@ -7247,6 +7303,7 @@ const runFlexibleDailyTasks = async (
             towerFormation: template.settings.towerFormation,
             bossFormation: template.settings.bossFormation,
             bossTimes: template.settings.bossTimes,
+            skinChallengeTargets: [...template.settings.skinChallengeTargets],
             claimBottle: true,
             payRecruit: true,
             openBox: true,

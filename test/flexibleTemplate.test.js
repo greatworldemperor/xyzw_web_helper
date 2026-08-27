@@ -8,6 +8,11 @@ import {
   normalizeFlexibleTemplate,
   parseFlexibleTemplates,
 } from "../src/utils/batch/flexibleTemplate.js";
+import {
+  defaultSkinChallengeTargets,
+  normalizeSkinChallengeTargets,
+  selectSkinChallengeTargets,
+} from "../src/utils/batch/skinChallengeUtils.js";
 
 test("flexible task catalog includes hidden daily tasks and every batch action", () => {
   const taskIds = new Set(flexibleTasks.map((task) => task.value));
@@ -185,6 +190,28 @@ test("normalization clamps imported settings and rejects invalid options", () =>
   assert.equal(normalized.settings.footballPick, 2);
   assert.equal(normalized.settings.legacyRecipientId, null);
   assert.equal(normalized.settings.warGuessCoin, 20);
+});
+
+test("skin challenge only selects explicitly configured uncleared bosses", () => {
+  assert.deepEqual(defaultSkinChallengeTargets, []);
+  assert.deepEqual(normalizeSkinChallengeTargets(["3", 3, 9, 0, 1]), [1, 3]);
+
+  assert.deepEqual(
+    selectSkinChallengeTargets(
+      [1, 2, 3, 4, 5, 6],
+      ["2", 4],
+      (towerType) => towerType === 2,
+    ),
+    [4],
+  );
+  assert.deepEqual(
+    selectSkinChallengeTargets(
+      [1, 2, 3, 4, 5, 6],
+      [],
+      () => false,
+    ),
+    [],
+  );
 });
 
 test("persisted templates fail closed when storage is malformed", () => {

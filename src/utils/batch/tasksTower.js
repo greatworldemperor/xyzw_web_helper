@@ -9,6 +9,10 @@ import {
  * 包含: climbTower, climbWeirdTower, batchClaimFreeEnergy
  */
 import { normalizeWeirdTowerMaxClimb } from "../towerClimbLimit.js";
+import {
+  normalizeSkinChallengeTargets,
+  selectSkinChallengeTargets,
+} from "./skinChallengeUtils.js";
 
 /**
  * 创建爬塔类任务执行器
@@ -970,6 +974,9 @@ export function createTasksTower(deps) {
 
       tokenStatus.value[tokenId] = "running";
       const token = tokens.value.find((t) => t.id === tokenId);
+      const tokenSettings = loadSettings
+        ? loadSettings(tokenId) || currentSettings
+        : currentSettings;
 
       try {
         addLog({
@@ -1056,21 +1063,36 @@ export function createTasksTower(deps) {
           return 1;
         };
 
-        // 筛选未通关的BOSS
-        const targetTowers = todayOpenTowers.filter(type => !isTowerCleared(type, levelRewardMap));
+        const selectedTargetTowers = normalizeSkinChallengeTargets(
+          tokenSettings?.skinChallengeTargets,
+        );
+        const selectedOpenTowers = todayOpenTowers.filter((type) =>
+          selectedTargetTowers.includes(type),
+        );
+        const targetTowers = selectSkinChallengeTargets(
+          todayOpenTowers,
+          selectedTargetTowers,
+          (type) => isTowerCleared(type, levelRewardMap),
+        );
 
         if (todayWeekDay === 4) {
-             addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${token.name} 周四全开放，检测到需补打BOSS: ${targetTowers.length > 0 ? targetTowers.join(', ') : '无'}`,
-                type: "info",
-             });
-        } else if (targetTowers.length === 0 && todayOpenTowers.length > 0) {
-             addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${token.name} 今日BOSS ${todayOpenTowers[0]} 已通关`,
-                type: "info",
-             });
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} 周四指定挑战BOSS: ${selectedTargetTowers.length > 0 ? selectedTargetTowers.join(", ") : "无"}，检测到需补打BOSS: ${targetTowers.length > 0 ? targetTowers.join(", ") : "无"}`,
+            type: "info",
+          });
+        } else if (selectedOpenTowers.length === 0 && todayOpenTowers.length > 0) {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} 未指定今日开放的BOSS，跳过挑战`,
+            type: "info",
+          });
+        } else if (targetTowers.length === 0 && selectedOpenTowers.length > 0) {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} 今日指定BOSS已通关`,
+            type: "info",
+          });
         }
 
         if (targetTowers.length === 0) {

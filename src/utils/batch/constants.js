@@ -2,6 +2,8 @@
  * 批量日常任务常量配置
  */
 
+import { defaultSkinChallengeTargets } from "./skinChallengeUtils.js";
+
 // 宝箱类型选项
 export const boxTypeOptions = [
   { label: "木质宝箱", value: 2001 },
@@ -123,6 +125,7 @@ export const defaultSettings = {
   towerFormation: 1,
   bossFormation: 1,
   bossTimes: 2,
+  skinChallengeTargets: [...defaultSkinChallengeTargets],
   claimBottle: true,
   payRecruit: true,
   openBox: true,
@@ -164,6 +167,7 @@ export const defaultTemplate = {
   towerFormation: 1,
   bossFormation: 1,
   bossTimes: 2,
+  skinChallengeTargets: [...defaultSkinChallengeTargets],
   claimBottle: true,
   payRecruit: true,
   openBox: true,
