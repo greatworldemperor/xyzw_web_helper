@@ -642,6 +642,13 @@
                 </n-button>
                 <n-button
                   size="small"
+                  @click="activityBuyRecruitWeekReward"
+                  :disabled="isRunning || selectedTokens.length === 0"
+                >
+                  招募周一次性奖励
+                </n-button>
+                <n-button
+                  size="small"
                   @click="legion_storebuygoods"
                   :disabled="isRunning || selectedTokens.length === 0"
                 >
@@ -7022,6 +7029,7 @@ const tasksStore = createTasksStore(createTaskDeps());
 const {
   legion_storebuygoods,
   legionStoreBuySkinCoins,
+  activityBuyRecruitWeekReward,
   store_purchase,
   collection_claimfreereward,
 } = tasksStore;

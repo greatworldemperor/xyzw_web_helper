@@ -45,6 +45,7 @@ const errorCodeMap = {
   200330: "无效的ID",
   1500040: "上座塔的奖励未领取",
   1500010: "已经全部通关",
+  1100010: "招募周奖励本期已领取",
 };
 
 // 事件节流定义表，根据实际需要调整命令和节流时间
@@ -311,6 +312,11 @@ export function registerDefaultCommands(reg) {
     // 活动/任务
     .register("activity_get")
     .register("activity_recyclewarorderrewardclaim")
+    .register("activity_buystoregoods", {
+      activityId: 6,
+      goodsIndex: 0,
+      buyNum: 1,
+    }) // 招募周一次性奖励（5个招募令）
     .register("legion_getpayloadtask")
     .register("legion_getpayloadkillrecord")
     .register("legion_getpayloadbf")

@@ -85,6 +85,7 @@ export const flexibleTaskGroups = [
     name: "resource",
     label: "资源",
     tasks: [
+      batchTask("activityBuyRecruitWeekReward", "招募周一次性奖励"),
       batchTask("batchOpenBox", "批量开箱", { scheduledArgument: true }),
       batchTask("batchOpenBoxByPoints", "批量按积分开箱", {
         scheduledArgument: true,
