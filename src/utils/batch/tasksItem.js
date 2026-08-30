@@ -1,9 +1,10 @@
 import { HERO_DICT } from "@/utils/HeroList";
 import { PEACH_TASKS } from "@/utils/PeachTaskIds";
+import { executeSmartOpenBox } from "@/utils/smartOpenBox";
 
 /**
  * 开箱、钓鱼、招募类任务
- * 包含: batchOpenBox, batchClaimBoxPointReward, batchFish, batchRecruit
+ * 包含: batchOpenBox, batchSmartOpenBox, batchClaimBoxPointReward, batchFish, batchRecruit
  */
 
 /**
@@ -390,6 +391,82 @@ export function createTasksItem(deps) {
     isRunning.value = false;
     currentRunningTokenId.value = null;
     message.success("批量领取宝箱积分结束");
+  };
+
+  /**
+   * 批量智能开箱：钻石宝箱+积分足够时优先兑换并打开钻石宝箱，否则回退木质宝箱
+   */
+  const batchSmartOpenBox = async () => {
+    if (selectedTokens.value.length === 0) return;
+
+    isRunning.value = true;
+    shouldStop.value = false;
+
+    selectedTokens.value.forEach((id) => {
+      tokenStatus.value[id] = "waiting";
+    });
+
+    const taskPromises = selectedTokens.value.map(async (tokenId) => {
+      if (shouldStop.value) return;
+
+      tokenStatus.value[tokenId] = "running";
+      const token = tokens.value.find((t) => t.id === tokenId);
+
+      try {
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `=== 开始智能开箱: ${token.name} ===`,
+          type: "info",
+        });
+
+        await ensureConnection(tokenId);
+
+        await executeSmartOpenBox({
+          getRoleInfo: async () => {
+            const res = await sendRoleInfo(tokenId, {}, 5000, "获取智能开箱信息");
+            return res?.role || res?.data?.role || {};
+          },
+          sendCommand: (cmd, params, description) =>
+            tokenStore.sendMessageWithPromise(tokenId, cmd, params, 8000),
+          log: (msg, type) =>
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${token.name} ${msg}`,
+              type: type || "info",
+            }),
+        });
+
+        await sendRoleInfo(tokenId);
+        tokenStatus.value[tokenId] = "completed";
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `=== ${token.name} 智能开箱完成 ===`,
+          type: "success",
+        });
+      } catch (error) {
+        console.error(error);
+        tokenStatus.value[tokenId] = "failed";
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `智能开箱失败: ${error.message}`,
+          type: "error",
+        });
+      } finally {
+        tokenStore.closeWebSocketConnection(tokenId);
+        releaseConnectionSlot();
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${token.name} 连接已关闭  (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
+          type: "info",
+        });
+      }
+    });
+
+    await Promise.all(taskPromises);
+
+    isRunning.value = false;
+    currentRunningTokenId.value = null;
+    message.success("批量智能开箱结束");
   };
 
   /**
@@ -1461,6 +1538,7 @@ export function createTasksItem(deps) {
 
   return {
     batchOpenBox,
+    batchSmartOpenBox,
     batchOpenBoxByPoints,
     batchClaimBoxPointReward,
     batchFish,

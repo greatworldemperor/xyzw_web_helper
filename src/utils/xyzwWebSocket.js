@@ -172,6 +172,7 @@ export function registerDefaultCommands(reg) {
     })
     .register("item_openbox", { itemId: 2001, number: 10 })
     .register("item_batchclaimboxpointreward")
+    .register("item_claimboxpointreward")
     .register("item_openpack")
     .register("rank_getserverrank")
 
@@ -1063,7 +1064,11 @@ export class XyzwWebSocketClient {
       hero_recruitresp: "hero_recruit",
       friend_batchresp: "friend_batch",
       system_claimhanguprewardresp: "system_claimhangupreward",
-      item_openboxresp: ["item_openbox", "item_batchclaimboxpointreward"],
+      item_openboxresp: [
+        "item_openbox",
+        "item_batchclaimboxpointreward",
+        "item_claimboxpointreward",
+      ],
       bottlehelper_claimresp: "bottlehelper_claim",
       bottlehelper_startresp: "bottlehelper_start",
       bottlehelper_stopresp: "bottlehelper_stop",

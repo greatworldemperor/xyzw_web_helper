@@ -168,7 +168,7 @@
             </div>
 
             <div class="switch-row">
-              <span class="switch-label">开宝箱</span>
+              <span class="switch-label">智能开箱</span>
               <n-switch v-model:value="settings.openBox" />
             </div>
 

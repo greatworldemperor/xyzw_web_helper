@@ -593,6 +593,13 @@
                 </n-button>
                 <n-button
                   size="small"
+                  @click="batchSmartOpenBox"
+                  :disabled="isRunning || selectedTokens.length === 0"
+                >
+                  智能开箱
+                </n-button>
+                <n-button
+                  size="small"
                   @click="openHelperModal('pointsBox')"
                   :disabled="isRunning || selectedTokens.length === 0"
                 >
@@ -841,7 +848,7 @@
               ><n-switch v-model:value="currentSettings.arenaEnable" />
             </div>
             <div class="switch-row">
-              <span class="switch-label">开宝箱</span
+              <span class="switch-label">智能开箱</span
               ><n-switch v-model:value="currentSettings.openBox" />
             </div>
             <div class="switch-row">
@@ -982,7 +989,7 @@
               ><n-switch v-model:value="currentTemplate.arenaEnable" />
             </div>
             <div class="switch-row">
-              <span class="switch-label">开宝箱</span
+              <span class="switch-label">智能开箱</span
               ><n-switch v-model:value="currentTemplate.openBox" />
             </div>
             <div class="switch-row">
@@ -4465,6 +4472,7 @@ const taskGroupDefinitions = [
     label: "资源",
     tasks: [
       "batchOpenBox",
+      "batchSmartOpenBox",
       "batchOpenBoxByPoints",
       "batchClaimBoxPointReward",
       "batchFish",
@@ -5546,6 +5554,7 @@ const executeScheduledTask = async (task) => {
         if (
           [
             "batchOpenBox",
+            "batchSmartOpenBox",
             "batchOpenBoxByPoints",
             "batchFish",
             "batchRecruit",
@@ -7007,6 +7016,7 @@ const { batchSmartSendCar, batchClaimCars } = tasksCar;
 const tasksItem = createTasksItem(createTaskDeps());
 const {
   batchOpenBox,
+  batchSmartOpenBox,
   batchOpenBoxByPoints,
   batchClaimBoxPointReward,
   batchFish,

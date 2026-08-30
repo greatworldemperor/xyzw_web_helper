@@ -23,7 +23,7 @@ export const flexibleTaskGroups = [
       dailyTask("daily.paidRecruit", "付费招募"),
       dailyTask("daily.freeGold", "免费点金3次"),
       dailyTask("daily.claimHangUp", "领取挂机并加钟"),
-      dailyTask("daily.openBox", "开启木质宝箱10个"),
+      dailyTask("daily.openBox", "智能开箱"),
       dailyTask("daily.resetBottleTimer", "重置盐罐计时"),
       dailyTask("daily.claimBottle", "领取盐罐奖励"),
       dailyTask("daily.arena", "竞技场战斗3次"),
@@ -87,6 +87,7 @@ export const flexibleTaskGroups = [
     tasks: [
       batchTask("activityBuyRecruitWeekReward", "招募周一次性奖励"),
       batchTask("batchOpenBox", "批量开箱", { scheduledArgument: true }),
+      batchTask("batchSmartOpenBox", "智能开箱"),
       batchTask("batchOpenBoxByPoints", "批量按积分开箱", {
         scheduledArgument: true,
       }),

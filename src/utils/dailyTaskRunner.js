@@ -4,6 +4,7 @@ import {
   isSkippableTaskError,
   runWithWebSocketReconnectRetry,
 } from "./helperTaskRunner.js";
+import { executeSmartOpenBox } from "./smartOpenBox.js";
 
 const formatCommandParams = (params) => {
   try {
@@ -189,6 +190,21 @@ export class DailyTaskRunner {
         throw fallbackError;
       }
     }
+  }
+
+  // 智能开箱：钻石宝箱+积分足够时优先兑换并打开钻石宝箱，否则回退木质宝箱
+  async executeSmartOpenBox(tokenId) {
+    return executeSmartOpenBox({
+      getRoleInfo: async () => {
+        const resp = await this.executeWithWebSocketRecovery(tokenId, () =>
+          this.tokenStore.sendGetRoleInfo(tokenId),
+        );
+        return resp?.role;
+      },
+      sendCommand: (cmd, params, description) =>
+        this.executeGameCommand(tokenId, cmd, params, description),
+      log: (msg, type) => this.log(msg, type),
+    });
   }
 
   loadSettings(roleId) {
@@ -410,14 +426,8 @@ export class DailyTaskRunner {
       settings.openBox
     ) {
       taskList.push({
-        name: "开启木质宝箱",
-        execute: () =>
-          this.executeGameCommand(
-            tokenId,
-            "item_openbox",
-            { itemId: 2001, number: 10 },
-            "开启木质宝箱10个",
-          ),
+        name: "智能开箱",
+        execute: () => this.executeSmartOpenBox(tokenId),
       });
     }
 
