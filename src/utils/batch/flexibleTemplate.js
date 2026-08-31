@@ -40,7 +40,7 @@ export const flexibleTaskGroups = [
       dailyTask("daily.freeFishing", "免费钓鱼3次"),
       dailyTask("daily.genieSweep", "四国灯神免费扫荡"),
       dailyTask("daily.freeGenieTickets", "领取免费扫荡券3次"),
-      dailyTask("daily.blackMarket", "黑市采购"),
+      dailyTask("daily.blackMarket", "智能黑市购物"),
       dailyTask("daily.dream", "咸王梦境（选择阵容）"),
       dailyTask("daily.deepSeaGenie", "深海灯神免费扫荡"),
       dailyTask("daily.restoreFormation", "还原初始阵容"),

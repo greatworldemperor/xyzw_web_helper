@@ -5,6 +5,7 @@ import {
   runWithWebSocketReconnectRetry,
 } from "./helperTaskRunner.js";
 import { executeSmartOpenBox } from "./smartOpenBox.js";
+import { executeSmartBlackMarketPurchase } from "./smartBlackMarket.js";
 
 const formatCommandParams = (params) => {
   try {
@@ -203,6 +204,15 @@ export class DailyTaskRunner {
       },
       sendCommand: (cmd, params, description) =>
         this.executeGameCommand(tokenId, cmd, params, description),
+      log: (msg, type) => this.log(msg, type),
+    });
+  }
+
+  // 智能黑市购物：先批量购买，有成交则停止，否则兜底购买1个青铜宝箱
+  async executeSmartBlackMarket(tokenId) {
+    return executeSmartBlackMarketPurchase({
+      sendCommand: (cmd, params) =>
+        this.executeGameCommand(tokenId, cmd, params),
       log: (msg, type) => this.log(msg, type),
     });
   }
@@ -749,21 +759,15 @@ export class DailyTaskRunner {
       }
     }
 
-    // 6. 黑市
+    // 6. 智能黑市购物
     if (
       isTaskEnabled("daily.blackMarket") &&
       !isTaskCompleted(12) &&
       settings.blackMarketPurchase
     ) {
       taskList.push({
-        name: "黑市购买1次物品",
-        execute: () =>
-          this.executeGameCommand(
-            tokenId,
-            "store_purchase",
-            { goodsId: 1 },
-            "黑市购买1次物品",
-          ),
+        name: "智能黑市购物",
+        execute: () => this.executeSmartBlackMarket(tokenId),
       });
     }
 

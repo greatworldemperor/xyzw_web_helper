@@ -333,7 +333,7 @@ const tasks = ref([
   { id: 7, name: "开启3次宝箱", completed: false, loading: false },
   {
     id: 12,
-    name: "黑市购买1次物品（请设置采购清单）",
+    name: "黑市购买1次物品（智能黑市购物）",
     completed: false,
     loading: false,
   },

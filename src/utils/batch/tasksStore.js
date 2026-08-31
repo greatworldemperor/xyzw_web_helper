@@ -2,6 +2,7 @@
  * 商店类任务
  * 包含: legion_storebuygoods, legionStoreBuySkinCoins, store_purchase, collection_claimfreereward, activityBuyRecruitWeekReward
  */
+import { executeSmartBlackMarketPurchase } from "../smartBlackMarket.js";
 
 /**
  * 创建商店类任务执行器
@@ -403,7 +404,7 @@ export function createTasksStore(deps) {
   };
 
   /**
-   * 黑市一键采购
+   * 智能黑市购物（原一键黑市采购）
    */
   const store_purchase = async () => {
     if (selectedTokens.value.length === 0) return;
@@ -425,45 +426,40 @@ export function createTasksStore(deps) {
       try {
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `=== 开始黑市一键采购: ${token.name} ===`,
+          message: `=== 开始智能黑市购物: ${token.name} ===`,
           type: "info",
         });
 
         await ensureConnection(tokenId);
 
-        addLog({
-          time: new Date().toLocaleTimeString(),
-          message: `${token.name} 发送黑市采购请求...`,
-          type: "info",
+        const result = await executeSmartBlackMarketPurchase({
+          sendCommand: async (cmd, params) => {
+            const resp = await tokenStore.sendMessageWithPromise(
+              tokenId,
+              cmd,
+              params,
+              5000,
+            );
+            await new Promise((r) => setTimeout(r, delayConfig.action));
+            return resp;
+          },
+          log: (msg, type) =>
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${token.name} ${msg}`,
+              type: type || "info",
+            }),
         });
-        const result = await tokenStore.sendMessageWithPromise(
-          tokenId,
-          "store_purchase",
-          {},
-          5000,
-        );
 
-        await new Promise((r) => setTimeout(r, delayConfig.action));
-
-        if (result.error) {
-          addLog({
-            time: new Date().toLocaleTimeString(),
-            message: `${token.name} 黑市采购失败: ${result.error}`,
-            type: "error",
-          });
-          tokenStatus.value[tokenId] = "failed";
-        } else {
-          addLog({
-            time: new Date().toLocaleTimeString(),
-            message: `${token.name} 黑市采购成功`,
-            type: "success",
-          });
+        if (result.success) {
           tokenStatus.value[tokenId] = "completed";
+        } else {
+          tokenStatus.value[tokenId] = "failed";
         }
       } catch (error) {
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `${token.name} 黑市采购过程出错: ${error.message}`,
+          message: `${token.name} 智能黑市购物过程出错: ${error.message}`,
           type: "error",
         });
         tokenStatus.value[tokenId] = "failed";

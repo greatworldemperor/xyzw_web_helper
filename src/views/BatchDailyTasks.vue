@@ -407,7 +407,7 @@
                   @click="store_purchase"
                   :disabled="isRunning || selectedTokens.length === 0"
                 >
-                  一键黑市采购
+                  智能黑市购物
                 </n-button>
                 <n-button
                   size="small"
