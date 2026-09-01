@@ -686,36 +686,133 @@ async function waitConnected(tokenId, timeoutMs = 3000) {
   return isConnected(tokenId);
 }
 
+async function refreshTokenUntilSuccess(tokenId, tokenName) {
+  let refreshAttempt = 0;
+
+  while (true) {
+    if (runningStates[tokenId]?.stopFlag) return false;
+    refreshAttempt += 1;
+    addLog(
+      tokenId,
+      tokenName,
+      `连接失败，开始刷新Token（第${refreshAttempt}次）`,
+      "warning",
+    );
+
+    const result = await tokenStore.attemptTokenRefreshWithResult(
+      tokenId,
+      false,
+      {
+        ignoreCooldown: true,
+        notifyFailure: true,
+      },
+    );
+
+    if (result.success) {
+      addLog(
+        tokenId,
+        tokenName,
+        `Token刷新成功，准备使用最新Token重连（第${refreshAttempt}次）`,
+        "success",
+      );
+      return true;
+    }
+
+    if (!result.retryable) {
+      addLog(tokenId, tokenName, `Token自动刷新失败：${result.reason}`, "error");
+      return false;
+    }
+
+    addLog(
+      tokenId,
+      tokenName,
+      `Token刷新遇到限流：${result.reason}，1秒后重试`,
+      "warning",
+    );
+    await sleep(1000);
+  }
+
+  return false;
+}
+
 async function ensureConnected(tokenId, retryCount = 2) {
   if (isConnected(tokenId)) return true;
 
-  const token = getToken(tokenId);
-  const tokenName = token?.name || tokenId;
-  if (!token) {
+  const initialToken = getToken(tokenId);
+  const tokenName = initialToken?.name || tokenId;
+  if (!initialToken) {
     addLog(tokenId, tokenName, "重连失败：未找到账号数据", "error");
     return false;
   }
 
-  for (let attempt = 0; attempt < retryCount; attempt++) {
-    if (attempt > 0) {
-      addLog(tokenId, tokenName, `重连尝试 ${attempt}/${retryCount}，等待 3 秒...`, "warning");
-      await sleep(3000);
-    } else {
-      addLog(tokenId, tokenName, "WebSocket 断开，尝试连接...", "info");
+  const connectWithLatestToken = async () => {
+    const latestToken = getToken(tokenId);
+    if (!latestToken) {
+      throw new Error("刷新Token后未找到账号数据");
     }
 
+    await tokenStore.createWebSocketConnection(
+      tokenId,
+      latestToken.token,
+      latestToken.wsUrl,
+      { monitorTimeout: false, autoRefresh: false },
+    );
+    return waitConnected(tokenId, 3000);
+  };
+
+  addLog(tokenId, tokenName, "WebSocket 断开，尝试连接...", "info");
+  try {
+    if (await connectWithLatestToken()) {
+      addLog(tokenId, tokenName, "WebSocket 连接成功", "success");
+      return true;
+    }
+  } catch (error) {
+    addLog(tokenId, tokenName, `连接失败：${sanitizeError(error)}`, "error");
+  }
+
+  const reconnectAttempts = Math.max(1, retryCount);
+  for (let reconnectAttempt = 1; reconnectAttempt <= reconnectAttempts; reconnectAttempt++) {
+    if (!runningStates[tokenId] || runningStates[tokenId].stopFlag) return false;
+
+    addLog(
+      tokenId,
+      tokenName,
+      `连接超时，先刷新Token再重连（第${reconnectAttempt}/${reconnectAttempts}次）`,
+      "warning",
+    );
+
+    await tokenStore.closeWebSocketConnection(tokenId);
+    if (!await refreshTokenUntilSuccess(tokenId, tokenName)) return false;
+    await sleep(3000);
+
     try {
-      await tokenStore.createWebSocketConnection(tokenId, token.token, token.wsUrl);
-      if (await waitConnected(tokenId, 3000)) {
+      addLog(
+        tokenId,
+        tokenName,
+        `正在使用最新Token重连（第${reconnectAttempt}/${reconnectAttempts}次）`,
+        "info",
+      );
+      if (await connectWithLatestToken()) {
         addLog(tokenId, tokenName, "WebSocket 连接成功", "success");
         return true;
       }
+      addLog(
+        tokenId,
+        tokenName,
+        `Token刷新后重连仍超时，将再次刷新Token（第${reconnectAttempt}/${reconnectAttempts}次）`,
+        "warning",
+      );
     } catch (error) {
-      addLog(tokenId, tokenName, `连接失败：${sanitizeError(error)}`, "error");
+      addLog(tokenId, tokenName, `刷新Token后重连失败：${sanitizeError(error)}`, "warning");
     }
   }
 
-  addLog(tokenId, tokenName, `WebSocket 连接失败，已重试 ${retryCount} 次，放弃`, "error");
+  addLog(
+    tokenId,
+    tokenName,
+    `WebSocket 连接失败，刷新Token后已重试 ${reconnectAttempts} 次，放弃`,
+    "error",
+  );
   return false;
 }
 
