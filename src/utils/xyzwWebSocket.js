@@ -95,15 +95,17 @@ export class CommandRegistry {
   }
 
   /** 注册命令 */
-  register(cmd, defaultBody = {}) {
+  register(cmd, defaultBody = {}, options = {}) {
     this.commands.set(cmd, (ack = 0, seq = 0, params = {}) => ({
       cmd,
       ack,
       seq,
       time: Date.now(),
-      body: this.encoder?.bon?.encode
-        ? this.encoder.bon.encode({ ...defaultBody, ...params })
-        : { ...defaultBody, ...params },
+      body: options.rawBody
+        ? { ...defaultBody, ...params }
+        : this.encoder?.bon?.encode
+          ? this.encoder.bon.encode({ ...defaultBody, ...params })
+          : { ...defaultBody, ...params },
     }));
     return this;
   }
@@ -154,6 +156,7 @@ export function registerDefaultCommands(reg) {
     .register("system_getdatabundlever", { isAudit: false })
     .register("system_buygold", { buyNum: 1 })
     .register("system_claimhangupreward")
+    .register("system_hangupupgrade", { upgradeNum: 1 })
     .register("system_signinreward")
     .register("system_mysharecallback", { isSkipShareCard: true, type: 2 })
     .register("system_custom", { key: "", value: 0 })
@@ -174,11 +177,14 @@ export function registerDefaultCommands(reg) {
     .register("item_batchclaimboxpointreward")
     .register("item_claimboxpointreward")
     .register("item_openpack")
+    .register("item_consume")
     .register("rank_getserverrank")
 
     // 竞技场
     .register("arena_startarea")
     .register("fight_startlevel") // 获取 battleVersion
+    .register("fight_calcleveltime") // 计算主线关卡战斗时长
+    .register("fight_level", {}, { rawBody: true }) // 结算主线关卡
     .register("arena_getareatarget", { refresh: false })
     .register("arena_getarearank")
 
@@ -333,7 +339,7 @@ export function registerDefaultCommands(reg) {
 
     // 扭蛋相关
     .register("gacha_drawreward", { num: 1, isGroup: false })
-    
+
     // 车辆相关
     .register("car_getrolecar")
     .register("car_refresh", { carId: 0 })
@@ -398,7 +404,14 @@ export function registerDefaultCommands(reg) {
     .register("saltcup26_placebet", { matchId: "", pick: 0 })
 
     // 换皮闯关领奖
-    .register("activity_startactegame", { actId: 0 });
+    .register("activity_startactegame", { actId: 0 })
+    .register("activity_actegamestageclaim", { actId: 0 })
+
+    // 逐鹿盐山竞猜
+    .register("apex_getroleinfo")
+    .register("apex_getguesslist", { scheduleId: 0, idx: 0 })
+    .register("apex_guess", { teamId: "" })
+    .register("apex_get64oppomap", { scheduleId: 0, groupId: 0 });
   registry.commands.set(
     "fight_startareaarena",
     (ack = 0, seq = 0, params = {}) => {
@@ -1059,16 +1072,25 @@ export class XyzwWebSocketClient {
       legion_getarearankresp: "legion_getarearank",
       legionwar_getgoldmonthwarrankresp: "legionwar_getgoldmonthwarrank",
       nightmare_getroleinforesp: "nightmare_getroleinfo",
+      fight_startlevelresp: "fight_startlevel",
+      fight_calcleveltimeresp: "fight_calcleveltime",
+      fight_levelresp: "fight_level",
       studyresp: "study_startgame",
       role_getroleinforesp: "role_getroleinfo",
+      apex_getroleinforesp: "apex_getroleinfo",
+      apex_getguesslistresp: "apex_getguesslist",
+      apex_guessresp: "apex_guess",
+      apex_get64oppomapresp: "apex_get64oppomap",
       hero_recruitresp: "hero_recruit",
       friend_batchresp: "friend_batch",
       system_claimhanguprewardresp: "system_claimhangupreward",
+      system_hangupupgraderesp: "system_hangupupgrade",
       item_openboxresp: [
         "item_openbox",
         "item_batchclaimboxpointreward",
         "item_claimboxpointreward",
       ],
+      item_consumeresp: "item_consume",
       bottlehelper_claimresp: "bottlehelper_claim",
       bottlehelper_startresp: "bottlehelper_start",
       bottlehelper_stopresp: "bottlehelper_stop",
