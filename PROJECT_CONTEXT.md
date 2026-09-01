@@ -89,6 +89,8 @@ H5 方法
 
 手机号登录的三批抓包分析、与微信扫码登录的字段对照、已确认的 `combUser -> bin -> Token` 复用链路以及后续失败分支抓包清单，记录在 [docs/mobile-phone-login-protocol-research.md](docs/mobile-phone-login-protocol-research.md)。当前实现位于 [src/utils/hortorLogin.js](src/utils/hortorLogin.js) 和 [src/views/TokenImport/mobile.vue](src/views/TokenImport/mobile.vue)，支持发送验证码、组合登录、角色选择、bin 下载和批量 Token 导入；手机号和验证码不会持久化。成功链已由协议测试和浏览器 mock 闭环，真实上游仍需确认网页生成的 `activeLoginMatchId` 可被接受；验证码错误、过期和上游限流等失败响应仍待补抓。
 
+主线推关（pushLevel）的抓包分析（`fight_startlevel` → `Fight_StartLevelResp` → 本地模拟战斗 → `fight_endlevel` 战报）、`outputCode` 防作弊校验码这一唯一堵点以及后续研究计划，记录在 [docs/mainline-pushlevel-protocol-research.md](docs/mainline-pushlevel-protocol-research.md)。当前项目尚未实现推关功能；`fight_endlevel` 未注册，`outputCode` 生成算法待从运行时 H5 战斗模块逆向。
+
 消息通常包含以下字段：
 
 ```js

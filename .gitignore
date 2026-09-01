@@ -38,6 +38,7 @@ logs
 *.log
 
 # Runtime data
+local-data/
 pids
 *.pid
 *.seed
