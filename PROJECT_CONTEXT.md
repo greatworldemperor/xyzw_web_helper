@@ -89,7 +89,21 @@ H5 方法
 
 手机号登录的三批抓包分析、与微信扫码登录的字段对照、已确认的 `combUser -> bin -> Token` 复用链路以及后续失败分支抓包清单，记录在 [docs/mobile-phone-login-protocol-research.md](docs/mobile-phone-login-protocol-research.md)。当前实现位于 [src/utils/hortorLogin.js](src/utils/hortorLogin.js) 和 [src/views/TokenImport/mobile.vue](src/views/TokenImport/mobile.vue)，支持发送验证码、组合登录、角色选择、bin 下载和批量 Token 导入；手机号和验证码不会持久化。成功链已由协议测试和浏览器 mock 闭环，真实上游仍需确认网页生成的 `activeLoginMatchId` 可被接受；验证码错误、过期和上游限流等失败响应仍待补抓。
 
-主线推关（pushLevel）的抓包分析（`fight_startlevel` → `Fight_StartLevelResp` → 本地模拟战斗 → `fight_endlevel` 战报）、`outputCode` 防作弊校验码这一唯一堵点以及后续研究计划，记录在 [docs/mainline-pushlevel-protocol-research.md](docs/mainline-pushlevel-protocol-research.md)。当前项目尚未实现推关功能；`fight_endlevel` 未注册，`outputCode` 生成算法待从运行时 H5 战斗模块逆向。
+主线推关（pushLevel）的抓包分析（`fight_startlevel` → `Fight_StartLevelResp` → 本地生成/官方模拟战报 → `fight_endlevel`）和 `outputCode` 生成链记录在 [docs/mainline-pushlevel-protocol-research.md](docs/mainline-pushlevel-protocol-research.md)；完整的重方案/轻方案实施计划见 [docs/mainline-pushlevel-implementation-plan.md](docs/mainline-pushlevel-implementation-plan.md)。当前已增加只读研究页 [src/views/PushLevelResearch.vue](src/views/PushLevelResearch.vue) 与同源 iframe 桥 [public/game/push-level-research-bridge.js](public/game/push-level-research-bridge.js)：支持临时 BIN 内存载入、官方运行时/模块探测、控制台与 WebSocket 被动捕获、TGA 战斗日志归一化和 JSONL 下载。研究桥固定为 `passive-capture`，明确阻止主动 `fight_startlevel`、无头模拟和 `fight_endlevel`，不会包装或改写官方 API；真实账号只允许登录后由用户手动操作，后续统一分析下载日志。
+
+2026-09-02 的研究日志已验证：4845 行 JSONL 中包含 317 个 WebSocket 帧和 18 个官方 TGA 战斗事件，角色从主线 1795 连续成功推进到 1802，并已开始 1803。`c_battleLevelStart` / `c_battleSuccess` 事件直接提供 `level`、`randomSeed`、`inputCode`、`outputCode`、`battleTime`、`battleTick`、`battleVersion`、客户端/配置版本等字段；1798 样本为 `randomSeed=3320`、`battleTime=25`、`battleTick=734`。此前页面摘要为空的原因是只监听主动桥命令，没有识别 TGA 日志；研究桥现已同时归一化 TGA 事件和解码后的协议帧。`px` 帧须先做 XOR 去头再 BON 解码，不能直接调用 `lz4XorDecode`；`pl` 帧才走 LZ4/XOR 解码。
+
+哈希原文捕获通过研究页“哈希原文”开关启用，桥优先直连历史日志确认的 `ts-md5.Md5.hashStr` / `hashAsciiStr`，并以 `13.toJsonStringSB`/相关序列化方法作兜底；只记录 MD5 输入和原返回值，不改变游戏行为。官方 TGA `c_battleLevelStart`/`c_battleSuccess` 的 digest 会用于把 `hash:matched` 与关卡、seed、battleTick 配对。真实账号研究流程只允许用户手动操作和下载 JSONL，不能在桥中主动发送战斗或结算命令。
+
+2026-09-02 09:12 日志分析：桥版本 `2026-09-02.6`，哈希开关已开启，`ts-md5` 已加载，但 `hash:hooks` 只有 `module:13.bkdrHashStr`、`bkdrHashStrFast`、`toJsonStringSB`，因为直连安装函数未被旧入口调用；因此 `hash:candidate/matched` 均为 0。日志本身包含 1808、1809、1810 三场完整成功战斗及 `fight_startlevel`/`fight_endlevel` 协议帧，战斗数据正常。随后桥版本 `2026-09-02.8` 已在本地无账号运行时验证直连 `ts-md5.Md5.hashStr` 钩子和 `hash:candidate` 记录成功；当前研究桥已升级到 `2026-09-03.15`，并对可选模块探测做了错误去重/静默处理。
+
+2026-09-03 登录兼容性验证：当前远程版本不存在旧版 `data-index.LoginService.mix`；正确链路是 BIN 解码得到 `info={encryptCombUser,timestamp,sign}`，写入 `PlatformManager.instance.encryptUserInfo`，释放 `authorizeDeferred`，由官方 `LoginManager.instance.login()` 完成 `authUser`、WebSocket 和 `Role_GetRoleInfoResp`。`wechat.bin` 大小为 1628 字节，仅在页面内存中使用；当前桥 `2026-09-03.15` 已确认认证响应、WS 建立和 BON 解码正常，但最终 `GameRunning`/`ROLE.authed` 仍受官方页面初始化时序影响，不能仅凭 `GameLogin` 快照判断失败。
+
+2026-09-03 推关实现与运行时复测：轻方案新增 `src/utils/pushLevel/config.js`，将 `isWin` 和 `battleTime` 规范化为冻结配置，默认 `isWin=true`、`battleTime=447` tick；`buildPushLevelDryRun()`、单场提交和调度器启动共用同一份配置快照，主线专项测试 `35/35` 通过。研究桥迭代到 `2026-09-03.19`：只读 `headless:diagnose`（BattleManager 实例/方法/Launcher 原型源码预览、`seasonBattleTypes` 持有者深度扫描、Configs 表面）、`headless:generate` 三连引导并记录错误堆栈；`index.html` 全静态化，上号器 sh1.js 由桥动态注入（research 被动页跳过、headless iframe 带 `bin_id` 自动登录进主城）；研究页"官方无头引擎测试"卡片（headless-test iframe/BIN 注入/能力/诊断/单场生成，`testOnly=true`）。**2026-09-03 里程碑**：headless iframe 经 sh1 登录进主城（GameRunning）后 `_serverBattleFactory` 就绪，首场官方无头战斗（1841 关）生成完整 `ClientBattleResult`（outputCode=`ee22765831858a8dab7af8c4fb133699`、battleTick=448），本地按文档公式复算 digest 与官方完全一致（serializedLen=2805，样本 local-data/headless_result_1841.json + verify_official_1841.mjs）。登录进不去游戏的根因是 260903 index.html 把 sh1 从无条件加载改成参数化 document.write（GamePlayer 无参数页上号器缺失 + document.write 切断后续脚本解析），已在 v19 修复。轻方案代码完整、专项测试通过，但真实服务器单场验收仍未进行；重方案官方无头引擎已可运行，两条路径共享同一输出公式。
+
+2026-09-02 09:40 研究日志已捕获 9 条 `hash:matched` 原文，其中 3 条为 1812、1813、1814 的 outputCode；所有原文均已用本地 MD5 复算一致，且已确认 `ClientBattleResult` 顶层、双方队伍和成员字段顺序。用户提供的开发前提是服务端只校验 `outputCode` 公式、不重新模拟战斗；自定义成功结果尚未做受控线上验证，因此后续必须先做本地 fixture、协议桩和测试账号单场验证，再接入自动调度器。
+
+游戏 iframe 的上号器 `sh1.js` 由研究桥 v19 动态注入：`research=push-level` 被动模式不加载（避免旧上号器探测污染研究日志）；普通运行时与 `headless-test=1` iframe 加载（headless iframe 带 `bin_id=<tokenId>` 时 sh1 自动登录进主城）。`diagnose_require.js` 诊断脚本随 `index.html` 静态加载。
 
 消息通常包含以下字段：
 

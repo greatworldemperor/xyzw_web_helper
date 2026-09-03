@@ -31,6 +31,8 @@ declare module 'vue-router/auto-routes' {
     '/NotFound': RouteRecordInfo<'/NotFound', '/NotFound', Record<never, never>, Record<never, never>>,
     '/Profile': RouteRecordInfo<'/Profile', '/Profile', Record<never, never>, Record<never, never>>,
     '/PushingLevels': RouteRecordInfo<'/PushingLevels', '/PushingLevels', Record<never, never>, Record<never, never>>,
+    '/PushLevelResearch': RouteRecordInfo<'/PushLevelResearch', '/PushLevelResearch', Record<never, never>, Record<never, never>>,
+    '/PushLevelSynthetic': RouteRecordInfo<'/PushLevelSynthetic', '/PushLevelSynthetic', Record<never, never>, Record<never, never>>,
     '/Register': RouteRecordInfo<'/Register', '/Register', Record<never, never>, Record<never, never>>,
     '/TokenImport/': RouteRecordInfo<'/TokenImport/', '/TokenImport', Record<never, never>, Record<never, never>>,
     '/TokenImport/bin': RouteRecordInfo<'/TokenImport/bin', '/TokenImport/bin', Record<never, never>, Record<never, never>>,

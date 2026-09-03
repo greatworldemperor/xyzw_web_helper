@@ -184,6 +184,7 @@ export function registerDefaultCommands(reg) {
     .register("arena_startarea")
     .register("fight_startlevel") // 获取 battleVersion
     .register("fight_calcleveltime") // 计算主线关卡战斗时长
+    .register("fight_endlevel") // 提交本地战斗结果
     .register("fight_level", {}, { rawBody: true }) // 结算主线关卡
     .register("arena_getareatarget", { refresh: false })
     .register("arena_getarearank")
@@ -283,7 +284,6 @@ export function registerDefaultCommands(reg) {
     .register("tower_claimreward")
 
     // 队伍相关
-    .register("presetteam_getinfo")
     .register("presetteam_getinfo")
     .register("presetteam_setteam")
     .register("presetteam_saveteam", { teamId: 1 })
@@ -1074,6 +1074,7 @@ export class XyzwWebSocketClient {
       nightmare_getroleinforesp: "nightmare_getroleinfo",
       fight_startlevelresp: "fight_startlevel",
       fight_calcleveltimeresp: "fight_calcleveltime",
+      fight_endlevelresp: "fight_endlevel",
       fight_levelresp: "fight_level",
       studyresp: "study_startgame",
       role_getroleinforesp: "role_getroleinfo",

@@ -61,6 +61,26 @@
             <span>主线推关</span>
           </router-link>
           <router-link
+            to="/admin/push-level-synthetic"
+            class="nav-item"
+            active-class="active"
+          >
+            <n-icon>
+              <ShieldCheckmark />
+            </n-icon>
+            <span>合成验证</span>
+          </router-link>
+          <router-link
+            to="/admin/push-level-research"
+            class="nav-item"
+            active-class="active"
+          >
+            <n-icon>
+              <Search />
+            </n-icon>
+            <span>推关研究</span>
+          </router-link>
+          <router-link
             to="/admin/message-test"
             class="nav-item"
             active-class="active"
@@ -167,6 +187,26 @@
           <span>主线推关</span>
         </router-link>
         <router-link
+          to="/admin/push-level-synthetic"
+          class="drawer-item"
+          @click="isMobileMenuOpen = false"
+        >
+          <n-icon>
+            <ShieldCheckmark />
+          </n-icon>
+          <span>合成验证</span>
+        </router-link>
+        <router-link
+          to="/admin/push-level-research"
+          class="drawer-item"
+          @click="isMobileMenuOpen = false"
+        >
+          <n-icon>
+            <Search />
+          </n-icon>
+          <span>推关研究</span>
+        </router-link>
+        <router-link
           to="/admin/message-test"
           class="drawer-item"
           @click="isMobileMenuOpen = false"
@@ -218,6 +258,8 @@ import {
   Menu,
   Layers,
   ArrowUpCircle,
+  Search,
+  ShieldCheckmark,
 } from "@vicons/ionicons5";
 
 import { useRouter } from 'vue-router'

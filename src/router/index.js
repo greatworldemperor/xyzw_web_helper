@@ -123,6 +123,24 @@ const my_routes = [
           requiresToken: true
         }
       },
+      {
+        path: 'push-level-synthetic',
+        name: 'PushLevelSynthetic',
+        component: () => import('@/views/PushLevelSynthetic.vue'),
+        meta: {
+          title: '前台合成推关',
+          requiresToken: true
+        }
+      },
+      {
+        path: 'push-level-research',
+        name: 'PushLevelResearch',
+        component: () => import('@/views/PushLevelResearch.vue'),
+        meta: {
+          title: '推关研究',
+          requiresToken: true
+        }
+      },
       // 增加自动路由引用
       ...generatedRoutes,
     ]
