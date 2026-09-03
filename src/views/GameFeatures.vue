@@ -5,7 +5,7 @@
       <div class="container">
         <div class="header-content">
           <div class="header-left">
-            <h1 class="page-title">游戏功能</h1>
+            <h1 class="page-title">功能中心</h1>
             <p class="page-subtitle">
               {{ tokenStore.selectedToken?.name || "未选择Token" }}
             </p>

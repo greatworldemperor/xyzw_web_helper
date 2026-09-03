@@ -7,7 +7,7 @@
           <n-select
             v-model:value="selectedTokenId"
             :options="tokenOptions"
-            placeholder="选择要测试的游戏Token"
+            placeholder="选择要测试的Token"
             class="w-full"
           />
         </div>

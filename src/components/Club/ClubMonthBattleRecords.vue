@@ -762,7 +762,7 @@ const handleImageError = (event) => {
 // 查询单日战绩
 const fetchBattleRecords = async (date) => {
   if (!tokenStore.selectedToken) {
-    message.warning('请先选择游戏角色')
+    message.warning('请先选择角色')
     return null
   }
 
@@ -812,7 +812,7 @@ const fetchBattleRecords = async (date) => {
 // 查询本月战绩
 const fetchMonthlyBattleRecords = async () => {
   if (!tokenStore.selectedToken) {
-    message.warning('请先选择游戏角色')
+    message.warning('请先选择角色')
     return
   }
 

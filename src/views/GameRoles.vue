@@ -5,8 +5,8 @@
       <div class="page-header">
         <div class="header-content">
           <div class="header-left">
-            <h1>游戏角色</h1>
-            <p>管理您的所有游戏角色</p>
+            <h1>角色管理</h1>
+            <p>管理您的所有角色</p>
           </div>
           <div class="header-actions">
             <n-button type="primary" size="large" @click="showAddModal = true">
@@ -81,7 +81,7 @@
 
       <!-- 空状态 -->
       <div v-else class="empty-state">
-        <n-empty description="暂无游戏角色" size="large">
+        <n-empty description="暂无角色" size="large">
           <template #icon>
             <n-icon size="64">
               <PersonCircle />
@@ -99,7 +99,7 @@
       <n-modal
         v-model:show="showAddModal"
         preset="card"
-        title="添加游戏角色"
+        title="添加角色"
         style="width: 500px"
       >
         <n-form
@@ -144,7 +144,7 @@
           <n-form-item label="账号信息">
             <n-input
               v-model:value="roleForm.account"
-              placeholder="游戏账号（可选）"
+              placeholder="账号（可选）"
             />
           </n-form-item>
 

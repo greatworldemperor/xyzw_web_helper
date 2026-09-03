@@ -73,7 +73,7 @@
         </n-card>
 
         <!-- 游戏命令测试 -->
-        <n-card v-if="status === 'connected'" title="游戏命令测试" size="small">
+        <n-card v-if="status === 'connected'" title="命令测试" size="small">
           <n-space direction="vertical">
             <n-form-item label="选择命令">
               <n-select

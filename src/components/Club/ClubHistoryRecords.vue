@@ -428,7 +428,7 @@ const handleImageError = (event) => {
 // 查询战绩
 const fetchBattleRecords = async () => {
   if (!tokenStore.selectedToken) {
-    message.warning("请先选择游戏角色");
+    message.warning("请先选择角色");
     return;
   }
 

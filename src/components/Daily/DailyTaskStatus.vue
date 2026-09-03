@@ -324,8 +324,8 @@ const settings = reactive({
 
 // 每日任务列表
 const tasks = ref([
-  { id: 1, name: "登录一次游戏", completed: false, loading: false },
-  { id: 2, name: "分享一次游戏", completed: false, loading: false },
+  { id: 1, name: "完成一次登录", completed: false, loading: false },
+  { id: 2, name: "完成一次分享", completed: false, loading: false },
   { id: 3, name: "赠送好友3次金币", completed: false, loading: false },
   { id: 4, name: "进行2次招募", completed: false, loading: false },
   { id: 5, name: "领取5次挂机奖励", completed: false, loading: false },

@@ -120,7 +120,7 @@
                         class="opponent-avatar"
                       />
                     </td>
-                    <td class="label-cell">游戏名：</td>
+                    <td class="label-cell">名称：</td>
                     <td class="value-cell">
                       {{ memberData.name }}
                       <n-tag
@@ -684,7 +684,7 @@ const handleImageError = (event) => {
 // 切磋
 const fetchfightPVP = async () => {
   if (!tokenStore.selectedToken) {
-    message.warning("请先选择游戏角色");
+    message.warning("请先选择角色");
     return;
   }
 
@@ -775,7 +775,7 @@ const fetchfightPVP = async () => {
 // 查询
 const fetchTargetInfo = async () => {
   if (!tokenStore.selectedToken) {
-    message.warning("请先选择游戏角色");
+    message.warning("请先选择角色");
     return;
   }
 

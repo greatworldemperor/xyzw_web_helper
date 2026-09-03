@@ -1,7 +1,7 @@
 <template>
   <!-- 手动输入表单 -->
   <n-form :model="importForm" :label-placement="'top'" :size="'large'" :show-label="true">
-    <n-form-item :label="'游戏角色名称'" :show-label="true">
+    <n-form-item :label="'角色名称'" :show-label="true">
       <n-input v-model:value="importForm.name" placeholder="例如：主号战士" clearable />
     </n-form-item>
 

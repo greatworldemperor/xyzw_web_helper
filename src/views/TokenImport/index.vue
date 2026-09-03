@@ -9,7 +9,7 @@
             <!-- 主题切换按钮 -->
             <ThemeToggle />
           </div>
-          <h1>游戏Token管理</h1>
+          <h1>Token管理</h1>
         </div>
       </div>
 
@@ -35,7 +35,7 @@
             <n-icon>
               <Add />
             </n-icon>
-            添加游戏Token
+            添加Token
           </h2>
         </template>
         <div class="card-header import-method-header">
@@ -131,7 +131,7 @@
                   <GameController />
                 </n-icon>
               </template>
-              打开游戏
+              打开运行时
             </n-button>
             <n-button type="success" @click="goToDashboard">
               <template #icon>

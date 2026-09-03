@@ -7,7 +7,7 @@
     label-placement="top"
     size="large"
   >
-    <n-form-item label="游戏角色名称" path="name">
+    <n-form-item label="角色名称" path="name">
       <n-input
         v-model:value="urlForm.name"
         placeholder="例如：主号战士"

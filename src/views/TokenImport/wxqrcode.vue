@@ -586,7 +586,7 @@ const getEncryptedData = async (code) => {
   // 由于是前端环境，我们模拟生成一个token
   const dm = (window as any).__require?.("13");
   if (!dm?.encMsg || !dm?.lz4XorEncode)
-    throw new Error("游戏加密模块未加载，不能生成 bin");
+    throw new Error("加密模块未加载，不能生成 bin");
 
   const encryptedBuffer = dm.encMsg(
     {

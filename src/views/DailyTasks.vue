@@ -6,7 +6,7 @@
         <div class="header-content">
           <div class="header-left">
             <h1 class="page-title">日常任务</h1>
-            <p class="page-subtitle">管理和执行您的日常游戏任务</p>
+            <p class="page-subtitle">管理和执行您的日常任务</p>
           </div>
 
           <div class="header-actions">
@@ -47,7 +47,7 @@
           <n-select
             v-model:value="selectedRoleId"
             :options="roleOptions"
-            placeholder="请选择游戏角色"
+            placeholder="请选择角色"
             style="min-width: 200px"
             @update:value="onRoleChange"
           />
@@ -317,7 +317,7 @@ const loadTeamDataWithConnection = async (
 // 方法
 const refreshTasks = async () => {
   if (!selectedRoleId.value) {
-    message.warning("请先选择游戏角色");
+    message.warning("请先选择角色");
     return;
   }
 
@@ -354,7 +354,7 @@ const generateMockTasks = (roleId) => {
     {
       id: `task_${roleId}_daily_signin`,
       title: "每日签到",
-      subtitle: "登录游戏获取签到奖励",
+      subtitle: "登录获取签到奖励",
       icon: "/icons/ta.png",
       completed: false,
       canExecute: true,
@@ -363,7 +363,7 @@ const generateMockTasks = (roleId) => {
       nextReset: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       settings: { autoExecute: false, delay: 0, notification: true },
       details: [
-        { id: 1, name: "打开游戏客户端", completed: false },
+        { id: 1, name: "打开客户端", completed: false },
         { id: 2, name: "点击签到按钮", completed: false },
       ],
       logs: [],
@@ -446,7 +446,7 @@ const onSearch = (keyword) => {
 
 const executeTask = async (taskId) => {
   if (!selectedRoleId.value) {
-    message.error("请先选择游戏角色");
+    message.error("请先选择角色");
     return;
   }
 
@@ -465,7 +465,7 @@ const executeTask = async (taskId) => {
         // 等待一秒让连接建立
         await new Promise((resolve) => setTimeout(resolve, 1000));
       } else {
-        throw new Error("未找到游戏token，请重新添加角色");
+        throw new Error("未找到Token，请重新添加角色");
       }
     }
 

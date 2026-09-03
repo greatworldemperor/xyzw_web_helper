@@ -7,7 +7,7 @@
             <img src="/icons/xiaoyugan.png" alt="XYZW" class="brand-logo" />
             <h1 class="brand-title">注册 XYZW 账户</h1>
           </div>
-          <p class="welcome-text">加入我们，开始您的游戏管理之旅</p>
+          <p class="welcome-text">加入我们，开始您的管理之旅</p>
         </div>
 
         <div class="card-body">

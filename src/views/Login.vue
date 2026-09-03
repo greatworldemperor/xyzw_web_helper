@@ -6,7 +6,7 @@
         <div class="card-header">
           <div class="brand">
             <img src="/icons/xiaoyugan.png" alt="XYZW" class="brand-logo" />
-            <h1 class="brand-title">XYZW 游戏管理系统</h1>
+            <h1 class="brand-title">XYZW 管理系统</h1>
           </div>
           <p class="welcome-text">欢迎回来，请登录您的账户</p>
         </div>
@@ -119,7 +119,7 @@
       <div class="features-showcase">
         <div class="showcase-header">
           <h2>为什么选择 XYZW？</h2>
-          <p>专业的游戏管理平台，让游戏变得更轻松</p>
+          <p>专业的管理平台，让操作变得更轻松</p>
         </div>
 
         <div class="features-list">
@@ -197,7 +197,7 @@ const features = [
     id: 1,
     icon: PersonCircle,
     title: "多角色管理",
-    description: "统一管理多个游戏角色，随时切换查看",
+    description: "统一管理多个角色，随时切换查看",
   },
   {
     id: 2,
@@ -209,7 +209,7 @@ const features = [
     id: 3,
     icon: Ribbon,
     title: "数据统计",
-    description: "详细的进度统计，让游戏数据一目了然",
+    description: "详细的进度统计，让数据一目了然",
   },
   {
     id: 4,

@@ -8,7 +8,7 @@
     :size="'large'"
     :show-label="true"
   >
-    <n-form-item :label="'游戏角色名称'" :path="'name'" :show-label="true">
+    <n-form-item :label="'角色名称'" :path="'name'" :show-label="true">
       <n-input
         v-model:value="importForm.name"
         placeholder="例如：主号战士"

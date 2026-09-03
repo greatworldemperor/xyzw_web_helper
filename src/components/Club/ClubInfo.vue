@@ -911,7 +911,7 @@ const handleExportImage = async () => {
 // 查询玩家信息
 const fetchTargetInfo = async (roleId) => {
   if (!tokenStore.selectedToken) {
-    message.warning("请先选择游戏角色");
+    message.warning("请先选择角色");
     return;
   }
 

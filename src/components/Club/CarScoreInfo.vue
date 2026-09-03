@@ -295,7 +295,7 @@ const handleImageError = (event) => {
 // 获取赛车数据
 const fetchWeirdTowerInfo = async () => {
   if (!tokenStore.selectedToken) {
-    message.warning('请先选择游戏角色')
+    message.warning('请先选择角色')
     return
   }
 

@@ -8,9 +8,9 @@
           <div class="welcome-content">
             <div class="welcome-text">
               <h1>
-                欢迎回来，{{ tokenStore.selectedToken?.name || "游戏玩家" }}！
+                欢迎回来，{{ tokenStore.selectedToken?.name || "用户" }}！
               </h1>
-              <p>今天是 {{ currentDate }}，继续您的游戏管理之旅吧</p>
+              <p>今天是 {{ currentDate }}，继续您的管理之旅吧</p>
             </div>
             <div class="welcome-actions">
               <n-button
@@ -18,7 +18,7 @@
                 size="large"
                 @click="router.push('/admin/game-features')"
               >
-                进入游戏功能
+                进入功能中心
               </n-button>
               <n-button size="large" @click="handleManageTokens">
                 管理Token
@@ -187,22 +187,22 @@ const quickActions = ref([
   {
     id: 1,
     icon: GameController,
-    title: "打开游戏",
-    description: "使用当前Token直接进入游戏",
+    title: "打开运行时",
+    description: "使用当前Token直接进入运行时",
     action: "open-game",
   },
   {
     id: 2,
     icon: Cube,
-    title: "游戏功能",
-    description: "访问所有游戏功能模块",
+    title: "功能中心",
+    description: "访问所有功能模块",
     action: "game-features",
   },
   {
     id: 3,
     icon: Add,
     title: "添加Token",
-    description: "快速添加新的游戏Token",
+    description: "快速添加新的Token",
     action: "add-token",
   },
   {
@@ -216,7 +216,7 @@ const quickActions = ref([
     id: 5,
     icon: Cloud,
     title: "WebSocket测试",
-    description: "测试WebSocket连接和游戏命令",
+    description: "测试WebSocket连接和命令",
     action: "websocket-test",
   },
 ]);

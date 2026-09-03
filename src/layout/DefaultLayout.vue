@@ -32,7 +32,7 @@
             <n-icon>
               <Cube />
             </n-icon>
-            <span>游戏功能</span>
+            <span>功能中心</span>
           </router-link>
           <router-link to="/tokens" class="nav-item" active-class="active">
             <n-icon>
@@ -124,7 +124,7 @@
           <n-icon>
             <Cube />
           </n-icon>
-          <span>游戏功能</span>
+          <span>功能中心</span>
         </router-link>
         <router-link
           to="/tokens"

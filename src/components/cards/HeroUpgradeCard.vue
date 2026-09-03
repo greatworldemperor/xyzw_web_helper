@@ -145,7 +145,7 @@ watch(
 //英雄进阶
 const orderHeroUpgrade = async () => {
   if (!tokenStore.selectedToken) {
-    message.warning("请先选择游戏角色");
+    message.warning("请先选择角色");
     return;
   }
 
@@ -192,7 +192,7 @@ const orderHeroUpgrade = async () => {
 //英雄升级
 const levelHeroUpgrade = async () => {
   if (!tokenStore.selectedToken) {
-    message.warning("请先选择游戏角色");
+    message.warning("请先选择角色");
     return;
   }
 

@@ -39,7 +39,7 @@ const my_routes = [
     name: 'GamePlayer',
     component: () => import('@/views/GamePlayer.vue'),
     meta: {
-      title: '游戏',
+      title: '运行时',
       requiresToken: true
     },
     props: route => ({
@@ -65,7 +65,7 @@ const my_routes = [
         name: 'GameFeatures',
         component: () => import('@/views/GameFeatures.vue'),
         meta: {
-          title: '游戏功能',
+          title: '功能中心',
           requiresToken: true
         }
       },
@@ -181,7 +181,7 @@ router.beforeEach((to, from, next) => {
   const tokenStore = useTokenStore()
 
   // 设置页面标题
-  document.title = to.meta.title ? `${to.meta.title} - XYZW 游戏管理系统` : 'XYZW 游戏管理系统'
+  document.title = to.meta.title ? `${to.meta.title} - XYZW 管理系统` : 'XYZW 管理系统'
   if(to.name==="LegionWar"&&!isNowInLegionWarTime()){
   // if(to.name==="LegionWar"&&isNowInLegionWarTime()){
     next('/admin/dashboard');

@@ -36,7 +36,7 @@
           inputmode="numeric"
           maxlength="11"
           clearable
-          placeholder="请输入用于登录游戏的手机号"
+          placeholder="请输入用于登录的手机号"
           :disabled="isLoggingIn"
           @update:value="normalizeMobile"
         >

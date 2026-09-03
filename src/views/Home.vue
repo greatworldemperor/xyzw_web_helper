@@ -6,7 +6,7 @@
         <div class="nav-content">
           <div class="nav-brand">
             <img src="/icons/xiaoyugan.png" alt="XYZW" class="brand-logo" />
-            <span class="brand-text">XYZW 游戏管理系统</span>
+            <span class="brand-text">XYZW 管理系统</span>
           </div>
 
           <div class="mobile-menu-button">
@@ -83,7 +83,7 @@
           <n-icon>
             <Cube />
           </n-icon>
-          <span>游戏功能</span>
+          <span>功能中心</span>
         </router-link>
         <router-link
           to="/tokens"
@@ -135,8 +135,8 @@
         <div class="container">
           <div class="hero-content">
             <div class="hero-text">
-              <h1 class="hero-title">专业的游戏管理平台</h1>
-              <p class="hero-subtitle">让游戏变得更简单，让管理变得更高效</p>
+              <h1 class="hero-title">专业的管理平台</h1>
+              <p class="hero-subtitle">让管理变得更简单，让操作变得更高效</p>
               <div class="hero-actions">
                 <n-button
                   type="primary"
@@ -190,7 +190,7 @@
         <div class="container">
           <div class="section-header">
             <h2 class="section-title">核心功能</h2>
-            <p class="section-subtitle">为您提供全方位的游戏管理解决方案</p>
+            <p class="section-subtitle">为您提供全方位的管理解决方案</p>
           </div>
 
           <div class="features-grid">
@@ -236,7 +236,7 @@
         <div class="footer-content">
           <div class="footer-brand">
             <img src="/icons/xiaoyugan.png" alt="XYZW" class="footer-logo" />
-            <span class="footer-text">XYZW 游戏管理系统</span>
+            <span class="footer-text">XYZW 管理系统</span>
           </div>
           <div class="footer-links">
             <router-link to="/changelog" class="footer-link">
@@ -273,7 +273,7 @@ const featureCards = ref([
     id: 1,
     icon: markRaw(PersonCircle),
     title: "角色管理",
-    description: "统一管理游戏角色",
+    description: "统一管理角色",
   },
   {
     id: 2,
@@ -295,7 +295,7 @@ const features = ref([
     id: 1,
     icon: markRaw(PersonCircle),
     title: "角色管理",
-    description: "轻松管理多个游戏角色，统一查看角色信息、等级进度和装备状态",
+    description: "轻松管理多个角色，统一查看角色信息、等级进度和装备状态",
   },
   {
     id: 2,
@@ -307,7 +307,7 @@ const features = ref([
     id: 3,
     icon: markRaw(Ribbon),
     title: "数据分析",
-    description: "详细的数据统计和分析报告，帮助您更好地了解游戏进度",
+    description: "详细的数据统计和分析报告，帮助您更好地了解进度",
   },
   {
     id: 4,

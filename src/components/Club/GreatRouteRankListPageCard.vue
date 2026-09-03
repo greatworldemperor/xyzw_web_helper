@@ -896,7 +896,7 @@ const getHeroInfo = (heroObj) => {
 // 新增查询对手信息功能
 const fetchTargetInfo = async (roleId) => {
   if (!tokenStore.selectedToken) {
-    message.warning("请先选择游戏角色");
+    message.warning("请先选择角色");
     return;
   }
 
@@ -1120,7 +1120,7 @@ const handleDuel = async () => {
   message.info(`开始连续切磋: ${playerInfo.value.name}，共${totalCount}次`);
 
   if (!tokenStore.selectedToken) {
-    message.warning("请先选择游戏角色");
+    message.warning("请先选择角色");
     return;
   }
 
@@ -1482,7 +1482,7 @@ const handlePageChange = (page) => {
 // 查询战绩
 const fetchBattleRecords1 = async () => {
   if (!tokenStore.selectedToken) {
-    message.warning("请先选择游戏角色");
+    message.warning("请先选择角色");
     return;
   }
 

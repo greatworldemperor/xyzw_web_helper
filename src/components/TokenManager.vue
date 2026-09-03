@@ -50,7 +50,7 @@
       <!-- 游戏Token列表 -->
       <div class="token-section">
         <h4>
-          游戏角色Token ({{ Object.keys(localTokenStore.gameTokens).length }}个)
+          角色Token ({{ Object.keys(localTokenStore.gameTokens).length }}个)
         </h4>
         <div class="game-tokens-list">
           <div
@@ -406,7 +406,7 @@ const regenerateToken = (roleId) => {
 const removeToken = (roleId) => {
   dialog.warning({
     title: "删除Token",
-    content: "确定要删除此角色的游戏Token吗？这将断开相关的WebSocket连接。",
+    content: "确定要删除此角色的Token吗？这将断开相关的WebSocket连接。",
     positiveText: "确定删除",
     negativeText: "取消",
     onPositiveClick: () => {
@@ -552,12 +552,12 @@ const clearAllTokens = () => {
   dialog.error({
     title: "清除所有Token",
     content:
-      "确定要清除所有游戏Token吗？这将断开所有WebSocket连接。此操作不可恢复！",
+      "确定要清除所有Token吗？这将断开所有WebSocket连接。此操作不可恢复！",
     positiveText: "确定清除",
     negativeText: "取消",
     onPositiveClick: () => {
       localTokenStore.clearAllGameTokens();
-      message.success("所有游戏Token已清除");
+      message.success("所有Token已清除");
     },
   });
 };
