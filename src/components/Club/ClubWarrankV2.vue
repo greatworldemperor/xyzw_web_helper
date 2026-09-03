@@ -1972,7 +1972,7 @@ const fetchBattleRecords1 = async (requestTokenId = selectedTokenId.value) => {
   }
 
   if (!requestTokenId) {
-    message.warning("请先选择游戏角色");
+    message.warning("请先选择角色");
     return;
   }
 
