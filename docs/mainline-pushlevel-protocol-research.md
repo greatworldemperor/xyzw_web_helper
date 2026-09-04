@@ -461,3 +461,5 @@ BIN -> decrypt/BON decode -> saveInfo.info
 研究页继续保持 passive-capture，不直接变成发送器。
 ```
 
+另外，仓库外部注入脚本 [scripts/7.7.12.js](../scripts/7.7.12.js) 中发现了独立的 `skip150` 客户端配置 Hook。它通过 `window.__require("Configs")` 包装 `Configs.LevelConf.getById`，在 `2..150` 关把本地配置的 `monsters` 改为 `[[[0]]]`；这不是本节的 `fight_startlevel`/`fight_endlevel` 协议链，也没有在该 Hook 中发现直接构造 `outputCode` 或发送 `fight_endlevel` 的代码。完整的混淆层、AST 范围、隔离 VM 证据、边界差分和真实 H5 待验证项见 [docs/reverse-engineering/7.7.12-skip150.md](reverse-engineering/7.7.12-skip150.md)。因此，主线协议研究不能把 `skip150` 的本地配置改写直接当作服务器接受规则；二者仍需分别验证。
+

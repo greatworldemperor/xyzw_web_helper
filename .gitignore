@@ -80,3 +80,4 @@ dist.zip
 *.bin
 bin/
 server/config.json
+/scripts/

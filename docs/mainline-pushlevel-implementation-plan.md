@@ -773,6 +773,7 @@ node --test test/<相关测试>.test.js
 6. [src/views/PushingLevels.vue](../src/views/PushingLevels.vue) 的旧服务器权威实现，只作为对照，不要直接覆盖。
 7. [src/views/PushLevelResearch.vue](../src/views/PushLevelResearch.vue) 与 [public/game/push-level-research-bridge.js](../public/game/push-level-research-bridge.js) 的被动研究实现。
 8. 09:40 日志中的 `hash:matched` 记录和脱敏 fixture。
+9. [docs/reverse-engineering/README.md](reverse-engineering/README.md) 与 [docs/reverse-engineering/7.7.12-skip150.md](reverse-engineering/7.7.12-skip150.md) 中的注入脚本/`skip150` 逆向记录；该路径是本地 `LevelConf` 配置 Hook，不要与 `fight_endlevel` 结果提交路径混用。
 
 研究 iframe 的 `index.html` 默认只加载当前研究桥；旧版 `sh1.js` 上号器通过 `legacy-tools=1` 或 `bin_id` 显式启用，`diagnose_require.js` 通过 `diagnose=1` 显式启用。不要因为看到旧脚本文件仍在仓库中，就假设它会参与当前研究流程。
 
