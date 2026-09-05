@@ -1152,6 +1152,11 @@ export class XyzwWebSocketClient {
       // 军团信息
       legion_getinforesp: "legion_getinfo",
       legion_getinforresp: "legion_getinfo",
+      club_getinforesp: "club_getinfo",
+      club_gettargetteamresp: "club_gettargetteam",
+      club_attackresp: "club_attack",
+      club_attackmonsterresp: "club_attackmonster",
+      club_taskclaimresp: "club_taskclaim",
       // 车辆相关响应映射
       car_getrolecarresp: "car_getrolecar",
       car_refreshresp: "car_refresh",
