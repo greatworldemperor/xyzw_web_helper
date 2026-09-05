@@ -6,6 +6,7 @@ import {
 } from "./helperTaskRunner.js";
 import { executeSmartOpenBox } from "./smartOpenBox.js";
 import { executeSmartBlackMarketPurchase } from "./smartBlackMarket.js";
+import { pickArenaTargetId } from "./batch/connectionManager.js";
 
 const formatCommandParams = (params) => {
   try {
@@ -13,32 +14,6 @@ const formatCommandParams = (params) => {
   } catch {
     return "[无法序列化]";
   }
-};
-
-// 辅助函数
-const pickArenaTargetId = (targets) => {
-  if (!targets) return null;
-
-  // Handle if targets is an array directly
-  if (Array.isArray(targets)) {
-    const candidate = targets[0];
-    return candidate?.roleId || candidate?.id || candidate?.targetId;
-  }
-
-  const candidate =
-    targets?.rankList?.[0] ||
-    targets?.roleList?.[0] ||
-    targets?.targets?.[0] ||
-    targets?.targetList?.[0] ||
-    targets?.list?.[0];
-
-  if (candidate) {
-    if (candidate.roleId) return candidate.roleId;
-    if (candidate.id) return candidate.id;
-    if (candidate.targetId) return candidate.targetId;
-  }
-
-  return targets?.roleId || targets?.id || targets?.targetId;
 };
 
 const isTodayAvailable = (statisticsTime) => {
@@ -222,6 +197,7 @@ export class DailyTaskRunner {
       const raw = localStorage.getItem(`daily-settings:${roleId}`);
       const defaultSettings = {
         arenaFormation: 1,
+        smartArenaMode: "lowestPower",
         bossFormation: 1,
         bossTimes: 2,
         claimBottle: true,
@@ -502,11 +478,15 @@ export class DailyTaskRunner {
             return;
           }
 
-          await this.switchToFormationIfNeeded(
-            tokenId,
-            settings.arenaFormation,
-            "竞技场阵容",
-          );
+          if (settings.arenaFormation === "current") {
+            this.log("竞技场阵容设置为维持当前，跳过阵容切换");
+          } else {
+            await this.switchToFormationIfNeeded(
+              tokenId,
+              settings.arenaFormation,
+              "竞技场阵容",
+            );
+          }
           await this.executeGameCommand(
             tokenId,
             "arena_startarea",
@@ -536,7 +516,9 @@ export class DailyTaskRunner {
               break;
             }
 
-            const targetId = pickArenaTargetId(targets);
+            const targetId = pickArenaTargetId(targets, {
+              mode: settings.smartArenaMode || "lowestPower",
+            });
             if (targetId) {
               await this.executeGameCommand(
                 tokenId,
@@ -572,11 +554,13 @@ export class DailyTaskRunner {
         taskList.push({
           name: "军团BOSS阵容检查",
           execute: () =>
-            this.switchToFormationIfNeeded(
-              tokenId,
-              settings.bossFormation,
-              "BOSS阵容",
-            ),
+            settings.bossFormation === "current"
+              ? this.log("BOSS阵容设置为维持当前，跳过阵容切换")
+              : this.switchToFormationIfNeeded(
+                  tokenId,
+                  settings.bossFormation,
+                  "BOSS阵容",
+                ),
         });
         for (let i = 0; i < remainingLegionBoss; i++) {
           taskList.push({
@@ -599,11 +583,13 @@ export class DailyTaskRunner {
       taskList.push({
         name: "每日BOSS阵容检查",
         execute: () =>
-          this.switchToFormationIfNeeded(
-            tokenId,
-            settings.bossFormation,
-            "BOSS阵容",
-          ),
+          settings.bossFormation === "current"
+            ? this.log("BOSS阵容设置为维持当前，跳过阵容切换")
+            : this.switchToFormationIfNeeded(
+                tokenId,
+                settings.bossFormation,
+                "BOSS阵容",
+              ),
       });
       for (let i = 0; i < 3; i++) {
         taskList.push({

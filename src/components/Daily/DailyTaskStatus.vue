@@ -96,23 +96,33 @@
       </template>
 
       <div class="settings-content">
+        <n-divider title-placement="left">竞技场设置（单角色独立）</n-divider>
         <div class="settings-grid">
-          <!-- 竞技场设置 -->
           <div class="setting-item">
             <label class="setting-label">竞技场阵容</label>
             <n-select
-              v-model:value="settings.arenaFormation"
-              :options="formationOptions"
+              v-model:value="arenaSettings.arenaFormation"
+              :options="arenaFormationOptions"
               size="small"
             />
           </div>
-
+          <div class="setting-item">
+            <label class="setting-label">竞技场选敌模式</label>
+            <n-select
+              v-model:value="arenaSettings.smartArenaMode"
+              :options="smartArenaModeOptions"
+              size="small"
+            />
+          </div>
+        </div>
+        <n-divider title-placement="left">其他设置</n-divider>
+        <div class="settings-grid">
           <!-- BOSS设置 -->
           <div class="setting-item">
             <label class="setting-label">BOSS阵容</label>
             <n-select
               v-model:value="settings.bossFormation"
-              :options="formationOptions"
+              :options="currentFormationOptions"
               size="small"
             />
           </div>
@@ -286,6 +296,7 @@ import {
 } from "vue";
 import { useTokenStore } from "@/stores/tokenStore";
 import { DailyTaskRunner } from "@/utils/dailyTaskRunner";
+import { smartArenaModeOptions } from "@/utils/batch";
 import { useMessage } from "naive-ui";
 import {
   Settings,
@@ -308,7 +319,6 @@ const logContainer = ref(null);
 
 // 任务设置
 const settings = reactive({
-  arenaFormation: 1,
   bossFormation: 1,
   bossTimes: 2,
   claimBottle: true,
@@ -321,6 +331,32 @@ const settings = reactive({
   commandDelay: 500,
   taskDelay: 500,
 });
+
+// 竞技场设置（单角色独立配置，按账号存储，不与批量页面的统一设置互相影响）
+const arenaSettings = reactive({
+  arenaFormation: 1,
+  smartArenaMode: "lowestPower",
+});
+
+const loadArenaSettings = (roleId) => {
+  try {
+    const raw = localStorage.getItem(`daily-arena-settings:${roleId}`);
+    if (raw) Object.assign(arenaSettings, JSON.parse(raw));
+  } catch (error) {
+    console.error("Failed to load arena settings:", error);
+  }
+};
+
+const saveArenaSettings = (roleId, s) => {
+  try {
+    localStorage.setItem(
+      `daily-arena-settings:${roleId}`,
+      JSON.stringify(s),
+    );
+  } catch (error) {
+    console.error("Failed to save arena settings:", error);
+  }
+};
 
 // 每日任务列表
 const tasks = ref([
@@ -346,6 +382,13 @@ const formationOptions = [1, 2, 3, 4, 5, 6].map((v) => ({
   label: `阵容${v}`,
   value: v,
 }));
+// 竞技场阵容选项（含"维持当前"：不切换阵容，直接使用当前阵容）
+const arenaFormationOptions = [
+  { label: "维持当前", value: "current" },
+  ...formationOptions,
+];
+// 通用阵容选项（爬塔/BOSS等同样支持"维持当前"）
+const currentFormationOptions = arenaFormationOptions;
 const bossTimesOptions = [0, 1, 2, 3, 4].map((v) => ({
   label: `${v}次`,
   value: v,
@@ -496,7 +539,12 @@ const runDailyFix = async () => {
           log(`任务进度: ${progress}%`);
         },
       },
-      settings,
+      {
+        ...settings,
+        // 竞技场阵容与选敌模式：单角色页面使用本页独立配置
+        arenaFormation: arenaSettings.arenaFormation,
+        smartArenaMode: arenaSettings.smartArenaMode,
+      },
     ); // 传入当前组件的响应式 settings
 
     log("=== 任务执行完成 ===", "success");
@@ -572,6 +620,16 @@ watch(
   { deep: true },
 );
 
+// 监听竞技场设置变化
+watch(
+  arenaSettings,
+  (cur) => {
+    const role = getCurrentRole();
+    if (role) saveArenaSettings(role.roleId, cur);
+  },
+  { deep: true },
+);
+
 // 监听token选择变化
 watch(
   () => tokenStore.selectedToken,
@@ -582,6 +640,7 @@ watch(
       // 加载新token的设置
       const saved = loadSettings(newToken.id);
       if (saved) Object.assign(settings, saved);
+      loadArenaSettings(newToken.id);
 
       // 如果WebSocket已连接，尝试获取最新角色信息
       if (isConnected.value) {
@@ -625,6 +684,7 @@ onMounted(async () => {
   if (role) {
     const saved = loadSettings(role.roleId);
     if (saved) Object.assign(settings, saved);
+    loadArenaSettings(role.roleId);
   }
 
   // 初始化时的任务状态同步会通过 watch selectedTokenRoleInfo 自动处理

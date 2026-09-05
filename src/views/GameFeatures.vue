@@ -69,6 +69,7 @@ import { useRouter } from "vue-router";
 import { useMessage } from "naive-ui";
 import { useTokenStore } from "@/stores/tokenStore";
 import { CloudDone } from "@vicons/ionicons5";
+import { pickArenaTargetId, getBatchArenaConfig } from "@/utils/batch";
 
 const router = useRouter();
 const message = useMessage();
@@ -101,19 +102,6 @@ const isConnected = computed(() => {
   return connectionStatus.value === "connected";
 });
 
-const pickArenaTargetId = (targets) => {
-  const candidate =
-    targets?.rankList?.[0] ||
-    targets?.roleList?.[0] ||
-    targets?.targets?.[0] ||
-    targets?.targetList?.[0] ||
-    targets?.list?.[0];
-
-  if (candidate?.roleId) return candidate.roleId;
-  if (candidate?.id) return candidate.id;
-  return targets?.roleId || targets?.id;
-};
-
 // 方法
 const handleFeatureAction = async (featureType) => {
   if (!tokenStore.selectedToken) {
@@ -145,7 +133,9 @@ const handleFeatureAction = async (featureType) => {
         message.error(`获取竞技场目标失败：${err.message}`);
         return;
       }
-      const targetId = pickArenaTargetId(targets);
+      const targetId = pickArenaTargetId(targets, {
+        mode: getBatchArenaConfig().smartArenaMode,
+      });
       if (!targetId) {
         message.warning("未找到可挑战的竞技场目标");
         return;

@@ -26,13 +26,11 @@ export function createTasksArena(deps) {
     addLog,
     message,
     currentRunningTokenId,
-    currentSettings,
     pickArenaTargetId,
     getTodayStartSec,
     isTodayAvailable,
     calculateMonthProgress,
     delayConfig,
-    loadSettings,
   } = deps;
 
   const sendRoleInfo =
@@ -62,9 +60,7 @@ export function createTasksArena(deps) {
       if (shouldStop.value) return;
       tokenStatus.value[tokenId] = "running";
       const token = tokens.value.find((t) => t.id === tokenId);
-      // 加载该Token的独立配置，如果未找到则回退到currentSettings(虽然可能不准确，但作为最后的兜底)
-      const tokenSettings = loadSettings ? (loadSettings(tokenId) || currentSettings) : currentSettings;
-      
+
       try {
         addLog({
           time: new Date().toLocaleTimeString(),
@@ -113,23 +109,29 @@ export function createTasksArena(deps) {
 
         const currentFormation = teamInfo?.presetTeamInfo?.useTeamId;
         let Isswitching = false;
-        if (currentFormation === tokenSettings.arenaFormation) {
+        if (batchSettings.arenaFormation === "current") {
           addLog({
             time: new Date().toLocaleTimeString(),
-            message: `当前已是阵容${tokenSettings.arenaFormation}，无需切换`,
+            message: `竞技场阵容设置为维持当前（当前阵容: ${currentFormation}），不切换`,
+            type: "info",
+          });
+        } else if (currentFormation === batchSettings.arenaFormation) {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `当前已是阵容${batchSettings.arenaFormation}，无需切换`,
             type: "info",
           });
         } else {
           await tokenStore.sendMessageWithPromise(
             tokenId,
             "presetteam_saveteam",
-            { teamId: tokenSettings.arenaFormation },
+            { teamId: batchSettings.arenaFormation },
             5000,
           );
           Isswitching = true;
           addLog({
             time: new Date().toLocaleTimeString(),
-            message: `成功切换到阵容${tokenSettings.arenaFormation}`,
+            message: `成功切换到阵容${batchSettings.arenaFormation}`,
             type: "info",
           });
         }
@@ -590,8 +592,6 @@ export function createTasksArena(deps) {
       if (shouldStop.value) return;
       tokenStatus.value[tokenId] = "running";
       
-      // 加载该Token的独立配置，如果未找到则回退到currentSettings
-      const tokenSettings = loadSettings ? (loadSettings(tokenId) || currentSettings) : currentSettings;
       const token = tokens.value.find((t) => t.id === tokenId);
 
       try {
@@ -618,23 +618,29 @@ export function createTasksArena(deps) {
 
         const currentFormation = teamInfo?.presetTeamInfo?.useTeamId;
         let Isswitching = false;
-        if (currentFormation === tokenSettings.arenaFormation) {
+        if (batchSettings.arenaFormation === "current") {
           addLog({
             time: new Date().toLocaleTimeString(),
-            message: `当前已是阵容${tokenSettings.arenaFormation}，无需切换`,
+            message: `竞技场阵容设置为维持当前（当前阵容: ${currentFormation}），不切换`,
+            type: "info",
+          });
+        } else if (currentFormation === batchSettings.arenaFormation) {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `当前已是阵容${batchSettings.arenaFormation}，无需切换`,
             type: "info",
           });
         } else {
           await tokenStore.sendMessageWithPromise(
             tokenId,
             "presetteam_saveteam",
-            { teamId: tokenSettings.arenaFormation },
+            { teamId: batchSettings.arenaFormation },
             5000,
           );
           Isswitching = true;
           addLog({
             time: new Date().toLocaleTimeString(),
-            message: `成功切换到阵容${tokenSettings.arenaFormation}`,
+            message: `成功切换到阵容${batchSettings.arenaFormation}`,
             type: "info",
           });
         }
@@ -792,7 +798,9 @@ export function createTasksArena(deps) {
               break;
             }
 
-            const targetId = pickArenaTargetId(targets);
+            const targetId = pickArenaTargetId(targets, {
+              mode: batchSettings.smartArenaMode || "lowestPower",
+            });
             if (!targetId) {
               addLog({
                 time: new Date().toLocaleTimeString(),

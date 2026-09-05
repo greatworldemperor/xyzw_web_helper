@@ -82,6 +82,7 @@ import { ref, computed, watch, onMounted } from "vue";
 import { useMessage } from "naive-ui";
 import { useTokenStore } from "@/stores/tokenStore";
 import MyCard from "../Common/MyCard.vue";
+import { pickArenaTargetId, getBatchArenaConfig } from "@/utils/batch";
 
 const tokenStore = useTokenStore();
 const message = useMessage();
@@ -269,19 +270,6 @@ const autoTopUpFish = async (need, shouldBe, target) => {
   }
 };
 
-const pickArenaTargetId = (targets) => {
-  const candidate =
-    targets?.rankList?.[0] ||
-    targets?.roleList?.[0] ||
-    targets?.targets?.[0] ||
-    targets?.targetList?.[0] ||
-    targets?.list?.[0];
-
-  if (candidate?.roleId) return candidate.roleId;
-  if (candidate?.id) return candidate.id;
-  return targets?.roleId || targets?.id;
-};
-
 const autoTopUpArena = async (need, shouldBe, target) => {
   if (!tokenStore.selectedToken) return message.warning("请先选择Token");
   if (!isConnected.value) return message.warning("请先建立WS连接");
@@ -321,7 +309,9 @@ const autoTopUpArena = async (need, shouldBe, target) => {
         }
 
         console.info("[Arena] 获取竞技场目标响应", targets);
-        const targetId = pickArenaTargetId(targets);
+        const targetId = pickArenaTargetId(targets, {
+          mode: getBatchArenaConfig().smartArenaMode,
+        });
         if (!targetId) {
           message.warning("未找到可用的竞技场目标，已停止此轮");
           break;

@@ -287,13 +287,14 @@ const getArenaTargetPower = (candidate) => {
  * 竞技场目标ID选择
  * @param {object|Array} targets - 目标列表
  * @param {object} options - 选敌选项
- * @param {string} options.mode - 选敌模式
+ * @param {string} options.mode - 选敌模式: lowestPower 最低战力 / highestPower 最高战力 / listOrder 列表顺序
  * @returns {number|string|null} - 目标ID
  */
 export const pickArenaTargetId = (targets, options = {}) => {
   const candidates = getArenaTargetList(targets);
 
-  if (options.mode === "lowestPower") {
+  if (options.mode === "lowestPower" || options.mode === "highestPower") {
+    const direction = options.mode === "lowestPower" ? 1 : -1;
     const rankedCandidates = candidates
       .map((candidate, index) => ({
         candidate,
@@ -306,7 +307,7 @@ export const pickArenaTargetId = (targets, options = {}) => {
         if (left.power === null && right.power !== null) return 1;
         if (left.power !== null && right.power === null) return -1;
         if (left.power !== null && right.power !== null) {
-          const powerDifference = left.power - right.power;
+          const powerDifference = (left.power - right.power) * direction;
           if (powerDifference !== 0) return powerDifference;
         }
         return left.index - right.index;
@@ -315,8 +316,26 @@ export const pickArenaTargetId = (targets, options = {}) => {
     if (rankedCandidates[0]) return rankedCandidates[0].id;
   }
 
+  // listOrder 或默认：取列表第一个
   const candidate = candidates[0];
   const candidateId = getArenaTargetId(candidate);
   if (candidateId !== undefined && candidateId !== null) return candidateId;
   return targets?.roleId ?? targets?.id ?? targets?.targetId ?? null;
+};
+
+/**
+ * 从本地存储读取批量竞技场配置（阵容 + 选敌模式）
+ * 竞技场战斗相关的设置统一在“批量日常页面 -> 设置”中配置
+ * @returns {{arenaFormation: number, smartArenaMode: string}}
+ */
+export const getBatchArenaConfig = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("batchSettings"));
+    return {
+      arenaFormation: Number(parsed?.arenaFormation) || 1,
+      smartArenaMode: parsed?.smartArenaMode || "lowestPower",
+    };
+  } catch {
+    return { arenaFormation: 1, smartArenaMode: "lowestPower" };
+  }
 };

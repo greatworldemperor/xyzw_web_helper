@@ -464,7 +464,13 @@ export function createTasksTower(deps) {
 
         const currentFormation = teamInfo?.presetTeamInfo?.useTeamId;
         let Isswitching = false;
-        if (currentFormation === tokenSettings.towerFormation) {
+        if (tokenSettings.towerFormation === "current") {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `爬塔阵容设置为维持当前（当前阵容: ${currentFormation}），不切换`,
+            type: "info",
+          });
+        } else if (currentFormation === tokenSettings.towerFormation) {
           addLog({
             time: new Date().toLocaleTimeString(),
             message: `当前已是阵容${tokenSettings.towerFormation}，无需切换`,
@@ -725,7 +731,13 @@ export function createTasksTower(deps) {
 
         const currentFormation = teamInfo?.presetTeamInfo?.useTeamId;
         let Isswitching = false;
-        if (currentFormation === tokenSettings.towerFormation) {
+        if (tokenSettings.towerFormation === "current") {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `爬塔阵容设置为维持当前（当前阵容: ${currentFormation}），不切换`,
+            type: "info",
+          });
+        } else if (currentFormation === tokenSettings.towerFormation) {
           addLog({
             time: new Date().toLocaleTimeString(),
             message: `当前已是阵容${tokenSettings.towerFormation}，无需切换`,

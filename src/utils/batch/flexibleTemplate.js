@@ -148,7 +148,6 @@ const legacyFlexibleTaskAliases = {
 };
 
 export const defaultFlexibleTemplateSettings = {
-  arenaFormation: 1,
   towerFormation: 1,
   bossFormation: 1,
   bossTimes: 2,
@@ -185,6 +184,12 @@ const normalizeOptionalId = (value) => {
   return numericValue;
 };
 
+// 阵容字段：允许"current"（维持当前，不切换阵容）
+const normalizeFormation = (value, fallback) => {
+  if (value === "current") return "current";
+  return normalizeEnum(value, [1, 2, 3, 4, 5, 6], fallback);
+};
+
 export const normalizeFlexibleTemplateSettings = (settings) => {
   const source = settings && typeof settings === "object" ? settings : {};
   const defaults = defaultFlexibleTemplateSettings;
@@ -192,19 +197,12 @@ export const normalizeFlexibleTemplateSettings = (settings) => {
   return {
     ...defaults,
     ...source,
-    arenaFormation: normalizeEnum(
-      source.arenaFormation,
-      [1, 2, 3, 4, 5, 6],
-      defaults.arenaFormation,
-    ),
-    towerFormation: normalizeEnum(
+    towerFormation: normalizeFormation(
       source.towerFormation,
-      [1, 2, 3, 4, 5, 6],
       defaults.towerFormation,
     ),
-    bossFormation: normalizeEnum(
+    bossFormation: normalizeFormation(
       source.bossFormation,
-      [1, 2, 3, 4, 5, 6],
       defaults.bossFormation,
     ),
     bossTimes: normalizeInteger(

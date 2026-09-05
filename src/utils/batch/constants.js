@@ -24,6 +24,15 @@ export const formationOptions = [1, 2, 3, 4, 5, 6].map((v) => ({
   value: v,
 }));
 
+// 竞技场阵容选项（含"维持当前"：不切换阵容，直接使用当前阵容）
+export const currentFormationOptions = [
+  { label: "维持当前", value: "current" },
+  ...formationOptions,
+];
+
+// 竞技场阵容选项（含"维持当前"）
+export const arenaFormationOptions = currentFormationOptions;
+
 // 智能竞技场选敌模式
 export const smartArenaModeOptions = [
   { label: "最低战力", value: "lowestPower" },
@@ -125,7 +134,6 @@ export const taskColumns = [
 
 // 默认设置
 export const defaultSettings = {
-  arenaFormation: 1,
   towerFormation: 1,
   bossFormation: 1,
   bossTimes: 2,
@@ -163,11 +171,12 @@ export const defaultBatchSettings = {
   smartDepartureTicketThreshold: 2,
   smartDepartureMode: "A",
   smartArenaMode: "lowestPower",
+  // 竞技场阵容（统一在批量设置中配置，旧模板/新模板不再各自保存）
+  arenaFormation: 1,
 };
 
 // 默认模板
 export const defaultTemplate = {
-  arenaFormation: 1,
   towerFormation: 1,
   bossFormation: 1,
   bossTimes: 2,

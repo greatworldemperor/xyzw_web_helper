@@ -40,6 +40,7 @@ import { ref, computed, watch, onMounted, onUnmounted, watchEffect } from "vue";
 import { useMessage } from "naive-ui";
 import { useTokenStore } from "@/stores/tokenStore";
 import MyCard from "../Common/MyCard.vue";
+import { pickArenaTargetId, getBatchArenaConfig } from "@/utils/batch";
 
 const tokenStore = useTokenStore();
 const message = useMessage();
@@ -48,19 +49,6 @@ const roleInfo = computed(() => tokenStore.gameData?.roleInfo || null);
 const itemcount = computed(
   () => roleInfo.value?.role?.items?.[1007]?.quantity || 0,
 );
-
-const pickArenaTargetId = (targets) => {
-  const candidate =
-    targets?.rankList?.[0] ||
-    targets?.roleList?.[0] ||
-    targets?.targets?.[0] ||
-    targets?.targetList?.[0] ||
-    targets?.list?.[0];
-
-  if (candidate?.roleId) return candidate.roleId;
-  if (candidate?.id) return candidate.id;
-  return targets?.roleId || targets?.id;
-};
 
 const number = ref(10);
 const numberOptions = [
@@ -104,7 +92,9 @@ const handleFightHelper = async () => {
       break;
     }
 
-    const targetId = pickArenaTargetId(targets);
+    const targetId = pickArenaTargetId(targets, {
+      mode: getBatchArenaConfig().smartArenaMode,
+    });
     if (!targetId) {
       message.warning("未找到可用的竞技场目标，已停止");
       break;

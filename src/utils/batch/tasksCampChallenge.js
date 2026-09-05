@@ -21,7 +21,7 @@ export function createTasksCampChallenge(deps) {
     addLog,
     message,
     currentRunningTokenId,
-    loadSettings,
+    batchSettings,
   } = deps;
 
   /**
@@ -67,9 +67,14 @@ export function createTasksCampChallenge(deps) {
 
         const lordWeaponId = roleInfoResult?.role?.lordWeaponId || 0;
 
-        // 解析阵容数据，优先使用竞技场阵容
-        const tokenSettings = loadSettings ? loadSettings(tokenId) : {};
-        const formationId = String(tokenSettings?.arenaFormation || 1);
+        // 解析阵容数据，优先使用竞技场阵容（阵容统一在批量设置中配置）
+        // 若选择"维持当前"，则使用当前正在使用的阵容
+        const configuredFormation = batchSettings?.arenaFormation ?? 1;
+        const formationId = String(
+          configuredFormation === "current"
+            ? (presetTeamResult?.presetTeamInfo?.useTeamId ?? 1)
+            : configuredFormation,
+        );
         const root =
           presetTeamResult?.presetTeamInfo?.presetTeamInfo ||
           presetTeamResult?.presetTeamInfo ||
@@ -333,9 +338,14 @@ export function createTasksCampChallenge(deps) {
 
           const lordWeaponId = roleInfoResult?.role?.lordWeaponId || 0;
 
-          // 解析阵容数据，优先使用竞技场阵容
-          const tokenSettings = loadSettings ? loadSettings(tokenId) : {};
-          const formationId = String(tokenSettings?.arenaFormation || 1);
+          // 解析阵容数据，优先使用竞技场阵容（阵容统一在批量设置中配置）
+          // 若选择"维持当前"，则使用当前正在使用的阵容
+          const configuredFormation = batchSettings?.arenaFormation ?? 1;
+          const formationId = String(
+            configuredFormation === "current"
+              ? (presetTeamResult?.presetTeamInfo?.useTeamId ?? 1)
+              : configuredFormation,
+          );
           const root =
             presetTeamResult?.presetTeamInfo?.presetTeamInfo ||
             presetTeamResult?.presetTeamInfo ||

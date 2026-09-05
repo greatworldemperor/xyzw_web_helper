@@ -809,18 +809,10 @@
       <div class="settings-content">
         <div class="settings-grid">
           <div class="setting-item">
-            <label class="setting-label">竞技场阵容</label>
-            <n-select
-              v-model:value="currentSettings.arenaFormation"
-              :options="formationOptions"
-              size="small"
-            />
-          </div>
-          <div class="setting-item">
             <label class="setting-label">爬塔阵容</label>
             <n-select
               v-model:value="currentSettings.towerFormation"
-              :options="formationOptions"
+              :options="currentFormationOptions"
               size="small"
             />
           </div>
@@ -828,7 +820,7 @@
             <label class="setting-label">BOSS阵容</label>
             <n-select
               v-model:value="currentSettings.bossFormation"
-              :options="formationOptions"
+              :options="currentFormationOptions"
               size="small"
             />
           </div>
@@ -950,18 +942,10 @@
             />
           </div>
           <div class="setting-item">
-            <label class="setting-label">竞技场阵容</label>
-            <n-select
-              v-model:value="currentTemplate.arenaFormation"
-              :options="formationOptions"
-              size="small"
-            />
-          </div>
-          <div class="setting-item">
             <label class="setting-label">爬塔阵容</label>
             <n-select
               v-model:value="currentTemplate.towerFormation"
-              :options="formationOptions"
+              :options="currentFormationOptions"
               size="small"
             />
           </div>
@@ -969,7 +953,7 @@
             <label class="setting-label">BOSS阵容</label>
             <n-select
               v-model:value="currentTemplate.bossFormation"
-              :options="formationOptions"
+              :options="currentFormationOptions"
               size="small"
             />
           </div>
@@ -1444,24 +1428,17 @@
         <n-divider title-placement="left">模板参数</n-divider>
         <div class="flexible-settings-grid">
           <div class="setting-item">
-            <label class="setting-label">竞技场阵容</label>
-            <n-select
-              v-model:value="flexibleTemplateSettings.arenaFormation"
-              :options="formationOptions"
-            />
-          </div>
-          <div class="setting-item">
             <label class="setting-label">爬塔阵容</label>
             <n-select
               v-model:value="flexibleTemplateSettings.towerFormation"
-              :options="formationOptions"
+              :options="currentFormationOptions"
             />
           </div>
           <div class="setting-item">
             <label class="setting-label">BOSS阵容</label>
             <n-select
               v-model:value="flexibleTemplateSettings.bossFormation"
-              :options="formationOptions"
+              :options="currentFormationOptions"
             />
           </div>
           <div class="setting-item">
@@ -2629,6 +2606,22 @@
                   style="width: 180px"
                 />
               </div>
+              <div
+                class="setting-item"
+                style="
+                  flex-direction: row;
+                  justify-content: space-between;
+                  align-items: center;
+                "
+              >
+                <label class="setting-label">竞技场阵容</label>
+                <n-select
+                  v-model:value="batchSettings.arenaFormation"
+                  :options="arenaFormationOptions"
+                  size="small"
+                  style="width: 180px"
+                />
+              </div>
             </div>
             <n-divider title-placement="left" style="margin: 12px 0 8px 0">智能发车条件设置(0为不限制)</n-divider>
             <div class="settings-grid">
@@ -3458,6 +3451,8 @@ import {
   defaultTaskForm,
   defaultHelperSettings,
   defaultSkinChallengeTargets,
+  arenaFormationOptions,
+  currentFormationOptions,
   skinChallengeTargetOptions,
   smartArenaModeOptions,
   // Cron utilities
@@ -3908,7 +3903,6 @@ const showSettingsModal = ref(false);
 const currentSettingsTokenId = ref(null);
 const currentSettingsTokenName = ref("");
 const currentSettings = reactive({
-  arenaFormation: 1,
   towerFormation: 1,
   bossFormation: 1,
   bossTimes: 2,
@@ -3935,7 +3929,6 @@ const DEFAULT_TEMPLATE_ID = "__default__";
 const currentTemplateName = ref("");
 const currentTemplateId = ref(null); // 用于编辑现有模板
 const currentTemplate = reactive({
-  arenaFormation: 1,
   towerFormation: 1,
   bossFormation: 1,
   bossTimes: 2,
@@ -4026,6 +4019,8 @@ const openEditFlexibleTemplate = (template) => {
   flexibleTemplateName.value = normalized.name;
   flexibleTemplateTasks.value = [...normalized.selectedTasks];
   Object.assign(flexibleTemplateSettings, normalized.settings);
+  // 竞技场阵容已统一到批量设置，旧模板数据中的残留字段不再保存
+  delete flexibleTemplateSettings.arenaFormation;
   showFlexibleTemplateEditorModal.value = true;
 };
 
@@ -4373,6 +4368,8 @@ const batchSettings = reactive({
   smartDepartureTicketThreshold: 2,
   smartDepartureMode: "A",
   smartArenaMode: "lowestPower",
+  // 竞技场阵容：统一在此配置（旧任务模板/自由模板不再各自保存）
+  arenaFormation: 1,
 });
 
 // Load batch settings from localStorage
@@ -4897,6 +4894,7 @@ const exportConfig = () => {
           batchSettings.smartDepartureTicketThreshold,
         smartDepartureMode: batchSettings.smartDepartureMode,
         smartArenaMode: batchSettings.smartArenaMode,
+        arenaFormation: batchSettings.arenaFormation,
       },
       tokenSettings: tokenSettings,
       flexibleTemplates: flexibleTemplates.value,
@@ -5942,7 +5940,6 @@ const loadSettings = (tokenId) => {
   try {
     const raw = localStorage.getItem(`daily-settings:${tokenId}`);
     const defaultSettings = {
-      arenaFormation: 1,
       towerFormation: 1,
       bossFormation: 1,
       bossTimes: 2,
@@ -5987,7 +5984,6 @@ const openTaskTemplateModal = () => {
   loadTaskTemplates();
   // 重置当前模板
   Object.assign(currentTemplate, {
-    arenaFormation: 1,
     towerFormation: 1,
     bossFormation: 1,
     bossTimes: 2,
@@ -6074,6 +6070,8 @@ const openEditTemplateModal = (template) => {
   currentTemplateId.value = template.id;
   currentTemplateName.value = template.name;
   Object.assign(currentTemplate, template.settings);
+  // 竞技场阵容已统一到批量设置，旧模板数据中的残留字段不再保存
+  delete currentTemplate.arenaFormation;
   showTaskTemplateModal.value = true;
 };
 
@@ -6137,7 +6135,6 @@ const resetTemplateForm = () => {
   currentTemplateId.value = null;
   currentTemplateName.value = "";
   Object.assign(currentTemplate, {
-    arenaFormation: 1,
     towerFormation: 1,
     bossFormation: 1,
     bossTimes: 2,
@@ -7189,7 +7186,6 @@ const createFlexibleTaskDeps = (
   };
   const loadFlexibleTokenSettings = (tokenId) => ({
     ...loadSettings(tokenId),
-    arenaFormation: settings.arenaFormation,
     towerFormation: settings.towerFormation,
     bossFormation: settings.bossFormation,
     bossTimes: settings.bossTimes,
@@ -7229,7 +7225,6 @@ const createFlexibleTaskDeps = (
     loadSettings: loadFlexibleTokenSettings,
     currentSettings: reactive({
       ...currentSettings,
-      arenaFormation: settings.arenaFormation,
       towerFormation: settings.towerFormation,
       bossFormation: settings.bossFormation,
       bossTimes: settings.bossTimes,
@@ -7338,7 +7333,8 @@ const runFlexibleDailyTasks = async (
           },
           {
             ...loadSettings(tokenId),
-            arenaFormation: template.settings.arenaFormation,
+            arenaFormation: batchSettings.arenaFormation,
+            smartArenaMode: batchSettings.smartArenaMode,
             towerFormation: template.settings.towerFormation,
             bossFormation: template.settings.bossFormation,
             bossTimes: template.settings.bossTimes,
@@ -7648,6 +7644,10 @@ const startBatch = async () => {
               await tokenStore.closeWebSocketConnection(tokenId);
               await ensureConnection(tokenId, 2, true, true);
             },
+          }, {
+            ...loadSettings(tokenId),
+            arenaFormation: batchSettings.arenaFormation,
+            smartArenaMode: batchSettings.smartArenaMode,
           });
 
           if (!runResult.success) {
