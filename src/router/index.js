@@ -47,6 +47,15 @@ const my_routes = [
     })
   },
   {
+    path: '/multi-game',
+    name: 'GameMultiPlayer',
+    component: () => import('@/views/GameMultiPlayer.vue'),
+    meta: {
+      title: '多账号运行时',
+      requiresToken: true
+    }
+  },
+  {
     name: 'DefaultLayout',
     path: '/admin',
     component: () => import('@/layout/DefaultLayout.vue'),
