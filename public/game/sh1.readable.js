@@ -317,7 +317,7 @@
    * 2. BonDecoder.decode: BON 二进制反序列化为 JS 对象
    * 3. 得到 { platformExt, info, serverId, ... }
    */
-  function injectLoginData(binData, binId) {
+  function injectLoginData(binData, binId, hooks) {
     localStorage.setItem("current_bin_id", binId);
 
     // 将 BIN 二进制转为 hex 存到全局（供后续 hook 使用）
@@ -389,17 +389,56 @@
     var binName = binItem ? binItem.name : "";
     showToast("🔄 切换中：" + binName);
 
-    // 延时注入（等待游戏模块加载完毕）
-    setTimeout(function () {
+    var runInjection = function () {
       try {
         doInjectLogin(saveInfo, binId);
+        if (hooks && typeof hooks.onInjected === "function") hooks.onInjected(saveInfo);
       } catch (e) {
         console.error("[上号器] 注入失败:", e.message);
         showToast("注入失败: " + e.message, "error");
+        if (hooks && typeof hooks.onError === "function") hooks.onError(e);
       }
-    }, 200);
+    };
+    // Keep the original short delay so the runtime finishes exposing its
+    // LoginService surface before the readable injector touches it.
+    setTimeout(runInjection, 200);
 
     return saveInfo;
+  }
+
+  function prepareBinData(binData, binId) {
+    return new Promise(function (resolve, reject) {
+      var saveInfo;
+      try {
+        stageBinData(binData, binId);
+        saveInfo = injectLoginData(binData, binId, {
+          onInjected: function (info) { resolve(info); },
+          onError: reject,
+        });
+      } catch (error) {
+        reject(error);
+        return;
+      }
+      if (!saveInfo) reject(new Error("BIN 解码失败，无法执行登录注入"));
+    });
+  }
+
+  function loginBinData(binData, binId) {
+    return prepareBinData(binData, binId).then(function (info) {
+      return new Promise(function (resolve, reject) {
+        setTimeout(function () {
+          try {
+            triggerRelogin();
+            resolve({
+              binId: String(binId || "research-bin"),
+              saveInfoKeys: Object.keys(info || {}),
+            });
+          } catch (error) {
+            reject(error);
+          }
+        }, 500);
+      });
+    });
   }
 
   /**
@@ -597,8 +636,8 @@
         var result = origRequire.apply(this, arguments);
         // 当游戏加载 data-index 模块时，立刻注入
         if (!injected && result && result.LoginService) {
-          // 在微任务中注入，避免在 require 调用中途修改模块
-          Promise.resolve().then(tryInject);
+          // 同步注入，确保调用方拿到 LoginService 前 authUser hook 已就绪
+          tryInject();
         }
         return result;
       };
@@ -609,7 +648,7 @@
       try {
         var di = origRequire("data-index");
         if (di && di.LoginService) {
-          Promise.resolve().then(tryInject);
+          tryInject();
         }
       } catch (e) {}
     }
@@ -1058,6 +1097,23 @@
   window.__xyzwSh1 = window.__xyzwSh1 || {};
   window.__xyzwSh1.version = "readable-2026-09-07";
   window.__xyzwSh1.stageBinData = stageBinData;
+  window.__xyzwSh1.prepareBinData = prepareBinData;
+  window.__xyzwSh1.loginBinData = loginBinData;
+  window.__xyzwSh1.installAutoInject = installRequireIntercept;
+
+  // The research adapter may trigger a role switch/reload after injection.
+  // Reinstall the original module-ready hook so the staged BIN is applied
+  // again when the new game runtime creates LoginService.
+  if (isResearchRuntime) {
+    var startResearchAutoInject = function () {
+      if (getCurrentBinId()) installRequireIntercept();
+    };
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", startResearchAutoInject, { once: true });
+    } else {
+      startResearchAutoInject();
+    }
+  }
 
   // ==================== 拖拽 ====================
 

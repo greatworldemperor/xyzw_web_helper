@@ -4,7 +4,7 @@
   var REQUEST_TYPE = "xyzw:push-research:request";
   var RESPONSE_TYPE = "xyzw:push-research:response";
   var EVENT_TYPE = "xyzw:push-research:event";
-  var BRIDGE_VERSION = "2026-09-07.2";
+  var BRIDGE_VERSION = "2026-09-07.12";
   var HEADLESS_TEST_MODE = new URLSearchParams(window.location.search).get("headless-test") === "1";
   var RESEARCH_MODE = new URLSearchParams(window.location.search).get("research") === "push-level";
   var MODE = HEADLESS_TEST_MODE ? "headless-test" : "passive-capture";
@@ -53,6 +53,7 @@
     networkSequence: 0,
     sh1Status: "loading",
     sh1Version: "",
+    loginCompletionRecorded: false,
   };
   var sh1LoadPromise = null;
 
@@ -1332,7 +1333,7 @@
   }
 
   function loadSh1IfNeeded() {
-    if (window.__xyzwSh1 && typeof window.__xyzwSh1.stageBinData === "function") {
+    if (window.__xyzwSh1 && typeof window.__xyzwSh1.loginBinData === "function") {
       state.sh1Status = "ready";
       state.sh1Version = window.__xyzwSh1.version || "";
       return Promise.resolve(window.__xyzwSh1);
@@ -1342,10 +1343,10 @@
     sh1LoadPromise = new Promise(function (resolve, reject) {
       window.__XYZW_RESEARCH_ADAPTER_ONLY__ = true;
       var script = document.createElement("script");
-      script.src = "sh1.readable.js?v=20260907.2";
+      script.src = "sh1.readable.js?v=20260907.12";
       script.charset = "utf-8";
       script.onload = function () {
-        if (window.__xyzwSh1 && typeof window.__xyzwSh1.stageBinData === "function") {
+        if (window.__xyzwSh1 && typeof window.__xyzwSh1.prepareBinData === "function") {
           state.sh1Status = "ready";
           state.sh1Version = window.__xyzwSh1.version || "";
           record("account:sh1:ready", {
@@ -1356,7 +1357,7 @@
           return;
         }
         state.sh1Status = "error";
-        var missingError = new Error("sh1 readable adapter 未暴露 stageBinData");
+        var missingError = new Error("sh1 readable adapter 未暴露 prepareBinData");
         record("account:sh1:error", { error: missingError.message });
         reject(missingError);
       };
@@ -1373,27 +1374,29 @@
 
   async function loadAccount(payload) {
     if (!payload || !payload.bin) throw new Error("缺少 BIN 数据");
-    var saveInfo = decodeBin(payload.bin);
-    if (!saveInfo || typeof saveInfo !== "object") throw new Error("BIN 解码结果无效");
-    var sh1Adapter = null;
-    try {
-      sh1Adapter = await loadSh1IfNeeded();
-      sh1Adapter.stageBinData(payload.bin, payload.tokenId || "research-bin");
-      record("account:sh1:staged", {
-        tokenId: payload.tokenId || "research-bin",
-        byteLength: payload.bin.byteLength || 0,
-      });
-    } catch (error) {
-      record("account:sh1:stage-error", { error: error.message });
+    var sh1Adapter = await loadSh1IfNeeded();
+    if (!sh1Adapter || typeof sh1Adapter.prepareBinData !== "function") {
+      throw new Error("readable 上号器未准备好 prepareBinData");
     }
-    state.account = { tokenId: payload.tokenId || "", keys: Object.keys(saveInfo) };
+    var tokenId = payload.tokenId || "research-bin";
+    state.loginCompletionRecorded = false;
+    record("account:sh1:login-start", {
+      tokenId: tokenId,
+      byteLength: payload.bin.byteLength || 0,
+    });
+    var saveInfo = await sh1Adapter.prepareBinData(payload.bin, tokenId);
+    if (!saveInfo || typeof saveInfo !== "object") {
+      throw new Error("BIN 解码结果无效");
+    }
     window.__pushResearchSaveInfo = saveInfo;
-    record("account:decoded", {
-      tokenId: payload.tokenId || "",
+    state.account = {
+      tokenId: tokenId,
       keys: Object.keys(saveInfo),
-      platformExt: saveInfo.platformExt,
+    };
+    record("account:sh1:prepared", {
+      tokenId: tokenId,
+      keys: Object.keys(saveInfo),
       serverId: saveInfo.serverId,
-      infoType: typeof saveInfo.info,
     });
 
     var loginRuntime = await waitForLoginService(30000);
@@ -1404,9 +1407,8 @@
       throw new Error("LoginManager.instance.login 不存在");
     }
 
-    // 当前版本的 GameLogin 会读取这个字段，再由 LoginManager 组装官方 authUser 请求。
     platformManager.encryptUserInfo = saveInfo.info;
-    installAuthUserHook(saveInfo);
+    if (!state.authHooked) installAuthUserHook(saveInfo);
     if (saveInfo.serverId !== undefined && saveInfo.serverId !== null) {
       var globalVarManager = quietRequire("GlobalVarManager");
       var localStorageModule = quietRequire("LocalStorage");
@@ -1425,34 +1427,23 @@
       platformManager.authorizeDeferred.resolve(saveInfo.info);
     }
     record("account:login:prepare", {
-      tokenId: payload.tokenId || "",
+      tokenId: tokenId,
       loginManager: describe(loginManager),
       platformManager: describe(platformManager),
       infoKeys: saveInfo.info && typeof saveInfo.info === "object" ? Object.keys(saveInfo.info) : [],
       serverId: saveInfo.serverId,
     });
 
-    var gameState = null;
-    try {
-      gameState = window.__require("Game").Game.instance.stateMachine._current.stateId;
-    } catch (error) {}
-
-    var result = { deferredReleased: true, state: gameState };
-    result.loginStarted = true;
-    result.loginState = gameState;
     var loginPromise;
     try {
       loginPromise = Promise.resolve(loginManager.login(true));
     } catch (error) {
-      record("account:login:manager:error", {
-        tokenId: payload.tokenId || "",
-        error: error.message,
-      });
+      record("account:login:manager:error", { tokenId: tokenId, error: error.message });
       throw error;
     }
     loginPromise.then(function (loginResult) {
       record("account:login:complete", {
-        tokenId: payload.tokenId || "",
+        tokenId: tokenId,
         result: summarize(loginResult, 0, []),
         role: {
           roleId: window.ROLE && window.ROLE.roleId,
@@ -1462,30 +1453,60 @@
         },
       });
     }).catch(function (error) {
-      record("account:login:manager:error", {
-        tokenId: payload.tokenId || "",
-        error: error.message,
+      record("account:login:manager:error", { tokenId: tokenId, error: error.message });
+    });
+    try {
+      await waitForAuthUserResult(loginManager, 15000);
+      record("account:login:manager", {
+        tokenId: tokenId,
+        authUserReturned: true,
+        role: {
+          roleId: window.ROLE && window.ROLE.roleId,
+          serverId: window.ROLE && window.ROLE.serverId,
+          levelId: window.ROLE && window.ROLE.levelId,
+          authed: window.ROLE && window.ROLE.authed,
+        },
       });
-    });
-    await waitForAuthUserResult(loginManager, 15000);
-    result.authUserReturned = true;
-    result.loginPending = true;
-    record("account:login:manager", {
-      tokenId: payload.tokenId || "",
-      result: result,
-      role: {
-        roleId: window.ROLE && window.ROLE.roleId,
-        serverId: window.ROLE && window.ROLE.serverId,
-        levelId: window.ROLE && window.ROLE.levelId,
-        authed: window.ROLE && window.ROLE.authed,
-      },
-    });
+    } catch (error) {
+      record("account:login:manager:error", { tokenId: tokenId, error: error.message });
+    }
+
     return {
-      tokenId: payload.tokenId || "",
-      saveInfoKeys: Object.keys(saveInfo),
-      loginManager: describe(loginManager),
-      platformManager: describe(platformManager),
+      tokenId: tokenId,
+      saveInfoKeys: state.account.keys,
+      loginStarted: true,
     };
+  }
+
+  function monitorLoginState() {
+    var attempts = 0;
+    var timer = setInterval(function () {
+      attempts += 1;
+      var role = window.ROLE || {};
+      var hasRole = Boolean(
+        role.authed === true ||
+        (Number(role.roleId) > 0 && Number(role.levelId) > 0),
+      );
+      if (hasRole && !state.loginCompletionRecorded) {
+        state.loginCompletionRecorded = true;
+        state.account = state.account || {};
+        state.account.tokenId = state.account.tokenId || localStorage.getItem("current_bin_id") || "";
+        record("account:login:complete", {
+          source: "ROLE",
+          tokenId: state.account.tokenId,
+          role: {
+            roleId: role.roleId,
+            serverId: role.serverId,
+            levelId: role.levelId,
+            authed: role.authed,
+          },
+        });
+        sessionStorage.removeItem("research_login_relogin_count");
+        clearInterval(timer);
+        return;
+      }
+      if (attempts >= 120) clearInterval(timer);
+    }, 500);
   }
 
   function extractBattleData(value) {
@@ -2903,6 +2924,7 @@
     requireType: typeof window.__require,
     location: window.location.href.split("?")[0],
   });
+  monitorLoginState();
 
   function scheduleAutoProbe() {
     if (state.autoProbeScheduled || state.autoProbeDone) return;

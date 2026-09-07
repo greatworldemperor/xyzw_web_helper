@@ -224,8 +224,14 @@ const bridge = new PushLevelResearchBridge((event, payload) => {
     accountActionType.value = "warning";
   }
   if (event === "account:login:complete") {
-    accountActionStatus.value = "登录完成";
-    accountActionType.value = "success";
+    const role = payload?.payload?.role || {};
+    if (role.authed === true || (Number(role.roleId) > 0 && Number(role.levelId) > 0)) {
+      accountActionStatus.value = "登录完成";
+      accountActionType.value = "success";
+    } else {
+      accountActionStatus.value = "认证响应已返回，等待角色";
+      accountActionType.value = "warning";
+    }
   }
   if (event === "account:login:manager:error" || event === "account:sh1:error") {
     accountActionStatus.value = "登录失败";
