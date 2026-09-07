@@ -48,8 +48,6 @@ export const flexibleTaskGroups = [
       dailyTask("daily.weeklyReward", "领取周常任务奖励"),
       dailyTask("daily.passReward", "领取通行证奖励"),
       batchTask("batchStudy", "一键答题"),
-      batchTask("batchSmartSendCar", "智能发车"),
-      batchTask("batchClaimCars", "一键收车"),
     ],
   },
   {

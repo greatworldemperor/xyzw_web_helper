@@ -6,7 +6,6 @@ import {
   getClaimableBoxPoints,
   getItemQuantity,
   is400340Error,
-  isCarSendUnavailableError,
   isModuleUnavailableError,
   isRateLimitError,
   markRateLimitRetriesExhausted,
@@ -29,10 +28,10 @@ test("isRateLimitError recognizes server throttling responses", () => {
   assert.equal(isRateLimitError(new Error("服务器错误: 200160 - 模块未开启")), false);
 });
 
-test("400340 is a rate-limit error for every operation", () => {
+test("400340 is a rate-limit error", () => {
   const error = new Error("服务器错误: 400340 - 未知错误");
 
-  assert.equal(isCarSendUnavailableError(error), true);
+  assert.equal(is400340Error(error), true);
   assert.equal(isRateLimitError(error), true);
   assert.equal(
     isRateLimitError(new Error("400340 - 操作太快，请稍后再试")),
@@ -94,13 +93,13 @@ test("runWithRateLimitRetry does not retry non-throttling errors", async () => {
     runWithRateLimitRetry({
       execute: async () => {
         attempts += 1;
-        throw new Error("车辆不存在");
+        throw new Error("资源不存在");
       },
       sleepFn: async () => {
         sleeps += 1;
       },
     }),
-    /车辆不存在/,
+    /资源不存在/,
   );
 
   assert.equal(attempts, 1);

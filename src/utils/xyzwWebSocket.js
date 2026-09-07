@@ -30,8 +30,6 @@ const errorCodeMap = {
   1500020: "能量不足",
   2300070: "未加入俱乐部",
   3500020: "没有可领取的奖励",
-  12000050: "今日发车次数已达上限",
-  12000060: "不在发车时间内",
   400190: "没有可领取的签到奖励",
   1000020: "今天已经领取过奖励了",
   3300050: "购买数量超出限制",
@@ -339,16 +337,6 @@ export function registerDefaultCommands(reg) {
 
     // 扭蛋相关
     .register("gacha_drawreward", { num: 1, isGroup: false })
-
-    // 车辆相关
-    .register("car_getrolecar")
-    .register("car_refresh", { carId: 0 })
-    .register("car_claim", { carId: 0 })
-    .register("car_send", { carId: 0, helperId: 0, text: "" })
-    .register("car_getmemberhelpingcnt")
-    .register("car_getmemberrank")
-    .register("car_research")
-    .register("car_claimpartconsumereward")
 
     // 功法
     .register("legacy_getinfo")
@@ -1158,14 +1146,6 @@ export class XyzwWebSocketClient {
       club_attackmonsterresp: "club_attackmonster",
       club_taskclaimresp: "club_taskclaim",
       // 车辆相关响应映射
-      car_getrolecarresp: "car_getrolecar",
-      car_refreshresp: "car_refresh",
-      car_claimresp: "car_claim",
-      car_sendresp: "car_send",
-      car_getmemberhelpingcntresp: "car_getmemberhelpingcnt",
-      car_getmemberrankresp: "car_getmemberrank",
-      car_researchresp: "car_research",
-      car_claimpartconsumerewardresp: "car_claimpartconsumereward",
       role_gettargetteamresp: "role_gettargetteam",
       activity_warorderclaimresp: "activity_recyclewarorderrewardclaim",
       arena_getarearankresp: "arena_getarearank",

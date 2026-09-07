@@ -54,8 +54,6 @@ export const availableTasks = [
   { label: "一键爬塔", value: "climbTower" },
   { label: "一键爬怪异塔", value: "climbWeirdTower" },
   { label: "一键答题", value: "batchStudy" },
-  { label: "智能发车", value: "batchSmartSendCar" },
-  { label: "一键收车", value: "batchClaimCars" },
   { label: "批量开箱", value: "batchOpenBox" },
   { label: "智能开箱", value: "batchSmartOpenBox" },
   { label: "按积分开箱", value: "batchOpenBoxByPoints" },
@@ -85,14 +83,6 @@ export const availableTasks = [
   { label: "一键领取蟠桃园任务", value: "batchClaimPeachTasks" },
   { label: "一键扫荡灯神", value: "batchGenieSweep" },
   { label: "一键购买梦境商品", value: "batchBuyDreamItems" },
-];
-
-// 车辆研究消耗表
-export const CarresearchItem = [
-  20, 21, 22, 23, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 47, 50, 53, 56,
-  59, 62, 65, 68, 71, 74, 78, 82, 86, 90, 94, 99, 104, 109, 114, 119, 126, 133,
-  140, 147, 154, 163, 172, 181, 190, 199, 210, 221, 232, 243, 369, 393, 422,
-  457, 498, 548, 607, 678, 763, 865, 1011,
 ];
 
 // 月度任务目标
@@ -160,16 +150,9 @@ export const defaultBatchSettings = {
   commandDelay: 500,
   taskDelay: 500,
   maxActive: 2,
-  carMinColor: 1,
   connectionTimeout: 10000,
   reconnectDelay: 1000,
   maxLogEntries: 1000,
-  // 智能发车阈值设置
-  smartDepartureGoldThreshold: 2000,
-  smartDepartureRecruitThreshold: 10,
-  smartDepartureJadeThreshold: 2000,
-  smartDepartureTicketThreshold: 2,
-  smartDepartureMode: "A",
   smartArenaMode: "lowestPower",
   // 竞技场阵容（统一在批量设置中配置，旧模板/新模板不再各自保存）
   arenaFormation: 1,

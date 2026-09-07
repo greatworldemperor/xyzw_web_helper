@@ -87,10 +87,6 @@ export function is400340Error(error) {
   return getErrorSearchText(error).includes("400340");
 }
 
-export function isCarSendUnavailableError(error) {
-  return is400340Error(error);
-}
-
 export function isRateLimitError(error) {
   if (error?.rateLimitRetriesExhausted) return false;
 

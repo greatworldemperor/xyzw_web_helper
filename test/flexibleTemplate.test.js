@@ -50,8 +50,7 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
   ];
   const batchActions = [
     "batchStudy",
-    "batchSmartSendCar",
-    "batchClaimCars",
+    "activityBuyRecruitWeekReward",
     "climbTower",
     "skinChallenge",
     "batchClaimPeachTasks",
@@ -62,6 +61,7 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "climbWeirdTower",
     "batchSmartItemHandling",
     "batchOpenBox",
+    "batchSmartOpenBox",
     "batchOpenBoxByPoints",
     "batchClaimBoxPointReward",
     "batchFish",
@@ -111,7 +111,7 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
   const dailyGroup = flexibleTaskGroups.find((group) => group.name === "daily");
   assert.deepEqual(
     dailyGroup.tasks.filter((task) => task.kind === "batch").map((task) => task.value),
-    ["batchStudy", "batchSmartSendCar", "batchClaimCars"],
+    ["batchStudy"],
   );
 });
 
@@ -173,7 +173,6 @@ test("normalization clamps imported settings and rejects invalid options", () =>
     name: "unsafe",
     selectedTasks: ["batchOpenBox"],
     settings: {
-      arenaFormation: 99,
       bossTimes: -5,
       boxType: 9999,
       boxCount: 999999,
@@ -183,7 +182,6 @@ test("normalization clamps imported settings and rejects invalid options", () =>
     },
   });
 
-  assert.equal(normalized.settings.arenaFormation, 1);
   assert.equal(normalized.settings.bossTimes, 0);
   assert.equal(normalized.settings.boxType, 2001);
   assert.equal(normalized.settings.boxCount, 10000);
