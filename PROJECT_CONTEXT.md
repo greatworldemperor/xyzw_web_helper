@@ -484,13 +484,13 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 
 #### 2. 推关研究页与游戏 runtime 综合分析平台
 
-- [ ] 暂停推关自动化内容的继续研究；保留现有推关研究成果作为后续恢复入口。
-- [ ] 整顿推关研究界面，删除不合理、重复或当前无用的内容和组件。
-- [ ] 将推关研究页建设为完整的游戏 runtime 数据分析平台，复用其可用的游戏运行环境。
-- [ ] 增加 HTTP 抓包开关，并提供 HTTP 日志独立下载功能。
-- [ ] 增加 WSS/WebSocket 抓包开关，并提供 WSS 日志独立下载功能。
-- [ ] 明确 HTTP、WSS 和 runtime 诊断数据的边界、脱敏规则、日志格式和下载范围，避免不同来源日志混杂。
-- [ ] 重新整理需要保留的 runtime 探测、被动捕获、日志归一化和分析能力，移除没有实际用途的冗余组件。
+- [x] 暂停推关自动化内容的继续研究；平台首页已移除无头战斗生成、提交绕过和容差实验入口，保留只读 runtime 观测环境。
+- [x] 整顿推关研究界面，删除不合理、重复或当前无用的战斗摘要和无头测试组件。
+- [x] 将推关研究页建设为 runtime 数据分析平台，复用官方游戏 iframe、账号注入、模块探测和被动事件日志能力。
+- [x] 增加 HTTP 抓包开关，并提供独立 HTTP JSONL 日志下载功能，覆盖 fetch/XHR 请求与响应摘要。
+- [x] 增加 WSS/WebSocket 抓包开关，并提供独立 WSS JSONL 日志下载功能，支持协议解码和可选原始帧。
+- [x] HTTP、WSS 和 runtime 诊断日志已按事件前缀分离，统一执行敏感字段脱敏并提供全部日志下载。
+- [x] 保留 runtime 探测、被动捕获、日志归一化和分析能力；页面不再暴露主动推关/提交命令，桥中的只读能力探测仍可供后续研究使用。
 
 #### 3. 重方案自动盐场
 
@@ -639,6 +639,13 @@ node --test test/helperTaskRunner.test.js test/towerClimbLimit.test.js
 - `node --test test/*.test.js`：113/114 个用例通过；唯一失败为未修改的 `test/tasksTower.test.js` 中既有的 `skinChallenge` 状态断言。
 - `npm run build` 成功，退出码为 0；仍有可选插件、Sass legacy API 和大 chunk 警告。
 - `git diff --check` 和本次触及文件的编辑器诊断通过。
+
+截至 2026-09-07 的 runtime 综合分析平台验证：
+
+- `node --test test/pushLevelConfig.test.js test/pushLevelDryRun.test.js test/pushLevelEndLevel.test.js test/pushLevelOutputCode.test.js test/pushLevelResultTemplate.test.js test/pushLevelScheduler.test.js test/pushLevelTokenAdapter.test.js test/multiGameBootstrap.test.js test/multiGamePageWarning.test.js`：40 个用例全部通过。
+- `node --check public/game/push-level-research-bridge.js` 通过；`PushLevelResearch.vue` 编辑器诊断通过。
+- `npm run build` 成功，退出码为 0；仍有可选插件、Sass legacy API 和大 chunk 警告。
+- `git diff --check` 通过；页面已移除无头战斗生成、提交绕过和容差实验入口，HTTP/WSS/runtime 日志按来源独立下载。
 
 ## 9. 部署信息
 

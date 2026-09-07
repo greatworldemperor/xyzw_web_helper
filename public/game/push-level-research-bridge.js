@@ -4,7 +4,7 @@
   var REQUEST_TYPE = "xyzw:push-research:request";
   var RESPONSE_TYPE = "xyzw:push-research:response";
   var EVENT_TYPE = "xyzw:push-research:event";
-  var BRIDGE_VERSION = "2026-09-03.21";
+  var BRIDGE_VERSION = "2026-09-07.1";
   var HEADLESS_TEST_MODE = new URLSearchParams(window.location.search).get("headless-test") === "1";
   var RESEARCH_MODE = new URLSearchParams(window.location.search).get("research") === "push-level";
   var MODE = HEADLESS_TEST_MODE ? "headless-test" : "passive-capture";
@@ -21,6 +21,8 @@
     lastBattleResponse: null,
     account: null,
     captureRawFrames: false,
+    captureHttp: false,
+    captureWss: false,
     requireHooked: false,
     networkHooksInstalled: false,
     apiHooks: [],
@@ -48,6 +50,7 @@
     headlessRunCount: 0,
     headlessLastResult: null,
     submitRunCount: 0,
+    networkSequence: 0,
   };
 
   function origin() {
@@ -83,6 +86,256 @@
       output.push(bytes[index].toString(16).padStart(2, "0"));
     }
     return output.join("");
+  }
+
+  function safeNetworkUrl(url) {
+    try {
+      var parsed = new URL(String(url), window.location.href);
+      return parsed.origin + parsed.pathname;
+    } catch (error) {
+      return "[invalid-url]";
+    }
+  }
+
+  function redactHttpText(value) {
+    return String(value || "")
+      .replace(
+        /((?:role[_-]?token|access[_-]?token|refresh[_-]?token|authorization|cookie|password|secret|openid|platformuid|ukey|sessionid)\s*[=:]\s*["']?)[^"'&,\s}]+/gi,
+        "$1[REDACTED]",
+      );
+  }
+
+  function summarizeHttpHeaders(headers) {
+    var result = {};
+    if (!headers) return result;
+    try {
+      if (typeof headers.forEach === "function") {
+        headers.forEach(function (value, key) {
+          result[key] = sensitiveKey(key) ? "[REDACTED]" : String(value);
+        });
+      } else {
+        Object.keys(headers).forEach(function (key) {
+          result[key] = sensitiveKey(key) ? "[REDACTED]" : String(headers[key]);
+        });
+      }
+    } catch (error) {
+      return { kind: "unreadable" };
+    }
+    return result;
+  }
+
+  function summarizeHttpBody(body) {
+    if (body === undefined || body === null || body === "") return null;
+    if (typeof body === "string") {
+      var text = redactHttpText(body);
+      try {
+        return { kind: "json", value: summarize(JSON.parse(body), 0, []) };
+      } catch (error) {
+        return {
+          kind: "text",
+          length: text.length,
+          head: text.slice(0, 4000),
+          truncated: text.length > 4000,
+        };
+      }
+    }
+    if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) {
+      return summarizeHttpBody(body.toString());
+    }
+    if (typeof FormData !== "undefined" && body instanceof FormData) {
+      var formKeys = [];
+      try {
+        body.forEach(function (value, key) {
+          if (formKeys.length < 100) formKeys.push(String(key));
+        });
+      } catch (error) {}
+      return { kind: "form-data", keys: formKeys };
+    }
+    if (typeof Blob !== "undefined" && body instanceof Blob) {
+      return { kind: "blob", size: body.size, type: body.type || "" };
+    }
+    if (typeof ArrayBuffer !== "undefined" && body instanceof ArrayBuffer) {
+      return {
+        kind: "arraybuffer",
+        byteLength: body.byteLength,
+        headHex: bytesToHex(new Uint8Array(body), 64),
+      };
+    }
+    if (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView(body)) {
+      return {
+        kind: "typed-array",
+        byteLength: body.byteLength,
+        headHex: bytesToHex(
+          new Uint8Array(body.buffer, body.byteOffset, body.byteLength),
+          64,
+        ),
+      };
+    }
+    return summarize(body, 0, []);
+  }
+
+  function summarizeRawResponseHeaders(headers) {
+    return redactHttpText(headers || "").slice(0, 4000);
+  }
+
+  function nextNetworkId() {
+    state.networkSequence += 1;
+    return state.networkSequence;
+  }
+
+  function requestMeta(input, init) {
+    var request = input && typeof input === "object" ? input : null;
+    var headers = init && init.headers;
+    if (!headers && request) headers = request.headers;
+    return {
+      method: String((init && init.method) || (request && request.method) || "GET").toUpperCase(),
+      url: safeNetworkUrl((request && request.url) || input),
+      headers: summarizeHttpHeaders(headers),
+      body: summarizeHttpBody(init && init.body),
+    };
+  }
+
+  function responseBodySummary(response) {
+    var contentType = "";
+    try {
+      contentType = response.headers.get("content-type") || "";
+    } catch (error) {}
+    if (/json|text|javascript|xml|html/i.test(contentType)) {
+      return response
+        .clone()
+        .text()
+        .then(function (text) {
+          return {
+            contentType: contentType,
+            body: summarizeHttpBody(text),
+          };
+        })
+        .catch(function (error) {
+          return { contentType: contentType, bodyError: error.message };
+        });
+    }
+    return Promise.resolve({ contentType: contentType });
+  }
+
+  function installHttpHooks() {
+    if (window.__pushResearchHttpHooksInstalled) return;
+    window.__pushResearchHttpHooksInstalled = true;
+
+    if (typeof window.fetch === "function" && !window.fetch.__pushResearchWrapped) {
+      var nativeFetch = window.fetch;
+      function researchFetch(input, init) {
+        var captured = state.captureHttp;
+        var networkId = captured ? nextNetworkId() : 0;
+        if (captured) {
+          record("http:request", {
+            networkId: networkId,
+            transport: "fetch",
+            request: requestMeta(input, init),
+          });
+        }
+        return nativeFetch
+          .apply(this, arguments)
+          .then(function (response) {
+            if (captured) {
+              responseBodySummary(response).then(function (body) {
+                record("http:response", {
+                  networkId: networkId,
+                  transport: "fetch",
+                  status: response.status,
+                  ok: response.ok,
+                  url: safeNetworkUrl(response.url),
+                  headers: summarizeHttpHeaders(response.headers),
+                  body: body,
+                });
+              });
+            }
+            return response;
+          })
+          .catch(function (error) {
+            if (captured) {
+              record("http:error", {
+                networkId: networkId,
+                transport: "fetch",
+                error: error,
+              });
+            }
+            throw error;
+          });
+      }
+      researchFetch.__pushResearchWrapped = true;
+      researchFetch.__pushResearchOriginal = nativeFetch;
+      window.fetch = researchFetch;
+    }
+
+    if (typeof window.XMLHttpRequest === "function") {
+      var xhrPrototype = window.XMLHttpRequest.prototype;
+      if (!xhrPrototype.__pushResearchWrapped) {
+        var nativeOpen = xhrPrototype.open;
+        var nativeSetRequestHeader = xhrPrototype.setRequestHeader;
+        var nativeSend = xhrPrototype.send;
+        xhrPrototype.open = function (method, url) {
+          this.__pushResearchMeta = {
+            method: String(method || "GET").toUpperCase(),
+            url: safeNetworkUrl(url),
+            headers: {},
+          };
+          return nativeOpen.apply(this, arguments);
+        };
+        xhrPrototype.setRequestHeader = function (name, value) {
+          if (this.__pushResearchMeta) {
+            this.__pushResearchMeta.headers[name] = sensitiveKey(name)
+              ? "[REDACTED]"
+              : String(value);
+          }
+          return nativeSetRequestHeader.apply(this, arguments);
+        };
+        xhrPrototype.send = function (body) {
+          var xhr = this;
+          var captured = state.captureHttp;
+          var networkId = captured ? nextNetworkId() : 0;
+          if (captured) {
+            var meta = xhr.__pushResearchMeta || {
+              method: "GET",
+              url: "[unknown]",
+              headers: {},
+            };
+            meta.body = summarizeHttpBody(body);
+            record("http:request", {
+              networkId: networkId,
+              transport: "xhr",
+              request: meta,
+            });
+            var finished = false;
+            var finish = function (event) {
+              if (finished) return;
+              finished = true;
+              var responseBody = null;
+              try {
+                responseBody = summarizeHttpBody(xhr.responseType ? xhr.response : xhr.responseText);
+              } catch (error) {
+                responseBody = { kind: "unreadable", error: error.message };
+              }
+              record("http:response", {
+                networkId: networkId,
+                transport: "xhr",
+                status: xhr.status,
+                statusText: xhr.statusText,
+                url: meta.url,
+                responseHeaders: summarizeRawResponseHeaders(xhr.getAllResponseHeaders && xhr.getAllResponseHeaders()),
+                body: responseBody,
+                terminalEvent: event.type,
+              });
+            };
+            xhr.addEventListener("loadend", finish);
+            xhr.addEventListener("error", finish);
+            xhr.addEventListener("timeout", finish);
+            xhr.addEventListener("abort", finish);
+          }
+          return nativeSend.apply(xhr, arguments);
+        };
+        xhrPrototype.__pushResearchWrapped = true;
+      }
+    }
   }
 
   function summarize(value, depth, seen) {
@@ -2413,22 +2666,24 @@
     if (typeof NativeWebSocket !== "function" || NativeWebSocket.__pushResearchWrapped) return;
 
     function safeUrl(url) {
-      try {
-        var parsed = new URL(String(url), window.location.href);
-        return parsed.origin + parsed.pathname;
-      } catch (error) {
-        return "[invalid-url]";
-      }
+      return safeNetworkUrl(url);
     }
 
     function attach(socket) {
       var url = safeUrl(socket.url);
-      socket.addEventListener("open", function () { record("ws:open", { url: url }); });
-      socket.addEventListener("close", function (event) {
-        record("ws:close", { url: url, code: event.code, reason: event.reason });
+      socket.addEventListener("open", function () {
+        if (state.captureWss) record("ws:open", { url: url });
       });
-      socket.addEventListener("error", function () { record("ws:error", { url: url }); });
+      socket.addEventListener("close", function (event) {
+        if (state.captureWss) {
+          record("ws:close", { url: url, code: event.code, reason: event.reason });
+        }
+      });
+      socket.addEventListener("error", function () {
+        if (state.captureWss) record("ws:error", { url: url });
+      });
       socket.addEventListener("message", function (event) {
+        if (!state.captureWss) return;
         var frame = frameSummary(event.data);
         var decoded = decodeFrame(event.data);
         record("ws:message", {
@@ -2440,6 +2695,7 @@
       });
       var originalSend = socket.send;
       socket.send = function (data) {
+        if (!state.captureWss) return originalSend.call(socket, data);
         var frame = frameSummary(data);
         var decoded = decodeFrame(data);
         record("ws:send", { url: url, frame: frame, decoded: decoded });
@@ -2493,6 +2749,8 @@
           decodedFrames: state.decodedFrameCount,
           frameDecodeErrors: state.frameDecodeErrorCount,
           protocolMessages: state.protocolMessageCount,
+          httpEnabled: state.captureHttp,
+          wssEnabled: state.captureWss,
         },
       };
     }
@@ -2517,6 +2775,16 @@
       state.captureRawFrames = Boolean(message.payload && message.payload.enabled);
       record("runtime:capture", { enabled: state.captureRawFrames });
       return { enabled: state.captureRawFrames };
+    }
+    if (command === "runtime:http-capture") {
+      state.captureHttp = Boolean(message.payload && message.payload.enabled);
+      record("runtime:http-capture", { enabled: state.captureHttp });
+      return { enabled: state.captureHttp };
+    }
+    if (command === "runtime:wss-capture") {
+      state.captureWss = Boolean(message.payload && message.payload.enabled);
+      record("runtime:wss-capture", { enabled: state.captureWss });
+      return { enabled: state.captureWss };
     }
     if (command === "runtime:hash-capture") {
       state.hashCaptureEnabled = Boolean(message.payload && message.payload.enabled);
@@ -2564,6 +2832,7 @@
       });
   });
 
+  installHttpHooks();
   installConsoleHook();
   installErrorHooks();
   installWebSocketHook();
