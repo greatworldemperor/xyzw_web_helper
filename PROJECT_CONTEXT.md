@@ -491,6 +491,8 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 - [x] 增加 WSS/WebSocket 抓包开关，并提供独立 WSS JSONL 日志下载功能，支持协议解码和可选原始帧。
 - [x] HTTP、WSS 和 runtime 诊断日志已按事件前缀分离，统一执行敏感字段脱敏并提供全部日志下载。
 - [x] 保留 runtime 探测、被动捕获、日志归一化和分析能力；页面不再暴露主动推关/提交命令，桥中的只读能力探测仍可供后续研究使用。
+- [x] 研究页已接入 [public/game/sh1.readable.js](public/game/sh1.readable.js) 的适配器模式：页面可导入内存 BIN，点击“载入并登录”后由 bridge 暂存 BIN、调用官方 `PlatformManager`/`LoginManager` 登录链，并显示准备、发送、完成或失败状态。
+- [x] 修复 bridge 中同名 `loadSh1IfNeeded()` 覆盖导致的上号器适配器失效；旧版 `sh1.js` 仅由普通/headless runtime 动态加载，研究被动页不创建旧面板。
 
 #### 3. 重方案自动盐场
 

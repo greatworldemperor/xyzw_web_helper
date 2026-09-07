@@ -19,6 +19,9 @@
     </n-alert>
 
     <n-card class="control-card" :content-style="{ padding: '14px 16px' }">
+      <n-alert type="info" :show-icon="true" class="usage-alert">
+        使用顺序：选择已有账号（需要已保存 BIN）或点击“导入到内存”选择 .bin 文件；看到 BIN 可用后，点击“载入并登录”。结果会显示在按钮右侧状态和下方 Runtime 日志中。
+      </n-alert>
       <div class="control-grid">
         <div class="field account-field">
           <span class="field-label">研究账号</span>
@@ -44,7 +47,7 @@
             <template #icon><n-icon><CloudUpload /></n-icon></template>
             导入到内存
           </n-button>
-          <span class="field-hint">{{ uploadedBinName || "未导入" }}</span>
+          <span class="field-hint">{{ uploadedBinName || "未导入，先选择 .bin" }}</span>
         </div>
         <div class="field switch-field">
           <span class="field-label">HTTP 抓包</span>
@@ -78,8 +81,9 @@
         </n-button>
         <n-button size="small" :loading="busyAction === 'account'" :disabled="!runtimeReady || (!selectedResearchTokenId && !uploadedBin) || busy" @click="loadSelectedAccount">
           <template #icon><n-icon><PersonAdd /></n-icon></template>
-          注入 BIN
+          载入并登录
         </n-button>
+        <n-tag :type="accountActionType" size="small">{{ accountActionStatus }}</n-tag>
         <n-tag type="success" size="small">只读观测模式</n-tag>
         <n-button size="small" secondary :disabled="!logs.length || busy" @click="downloadLogs('all')">
           <template #icon><n-icon><Download /></n-icon></template>
@@ -197,6 +201,8 @@ const busyAction = ref("");
 const binAvailable = ref(null);
 const uploadedBin = ref(null);
 const uploadedBinName = ref("");
+const accountActionStatus = ref("未开始");
+const accountActionType = ref("default");
 let logSequence = 0;
 
 const bridge = new PushLevelResearchBridge((event, payload) => {
@@ -208,6 +214,22 @@ const bridge = new PushLevelResearchBridge((event, payload) => {
   });
   if (event === "bridge:ready") {
     bridgeVersion.value = payload?.payload?.bridgeVersion || "";
+  }
+  if (event === "account:sh1:ready" || event === "account:sh1:staged") {
+    accountActionStatus.value = "BIN 已交给上号器";
+    accountActionType.value = "info";
+  }
+  if (event === "account:login:prepare" || event === "account:login:manager") {
+    accountActionStatus.value = "登录请求已发送";
+    accountActionType.value = "warning";
+  }
+  if (event === "account:login:complete") {
+    accountActionStatus.value = "登录完成";
+    accountActionType.value = "success";
+  }
+  if (event === "account:login:manager:error" || event === "account:sh1:error") {
+    accountActionStatus.value = "登录失败";
+    accountActionType.value = "error";
   }
 });
 
@@ -396,6 +418,8 @@ async function handleBinUpload(event) {
     uploadedBin.value = await file.arrayBuffer();
     uploadedBinName.value = file.name;
     binAvailable.value = true;
+    accountActionStatus.value = "BIN 已载入，等待登录";
+    accountActionType.value = "info";
     appendLog({
       event: "page:account:bin-loaded",
       payload: { name: file.name, byteLength: file.size, storage: "memory-only" },
@@ -415,6 +439,8 @@ async function probeRuntime() {
 }
 
 async function loadAccountWithBridge(commandBridge, busyKey, logSource) {
+  accountActionStatus.value = "准备登录";
+  accountActionType.value = "warning";
   const token = selectedToken.value;
   const tokenId = token?.id || `uploaded:${uploadedBinName.value || "bin"}`;
   const bin = uploadedBin.value
@@ -424,11 +450,13 @@ async function loadAccountWithBridge(commandBridge, busyKey, logSource) {
       : null;
   binAvailable.value = Boolean(bin);
   if (!bin) {
+    accountActionStatus.value = "缺少 BIN";
+    accountActionType.value = "error";
     message.warning("请选择已有账号或先导入 BIN");
     appendLog({ event: `page:${logSource}:account:no-bin`, payload: { tokenId } });
     return;
   }
-  await runBridgeAction(
+  const result = await runBridgeAction(
     commandBridge,
     busyKey,
     `${logSource}:account`,
@@ -438,6 +466,14 @@ async function loadAccountWithBridge(commandBridge, busyKey, logSource) {
     [bin],
     `page:${logSource}:account`,
   );
+  if (result) {
+    accountActionStatus.value = "登录请求已发送";
+    accountActionType.value = "warning";
+    message.success("BIN 已交给游戏上号器，等待角色进入游戏");
+  } else {
+    accountActionStatus.value = "登录失败";
+    accountActionType.value = "error";
+  }
 }
 
 async function loadSelectedAccount() {

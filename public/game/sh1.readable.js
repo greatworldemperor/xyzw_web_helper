@@ -11,6 +11,11 @@
 (function () {
   "use strict";
 
+  const isResearchRuntime =
+    new URLSearchParams(window.location.search).get("research") ===
+      "push-level" ||
+    window.__XYZW_RESEARCH_ADAPTER_ONLY__ === true;
+
   // 只在登录页面执行
   if (!location.pathname.includes("/login/authuser")) {
     // 非登录页也要创建面板（原始脚本 match *://*/*）
@@ -1037,6 +1042,23 @@
     }
   }
 
+  function stageBinData(binData, binId) {
+    const bytes =
+      binData instanceof Uint8Array ? binData : new Uint8Array(binData || 0);
+    if (!bytes.length) throw new Error("BIN 数据为空");
+    const id = String(binId || "research-bin");
+    localStorage.setItem("current_bin_id", id);
+    saveBinData(id, bytes);
+    window.__binHex = bytesToHex(bytes);
+    window.__saveData = bytes;
+    window.__firstAuthDone = false;
+    return { binId: id, byteLength: bytes.byteLength };
+  }
+
+  window.__xyzwSh1 = window.__xyzwSh1 || {};
+  window.__xyzwSh1.version = "readable-2026-09-07";
+  window.__xyzwSh1.stageBinData = stageBinData;
+
   // ==================== 拖拽 ====================
 
   function setupDrag(element) {
@@ -1151,11 +1173,12 @@
   // ==================== 启动 ====================
 
   if (
-    document.readyState === "complete" ||
-    document.readyState === "interactive"
+    !isResearchRuntime &&
+    (document.readyState === "complete" ||
+      document.readyState === "interactive")
   ) {
     createPanel();
-  } else {
+  } else if (!isResearchRuntime) {
     document.addEventListener("DOMContentLoaded", createPanel);
   }
 })();

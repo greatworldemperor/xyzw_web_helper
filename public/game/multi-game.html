@@ -46,7 +46,7 @@
         if (!window.__MULTI_GAME_BRIDGE_READY__) return;
 
         // 与 public/game/index.html 保持一致的运行时加载顺序；
-        // sh1.js 由 push-level-research-bridge.js 在 DOM 解析完成后动态注入。
+        // sh1.readable.js 由 push-level-research-bridge.js 动态注入。
         const runtime = [
           "patch.decrypted_readable.js",
           "src/settings.da7ef.js",
@@ -55,7 +55,7 @@
           "cocos2d-js-min.a5841.js",
           "xh.js",
           "diagnose_require.js",
-          "push-level-research-bridge.js?v=20260903.21",
+          "push-level-research-bridge.js?v=20260907.2",
         ];
         const loadScript = (src) =>
           new Promise((resolve, reject) => {

@@ -4,7 +4,7 @@
   var REQUEST_TYPE = "xyzw:push-research:request";
   var RESPONSE_TYPE = "xyzw:push-research:response";
   var EVENT_TYPE = "xyzw:push-research:event";
-  var BRIDGE_VERSION = "2026-09-07.1";
+  var BRIDGE_VERSION = "2026-09-07.2";
   var HEADLESS_TEST_MODE = new URLSearchParams(window.location.search).get("headless-test") === "1";
   var RESEARCH_MODE = new URLSearchParams(window.location.search).get("research") === "push-level";
   var MODE = HEADLESS_TEST_MODE ? "headless-test" : "passive-capture";
@@ -51,7 +51,10 @@
     headlessLastResult: null,
     submitRunCount: 0,
     networkSequence: 0,
+    sh1Status: "loading",
+    sh1Version: "",
   };
+  var sh1LoadPromise = null;
 
   function origin() {
     return window.location.origin === "null" ? "*" : window.location.origin;
@@ -1328,10 +1331,61 @@
     });
   }
 
+  function loadSh1IfNeeded() {
+    if (window.__xyzwSh1 && typeof window.__xyzwSh1.stageBinData === "function") {
+      state.sh1Status = "ready";
+      state.sh1Version = window.__xyzwSh1.version || "";
+      return Promise.resolve(window.__xyzwSh1);
+    }
+    if (sh1LoadPromise) return sh1LoadPromise;
+
+    sh1LoadPromise = new Promise(function (resolve, reject) {
+      window.__XYZW_RESEARCH_ADAPTER_ONLY__ = true;
+      var script = document.createElement("script");
+      script.src = "sh1.readable.js?v=20260907.2";
+      script.charset = "utf-8";
+      script.onload = function () {
+        if (window.__xyzwSh1 && typeof window.__xyzwSh1.stageBinData === "function") {
+          state.sh1Status = "ready";
+          state.sh1Version = window.__xyzwSh1.version || "";
+          record("account:sh1:ready", {
+            version: state.sh1Version,
+            researchRuntime: RESEARCH_MODE,
+          });
+          resolve(window.__xyzwSh1);
+          return;
+        }
+        state.sh1Status = "error";
+        var missingError = new Error("sh1 readable adapter 未暴露 stageBinData");
+        record("account:sh1:error", { error: missingError.message });
+        reject(missingError);
+      };
+      script.onerror = function () {
+        state.sh1Status = "error";
+        var loadError = new Error("无法加载 sh1.readable.js");
+        record("account:sh1:error", { error: loadError.message });
+        reject(loadError);
+      };
+      document.head.appendChild(script);
+    });
+    return sh1LoadPromise;
+  }
+
   async function loadAccount(payload) {
     if (!payload || !payload.bin) throw new Error("缺少 BIN 数据");
     var saveInfo = decodeBin(payload.bin);
     if (!saveInfo || typeof saveInfo !== "object") throw new Error("BIN 解码结果无效");
+    var sh1Adapter = null;
+    try {
+      sh1Adapter = await loadSh1IfNeeded();
+      sh1Adapter.stageBinData(payload.bin, payload.tokenId || "research-bin");
+      record("account:sh1:staged", {
+        tokenId: payload.tokenId || "research-bin",
+        byteLength: payload.bin.byteLength || 0,
+      });
+    } catch (error) {
+      record("account:sh1:stage-error", { error: error.message });
+    }
     state.account = { tokenId: payload.tokenId || "", keys: Object.keys(saveInfo) };
     window.__pushResearchSaveInfo = saveInfo;
     record("account:decoded", {
@@ -1456,7 +1510,7 @@
     };
   }
 
-  function loadSh1IfNeeded() {
+  function loadLegacySh1IfNeeded() {
     // 研究被动页不注入旧上号器（避免探测污染）；headless-test 与普通运行时页由 sh1 负责 BIN 登录/进主城。
     // 必须在文档解析完成后动态注入：document.write 注入会切断后续静态脚本解析（v18 实测）。
     if (RESEARCH_MODE || document.getElementById("sh1-script")) return;
@@ -2836,7 +2890,8 @@
   installConsoleHook();
   installErrorHooks();
   installWebSocketHook();
-  loadSh1IfNeeded();
+  loadSh1IfNeeded().catch(function () {});
+  loadLegacySh1IfNeeded();
   window.__pushLevelResearchBridge = {
     version: BRIDGE_VERSION,
     mode: MODE,
