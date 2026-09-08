@@ -1,6 +1,6 @@
 /**
  * 商店类任务
- * 包含: legion_storebuygoods, legionStoreBuySkinCoins, store_purchase, collection_claimfreereward, activityBuyRecruitWeekReward
+ * 包含: legion_storebuygoods, legionStoreBuySkinCoins, store_purchase, collection_claimfreereward, activityBuyRecruitWeekReward, activityClaimBoxWeekFreeRewards
  */
 import { executeSmartBlackMarketPurchase } from "../smartBlackMarket.js";
 
@@ -322,6 +322,166 @@ export function createTasksStore(deps) {
     shouldStop.value = false;
   };
 
+  const activityClaimBoxWeekFreeRewards = async () => {
+    if (selectedTokens.value.length === 0) return;
+
+    isRunning.value = true;
+    shouldStop.value = false;
+
+    selectedTokens.value.forEach((id) => {
+      tokenStatus.value[id] = "waiting";
+    });
+
+    const taskPromises = selectedTokens.value.map(async (tokenId) => {
+      if (shouldStop.value) return;
+
+      tokenStatus.value[tokenId] = "running";
+
+      const token = tokens.value.find((t) => t.id === tokenId);
+      let hasActionError = false;
+      let completedActionCount = 0;
+
+      const isAlreadyClaimed = (messageText) =>
+        ["1100010", "已领取", "重复领取", "超出上限"].some((text) =>
+          messageText.includes(text),
+        );
+
+      const claimReward = async (label, command, params) => {
+        try {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} 发送${label}请求...`,
+            type: "info",
+          });
+
+          const result = await tokenStore.sendMessageWithPromise(
+            tokenId,
+            command,
+            params,
+            5000,
+          );
+
+          await new Promise((resolve) =>
+            setTimeout(resolve, delayConfig.action),
+          );
+
+          if (result?.error) {
+            throw new Error(result.error);
+          }
+
+          const rewardText = Array.isArray(result?.reward)
+            ? result.reward
+                .map((reward) => `itemId ${reward.itemId} ×${reward.value}`)
+                .join("、")
+            : "奖励已同步";
+
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} ${label}成功（${rewardText}）`,
+            type: "success",
+          });
+          completedActionCount += 1;
+        } catch (error) {
+          const errorMessage = error?.message || String(error);
+          if (isAlreadyClaimed(errorMessage)) {
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${token.name} ${label}本期已领取，跳过`,
+              type: "info",
+            });
+            completedActionCount += 1;
+          } else {
+            hasActionError = true;
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${token.name} ${label}失败: ${errorMessage}`,
+              type: "error",
+            });
+          }
+        }
+      };
+
+      try {
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `=== 开始领取宝箱周免费奖励: ${token.name} ===`,
+          type: "info",
+        });
+
+        await ensureConnection(tokenId);
+
+        await claimReward("宝箱周活动福利", "activity_buystoregoods", {
+          activityId: 7,
+          goodsIndex: 0,
+          buyNum: 1,
+        });
+
+        try {
+          const discountInfo =
+            await tokenStore.sendMessageWithPromise(
+              tokenId,
+              "discount_getdiscountinfo",
+              {},
+              5000,
+            );
+          await new Promise((resolve) =>
+            setTimeout(resolve, delayConfig.action),
+          );
+          const discount = Array.isArray(discountInfo?.discountList)
+            ? discountInfo.discountList.find(
+                (item) => item.discountId === 1,
+              )
+            : null;
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} 红淬免费奖励状态: ${discount?.discountState ?? "未知"}`,
+            type: "info",
+          });
+        } catch (error) {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} 红淬奖励状态查询失败，继续尝试领取: ${error?.message || String(error)}`,
+            type: "info",
+          });
+        }
+
+        if (!shouldStop.value) {
+          await claimReward(
+            "宝箱周红淬免费奖励",
+            "activity_claimredquenchreward",
+            {},
+          );
+        }
+
+        tokenStatus.value[tokenId] =
+          hasActionError || completedActionCount === 0
+            ? "failed"
+            : "completed";
+      } catch (error) {
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${token.name} 宝箱周免费奖励过程出错: ${error?.message || String(error)}`,
+          type: "error",
+        });
+        tokenStatus.value[tokenId] = "failed";
+      } finally {
+        tokenStore.closeWebSocketConnection(tokenId);
+        releaseConnectionSlot();
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${token.name} 连接已关闭  (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
+          type: "info",
+        });
+      }
+    });
+
+    await Promise.all(taskPromises);
+
+    currentRunningTokenId.value = null;
+    isRunning.value = false;
+    shouldStop.value = false;
+  };
+
   /**
    * 免费领取珍宝阁每日奖励
    */
@@ -485,6 +645,7 @@ export function createTasksStore(deps) {
     legion_storebuygoods,
     legionStoreBuySkinCoins,
     activityBuyRecruitWeekReward,
+    activityClaimBoxWeekFreeRewards,
     store_purchase,
     collection_claimfreereward,
   };

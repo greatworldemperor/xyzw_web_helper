@@ -654,6 +654,13 @@
                 </n-button>
                 <n-button
                   size="small"
+                  @click="activityClaimBoxWeekFreeRewards"
+                  :disabled="isRunning || selectedTokens.length === 0"
+                >
+                  宝箱周免费奖励
+                </n-button>
+                <n-button
+                  size="small"
                   @click="legion_storebuygoods"
                   :disabled="isRunning || selectedTokens.length === 0"
                 >
@@ -6845,6 +6852,7 @@ const {
   legion_storebuygoods,
   legionStoreBuySkinCoins,
   activityBuyRecruitWeekReward,
+  activityClaimBoxWeekFreeRewards,
   store_purchase,
   collection_claimfreereward,
 } = tasksStore;

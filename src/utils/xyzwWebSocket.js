@@ -322,6 +322,7 @@ export function registerDefaultCommands(reg) {
       goodsIndex: 0,
       buyNum: 1,
     }) // 招募周一次性奖励（5个招募令）
+    .register("activity_claimredquenchreward")
     .register("legion_getpayloadtask")
     .register("legion_getpayloadkillrecord")
     .register("legion_getpayloadbf")
