@@ -4,7 +4,7 @@
   var REQUEST_TYPE = "xyzw:push-research:request";
   var RESPONSE_TYPE = "xyzw:push-research:response";
   var EVENT_TYPE = "xyzw:push-research:event";
-  var BRIDGE_VERSION = "2026-09-07.13";
+  var BRIDGE_VERSION = "2026-09-09.1";
   var HEADLESS_TEST_MODE = new URLSearchParams(window.location.search).get("headless-test") === "1";
   var RESEARCH_MODE = new URLSearchParams(window.location.search).get("research") === "push-level";
   var MODE = HEADLESS_TEST_MODE ? "headless-test" : "passive-capture";
@@ -14,6 +14,10 @@
     "battle:end": "主动请求 fight_endlevel",
   };
   var MAX_EVENTS = 5000;
+  // 原始帧 rawHex 是 hex 字符串（长度 = 帧字节数 × 2），单独使用大上限，避免被通用字符串保护截断
+  var MAX_RAW_HEX_STRING = 524288; // 256KB 二进制帧
+  // HTTP JSON 响应体中长字符串字段的独立上限（HTTP 仍按摘要裁剪深度/数量）
+  var HTTP_MAX_STRING = 262144;
   var state = {
     sequence: 0,
     events: [],
@@ -133,7 +137,7 @@
     if (typeof body === "string") {
       var text = redactHttpText(body);
       try {
-        return { kind: "json", value: summarize(JSON.parse(body), 0, []) };
+        return { kind: "json", value: summarize(JSON.parse(body), 0, [], HTTP_MAX_STRING) };
       } catch (error) {
         return {
           kind: "text",
@@ -342,8 +346,16 @@
     }
   }
 
-  function summarize(value, depth, seen) {
+  function summarize(value, depth, seen, maxString) {
+    maxString = maxString === undefined ? 12000 : maxString;
     if (value === null || value === undefined) return value;
+    if (value && typeof value === "object" && typeof value.__rawHexString === "string") {
+      // 原始帧 rawHex 包装对象：按独立大上限还原为字符串，保持导出格式不变
+      var rawHex = value.__rawHexString;
+      return rawHex.length > MAX_RAW_HEX_STRING
+        ? rawHex.slice(0, MAX_RAW_HEX_STRING) + "...[truncated]"
+        : rawHex;
+    }
     if (typeof value === "string") {
       if (
         value.length > 40 &&
@@ -351,7 +363,7 @@
       ) {
         return "[REDACTED_STRING]";
       }
-      return value.length > 12000 ? value.slice(0, 12000) + "...[truncated]" : value;
+      return value.length > maxString ? value.slice(0, maxString) + "...[truncated]" : value;
     }
     if (typeof value === "number" || typeof value === "boolean") return value;
     if (typeof value === "bigint") return String(value) + "n";
@@ -395,7 +407,7 @@
       var mapCount = 0;
       value.forEach(function (mapValue, mapKey) {
         if (mapCount >= 300) return;
-        mapResult[String(mapKey)] = summarize(mapValue, depth + 1, seen);
+        mapResult[String(mapKey)] = summarize(mapValue, depth + 1, seen, maxString);
         mapCount += 1;
       });
       if (value.size > mapCount) mapResult.__truncated = value.size - mapCount;
@@ -408,7 +420,7 @@
 
     if (Array.isArray(value)) {
       var arrayResult = value.slice(0, 400).map(function (item) {
-        return summarize(item, depth + 1, seen);
+        return summarize(item, depth + 1, seen, maxString);
       });
       if (value.length > arrayResult.length) {
         arrayResult.push("...[" + (value.length - arrayResult.length) + " more]");
@@ -431,7 +443,7 @@
         return;
       }
       try {
-        result[key] = summarize(value[key], depth + 1, seen);
+        result[key] = summarize(value[key], depth + 1, seen, maxString);
       } catch (error) {
         result[key] = "[UNREADABLE]";
       }
@@ -2587,7 +2599,10 @@
         headHex: bytesToHex(new Uint8Array(data), 64),
         scheme: new Uint8Array(data)[0] === 0x70 ? String.fromCharCode(new Uint8Array(data)[0], new Uint8Array(data)[1]) : "plain",
       };
-      if (state.captureRawFrames) arrayBufferSummary.rawHex = bytesToHex(new Uint8Array(data), data.byteLength);
+      if (state.captureRawFrames) {
+        // 包一层 __rawHexString，summarize 按独立上限还原，避免大帧被通用字符串截断
+        arrayBufferSummary.rawHex = { __rawHexString: bytesToHex(new Uint8Array(data), data.byteLength) };
+      }
       return arrayBufferSummary;
     }
     if (typeof ArrayBuffer !== "undefined" && ArrayBuffer.isView(data)) {
@@ -2602,7 +2617,9 @@
           )
           : "plain",
       };
-      if (state.captureRawFrames) viewSummary.rawHex = bytesToHex(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), data.byteLength);
+      if (state.captureRawFrames) {
+        viewSummary.rawHex = { __rawHexString: bytesToHex(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), data.byteLength) };
+      }
       return viewSummary;
     }
     if (typeof Blob !== "undefined" && data instanceof Blob) {
