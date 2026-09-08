@@ -216,8 +216,12 @@ const bridge = new PushLevelResearchBridge((event, payload) => {
     bridgeVersion.value = payload?.payload?.bridgeVersion || "";
   }
   if (event === "account:sh1:ready" || event === "account:sh1:staged") {
-    accountActionStatus.value = "BIN 已交给上号器";
+    accountActionStatus.value = "上号器已就绪，自动登录中";
     accountActionType.value = "info";
+  }
+  if (event === "account:runtime:reload") {
+    accountActionStatus.value = "正在重启运行时登录";
+    accountActionType.value = "warning";
   }
   if (event === "account:login:prepare" || event === "account:login:manager") {
     accountActionStatus.value = "登录请求已发送";

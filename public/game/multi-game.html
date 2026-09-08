@@ -55,7 +55,7 @@
           "cocos2d-js-min.a5841.js",
           "xh.js",
           "diagnose_require.js",
-          "push-level-research-bridge.js?v=20260907.12",
+          "push-level-research-bridge.js?v=20260907.13",
         ];
         const loadScript = (src) =>
           new Promise((resolve, reject) => {
@@ -85,6 +85,7 @@
           document.getElementById("minimizeBtn")?.click();
           window.HtmlIsLoaded = true;
           document.getElementById("splash").style.display = "none";
+          if (window.__pushResearchSh1Ready) await window.__pushResearchSh1Ready;
           await window.boot();
           notify("ready");
         })().catch(() => {

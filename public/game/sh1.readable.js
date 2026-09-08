@@ -626,7 +626,7 @@
       if (injected) return;
       injected = true;
       console.log("[上号器] 模块就绪，自动注入 binId:", currentId);
-      injectLoginData(binData, currentId);
+      injectLoginData(binData, currentId, { immediate: true });
     }
 
     // 拦截方式：替换 __require，在游戏调用时偷看返回值
@@ -653,10 +653,10 @@
       } catch (e) {}
     }
 
-    // 兜底：快速轮询（500ms 间隔，最多 20 次 = 10秒）
+    // 兜底：快速轮询，避免首次 GameLogin 在模块 hook 前抢先发起认证。
     var fallbackCount = 0;
     var fallbackInterval = setInterval(function () {
-      if (injected || fallbackCount++ > 20) {
+      if (injected || fallbackCount++ > 400) {
         clearInterval(fallbackInterval);
         return;
       }
@@ -668,7 +668,7 @@
           clearInterval(fallbackInterval);
         }
       } catch (e) {}
-    }, 500);
+    }, 25);
   }
 
   // ==================== UI ====================

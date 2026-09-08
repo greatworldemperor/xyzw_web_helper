@@ -4,7 +4,7 @@
   var REQUEST_TYPE = "xyzw:push-research:request";
   var RESPONSE_TYPE = "xyzw:push-research:response";
   var EVENT_TYPE = "xyzw:push-research:event";
-  var BRIDGE_VERSION = "2026-09-07.12";
+  var BRIDGE_VERSION = "2026-09-07.13";
   var HEADLESS_TEST_MODE = new URLSearchParams(window.location.search).get("headless-test") === "1";
   var RESEARCH_MODE = new URLSearchParams(window.location.search).get("research") === "push-level";
   var MODE = HEADLESS_TEST_MODE ? "headless-test" : "passive-capture";
@@ -1343,7 +1343,7 @@
     sh1LoadPromise = new Promise(function (resolve, reject) {
       window.__XYZW_RESEARCH_ADAPTER_ONLY__ = true;
       var script = document.createElement("script");
-      script.src = "sh1.readable.js?v=20260907.12";
+      script.src = "sh1.readable.js?v=20260907.13";
       script.charset = "utf-8";
       script.onload = function () {
         if (window.__xyzwSh1 && typeof window.__xyzwSh1.prepareBinData === "function") {
@@ -1375,106 +1375,31 @@
   async function loadAccount(payload) {
     if (!payload || !payload.bin) throw new Error("缺少 BIN 数据");
     var sh1Adapter = await loadSh1IfNeeded();
-    if (!sh1Adapter || typeof sh1Adapter.prepareBinData !== "function") {
-      throw new Error("readable 上号器未准备好 prepareBinData");
+    if (!sh1Adapter || typeof sh1Adapter.stageBinData !== "function") {
+      throw new Error("readable 上号器未准备好 stageBinData");
     }
     var tokenId = payload.tokenId || "research-bin";
+    var staged = sh1Adapter.stageBinData(payload.bin, tokenId);
+    sessionStorage.setItem("research_auto_login_pending", "1");
     state.loginCompletionRecorded = false;
     record("account:sh1:login-start", {
       tokenId: tokenId,
       byteLength: payload.bin.byteLength || 0,
     });
-    var saveInfo = await sh1Adapter.prepareBinData(payload.bin, tokenId);
-    if (!saveInfo || typeof saveInfo !== "object") {
-      throw new Error("BIN 解码结果无效");
-    }
-    window.__pushResearchSaveInfo = saveInfo;
     state.account = {
       tokenId: tokenId,
-      keys: Object.keys(saveInfo),
+      keys: [],
     };
-    record("account:sh1:prepared", {
+    record("account:sh1:staged", {
       tokenId: tokenId,
-      keys: Object.keys(saveInfo),
-      serverId: saveInfo.serverId,
+      byteLength: staged.byteLength,
     });
-
-    var loginRuntime = await waitForLoginService(30000);
-    var platformManager = loginRuntime.platformManager && loginRuntime.platformManager.instance;
-    var loginManager = loginRuntime.manager && loginRuntime.manager.instance;
-    if (!platformManager) throw new Error("PlatformManager.instance 不存在");
-    if (!loginManager || typeof loginManager.login !== "function") {
-      throw new Error("LoginManager.instance.login 不存在");
-    }
-
-    platformManager.encryptUserInfo = saveInfo.info;
-    if (!state.authHooked) installAuthUserHook(saveInfo);
-    if (saveInfo.serverId !== undefined && saveInfo.serverId !== null) {
-      var globalVarManager = quietRequire("GlobalVarManager");
-      var localStorageModule = quietRequire("LocalStorage");
-      var globalVars = globalVarManager && globalVarManager.GlobalVarManager;
-      var localStorage = localStorageModule && localStorageModule.LocalStorage;
-      var globalInstance = globalVars && globalVars.instance;
-      var storageInstance = localStorage && localStorage.instance;
-      if (globalInstance && typeof globalInstance.set === "function") {
-        globalInstance.set("serverId", String(saveInfo.serverId));
-      }
-      if (storageInstance && typeof storageInstance.setItem === "function") {
-        storageInstance.setItem("serverId", String(saveInfo.serverId));
-      }
-    }
-    if (platformManager.authorizeDeferred && typeof platformManager.authorizeDeferred.resolve === "function") {
-      platformManager.authorizeDeferred.resolve(saveInfo.info);
-    }
-    record("account:login:prepare", {
-      tokenId: tokenId,
-      loginManager: describe(loginManager),
-      platformManager: describe(platformManager),
-      infoKeys: saveInfo.info && typeof saveInfo.info === "object" ? Object.keys(saveInfo.info) : [],
-      serverId: saveInfo.serverId,
-    });
-
-    var loginPromise;
-    try {
-      loginPromise = Promise.resolve(loginManager.login(true));
-    } catch (error) {
-      record("account:login:manager:error", { tokenId: tokenId, error: error.message });
-      throw error;
-    }
-    loginPromise.then(function (loginResult) {
-      record("account:login:complete", {
-        tokenId: tokenId,
-        result: summarize(loginResult, 0, []),
-        role: {
-          roleId: window.ROLE && window.ROLE.roleId,
-          serverId: window.ROLE && window.ROLE.serverId,
-          levelId: window.ROLE && window.ROLE.levelId,
-          authed: window.ROLE && window.ROLE.authed,
-        },
-      });
-    }).catch(function (error) {
-      record("account:login:manager:error", { tokenId: tokenId, error: error.message });
-    });
-    try {
-      await waitForAuthUserResult(loginManager, 15000);
-      record("account:login:manager", {
-        tokenId: tokenId,
-        authUserReturned: true,
-        role: {
-          roleId: window.ROLE && window.ROLE.roleId,
-          serverId: window.ROLE && window.ROLE.serverId,
-          levelId: window.ROLE && window.ROLE.levelId,
-          authed: window.ROLE && window.ROLE.authed,
-        },
-      });
-    } catch (error) {
-      record("account:login:manager:error", { tokenId: tokenId, error: error.message });
-    }
-
+    record("account:runtime:reload", { reason: "staged-bin-before-game-login" });
+    setTimeout(function () { location.reload(); }, 50);
     return {
       tokenId: tokenId,
-      saveInfoKeys: state.account.keys,
-      loginStarted: true,
+      byteLength: staged.byteLength,
+      reloadScheduled: true,
     };
   }
 
@@ -2911,7 +2836,8 @@
   installConsoleHook();
   installErrorHooks();
   installWebSocketHook();
-  loadSh1IfNeeded().catch(function () {});
+  window.__pushResearchSh1Ready = loadSh1IfNeeded();
+  window.__pushResearchSh1Ready.catch(function () {});
   loadLegacySh1IfNeeded();
   window.__pushLevelResearchBridge = {
     version: BRIDGE_VERSION,
