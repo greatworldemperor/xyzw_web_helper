@@ -125,42 +125,44 @@
       </n-card>
     </div>
 
-    <n-card class="runtime-card" size="small">
-      <template #header>
-        <div class="runtime-card-header">
-          <span>游戏运行时</span>
-          <span class="runtime-note">请在这里手动操作官方游戏，研究桥只记录实际流量</span>
-        </div>
-      </template>
-      <iframe
-        ref="gameFrame"
-        :src="gameSrc"
-        class="game-frame"
-        title="XYZW 官方游戏运行时"
-        allow="fullscreen; autoplay"
-        @load="handleFrameLoad"
-      />
-    </n-card>
-
-    <n-card class="log-card" size="small">
-      <template #header>
-        <div class="log-header">
-          <div class="log-title">研究日志 <n-tag size="small">{{ logs.length }}</n-tag></div>
-          <n-input v-model:value="logKeyword" size="small" clearable placeholder="筛选事件或内容" class="log-search" />
-        </div>
-      </template>
-      <div ref="logContainer" class="log-container">
-        <div v-for="entry in visibleLogs" :key="entry.id" class="log-entry" :class="entryClass(entry)">
-          <div class="log-entry-head">
-            <span class="log-time">{{ entry.at }}</span>
-            <strong>{{ entry.event }}</strong>
-            <span v-if="entry.source" class="log-source">{{ entry.source }}</span>
+    <div class="analysis-workspace">
+      <n-card class="runtime-card" size="small">
+        <template #header>
+          <div class="runtime-card-header">
+            <span>游戏运行时</span>
+            <span class="runtime-note">手机竖屏视图</span>
           </div>
-          <pre>{{ formatPayload(entry.payload) }}</pre>
+        </template>
+        <iframe
+          ref="gameFrame"
+          :src="gameSrc"
+          class="game-frame"
+          title="XYZW 官方游戏运行时"
+          allow="fullscreen; autoplay"
+          @load="handleFrameLoad"
+        />
+      </n-card>
+
+      <n-card class="log-card" size="small">
+        <template #header>
+          <div class="log-header">
+            <div class="log-title">研究日志 <n-tag size="small">{{ logs.length }}</n-tag></div>
+            <n-input v-model:value="logKeyword" size="small" clearable placeholder="筛选事件或内容" class="log-search" />
+          </div>
+        </template>
+        <div ref="logContainer" class="log-container">
+          <div v-for="entry in visibleLogs" :key="entry.id" class="log-entry" :class="entryClass(entry)">
+            <div class="log-entry-head">
+              <span class="log-time">{{ entry.at }}</span>
+              <strong>{{ entry.event }}</strong>
+              <span v-if="entry.source" class="log-source">{{ entry.source }}</span>
+            </div>
+            <pre>{{ formatPayload(entry.payload) }}</pre>
+          </div>
+          <n-empty v-if="!visibleLogs.length" description="暂无研究日志" size="small" />
         </div>
-        <n-empty v-if="!visibleLogs.length" description="暂无研究日志" size="small" />
-      </div>
-    </n-card>
+      </n-card>
+    </div>
   </div>
 </template>
 
@@ -730,14 +732,35 @@ onBeforeUnmount(() => {
   padding: 0;
 }
 
+.analysis-workspace {
+  display: grid;
+  grid-template-columns: minmax(360px, 42vw) minmax(0, 1fr);
+  align-items: stretch;
+  gap: 12px;
+  min-height: clamp(560px, 68dvh, 820px);
+}
+
+.analysis-workspace .runtime-card,
+.analysis-workspace .log-card {
+  min-width: 0;
+  margin: 0;
+}
+
+.analysis-workspace .runtime-card {
+  justify-self: start;
+  width: min(42vw, 540px);
+}
+
 .runtime-card-header {
   min-height: 22px;
 }
 
 .game-frame {
   display: block;
-  width: 100%;
-  height: 360px;
+  width: auto;
+  aspect-ratio: 9 / 16;
+  height: clamp(560px, 68dvh, 820px);
+  max-width: 100%;
   margin-top: 10px;
   border: 1px solid #d0d5dd;
   background: #111827;
@@ -754,7 +777,8 @@ onBeforeUnmount(() => {
 }
 
 .log-container {
-  height: 360px;
+  height: calc(clamp(560px, 68dvh, 820px) - 54px);
+  min-height: 506px;
   overflow: auto;
   padding: 2px;
   background: #111827;
@@ -820,8 +844,22 @@ onBeforeUnmount(() => {
     flex-direction: column;
   }
 
+  .analysis-workspace {
+    grid-template-columns: minmax(300px, 48vw) minmax(0, 1fr);
+    min-height: clamp(460px, 68dvh, 680px);
+  }
+
+  .analysis-workspace .runtime-card {
+    width: min(48vw, 460px);
+  }
+
   .game-frame {
-    height: 280px;
+    height: clamp(460px, 68dvh, 680px);
+  }
+
+  .log-container {
+    height: calc(clamp(460px, 68dvh, 680px) - 54px);
+    min-height: 406px;
   }
 }
 
@@ -845,6 +883,28 @@ onBeforeUnmount(() => {
 
   .log-search {
     width: 100%;
+  }
+
+  .analysis-workspace {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .analysis-workspace .runtime-card {
+    width: min(100%, 390px);
+    align-self: center;
+  }
+
+  .game-frame {
+    width: 100%;
+    min-height: 0;
+    max-height: none;
+  }
+
+  .log-container {
+    height: 420px;
+    min-height: 0;
   }
 }
 </style>
