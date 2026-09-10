@@ -470,16 +470,16 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 - [x] `camp_data_attack_multi_enemies_and_claim_rewards` 确认第三组领奖顺序为 `club_taskclaim { confId: 1 }`、`11`、`12`、`13`，随后出现两次 `club_draw {}`；`camp_data_group2_eliminated` 确认第二组领奖顺序为 `1`、`8`、`9`、`10`，随后出现三次 `club_draw {}`；新增 `camp_data_group1_cleared` 确认第一组领奖顺序为 `1`、`5`、`6`、`7`，随后出现一次 `club_draw {}`。三组奖励 ID 已全部通过真实抓包确认。
 - [x] 已确定批量 UI 方案：入口使用 [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue) 现有的“营地挑战”按钮；先将复选角色按所属 `club` 分组，再逐个 `club` 独立获取敌我状态、评估三组 5/4/3 层可达性、选择最高奖励组并执行真实攻击。不同 `club` 之间不得共享敌人、`nodeId`、每日次数、成功次数、角色容量或攻击计划。
 - [x] 已明确 [local-data/camp_data/design.txt](local-data/camp_data/design.txt) 是业务策略伪代码，不是最终 JavaScript/TypeScript 的接口或结构规范；最终实现可以使用不同的模块、算法和数据结构，但必须满足单 club 边界、整组可达性评估、最高层级选择和实时状态重规划约束。详细方案见 [docs/camp-challenge-protocol-research.md](docs/camp-challenge-protocol-research.md) 的“UI 入口与 club 独立规划”章节。
+- [x] 已完成第一版规划器和 UI 接线：[src/utils/batch/campChallengePlanner.js](src/utils/batch/campChallengePlanner.js) 负责 nodeId/club 快照和 5/4/3 层选择，[src/utils/batch/tasksCampChallengeStrategy.js](src/utils/batch/tasksCampChallengeStrategy.js) 负责逐 club 执行；现有 BatchDailyTasks.vue 营地按钮已支持智能规划/奖励领取模式。
 
 ### 当前问题
 
-- [ ] 执行器尚未在 [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue) 中导入、实例化和解构，定时任务通过 `eval(taskName)` 执行时找不到营地挑战函数。
-- [ ] 营地挑战按钮已加入页面，但 `campChallengeMode`、`campChallengeModeOptions`、`campChallengeModeLabel` 和 `onCampChallengeModeChange` 尚未定义，按钮目前不能形成完整交互链。
-- [ ] `CommandRegistry` 尚未注册 `club_getinfo`、`club_gettargetteam`、`club_attack`、`club_attackmonster` 和 `club_taskclaim`；实际发送时可能触发 `Unknown cmd`。
+- [x] 营地策略执行器已在 [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue) 导入、实例化并加入自由模板 handler；现有按钮的模式回调已接通。
+- [x] `CommandRegistry` 已注册 `club_getinfo`、`club_gettargetteam`、`hero_calcpowerbyteam`、`club_attack`、`club_attackmonster`、`club_taskclaim` 和 `club_draw` 请求命令；响应映射继续保留。
 - [ ] 普通挑战当前把“最多 3 次”实现为最多 3 次尝试，而不是最多 3 次成功；失败仍会消耗每日 10 次发起额度，但不应消耗 3 次成功额度。
 - [ ] 宠物挑战当前固定执行 3 轮，没有与普通玩家挑战共享成功计数，也没有在达到每日 10 次发起上限时停止。
 - [ ] 领奖流程当前无条件尝试 `confId` 1、2、3、4；实际三组全清奖励已确认为第一组 `5/6/7`、第二组 `8/9/10`、第三组 `11/12/13`，需要按区域进度和 `taskClaimedMap` 改为只领取对应的已确认配置。
-- [ ] “营地挑战”按钮尚未接入逐 `club` 的独立规划执行器；当前需要先完成复选角色的 club 聚合，再在每个 club 内执行三组虚拟评估和单组真实攻击，不能沿用跨角色/跨 club 的统一目标池。
+- [x] “营地挑战”按钮已接入逐 `club` 的独立规划执行器；复选角色先按 `club.legionId` 聚合，每个 club 单独获取状态、评估三组并执行最高可达组，不能沿用跨角色/跨 club 的统一目标池。
 
 ### 协议待验证
 
@@ -490,15 +490,15 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 - [ ] 确认 `battleData.result.accept.ext.curHP === 0` 是否是普通玩家和宠物挑战的可靠胜利判定。
 - [ ] 确认每日 10 次限制、3 次成功限制和服务端错误码，避免仅依赖客户端本地计数。
 - [ ] 在更多账号上验证三组 `confId` 映射的稳定性，并确认不同全清状态下 `club_draw` 次数与种火石数量的对应关系。
+- [ ] 当前抓包显示 `club_getinfo` 通常不返回 `siege.attackMap[YYMMDD]`，策略执行器在无法确认每日个人 `attackCnt/aSuccessCnt` 时会安全跳过自动攻击；需要补抓可靠计数来源后才能放开已有手动战斗进度的自动执行。
 
 ### 实现与验证 TODO
 
-- [ ] 补齐发送命令注册、任务工厂接线、模式选择回调和自由模板 handler 接线。
-- [ ] 以 BatchDailyTasks.vue 现有营地按钮为入口接入 club 编排：复选角色 -> 按所属 club 分组 -> 每个 club 独立规划 -> 只执行该 club 的最高可达奖励组；UI 不直接实现协议解析和规划算法。
+- [x] 以 BatchDailyTasks.vue 现有营地按钮为入口接入 club 编排：复选角色 -> 按所属 club 分组 -> 每个 club 独立规划 -> 只执行该 club 的最高可达奖励组；UI 不直接实现协议解析和规划算法。
 - [ ] 抽取共享的营地挑战计数逻辑：总发起次数上限 10，普通玩家和宠物共享成功次数上限 3，达到任一上限立即停止。
-- [ ] 为每个 club 实现实时状态适配、整组 5/4/3 层可达性评估、最高层级组选择和攻击后重规划；`design.txt` 中的伪代码只作为业务意图参考，不要求逐行翻译。
+- [x] 为每个 club 实现第一版实时状态适配、整组 5/4/3 层可达性评估和最高层级组选择；`design.txt` 中的伪代码只作为业务意图参考，不要求逐行翻译。真实攻击失败后的刷新重规划、宠物攻击和奖励状态过滤仍待补齐。
 - [ ] 按已确认的 A 类奖励 ID（第一组 `5/6/7`、第二组 `8/9/10`、第三组 `11/12/13`）、区域/难度进度和 `taskClaimedMap` 过滤已领取/可领取任务；B 类种火石达到服务端要求后另走 `club_draw({})`。
-- [ ] 为目标收集、成功/失败计数、上限停止和领奖过滤添加 Node mock 测试；测试不得把未验证的响应字段写成协议事实。
+- [x] 已为目标收集、最高层级选择、手动进度和成功容量不足添加 [test/campChallengePlanner.test.js](test/campChallengePlanner.test.js) Node 测试；每日计数来源、宠物攻击和领奖过滤仍需补测。
 - [ ] 完成一次真实账号单账号低风险验收，再进行多账号并发验证；确认连接槽位、失败释放和停止操作不会重复发起挑战。
 - [ ] 完成后更新本节状态、`KNOWN_ISSUES.md` 中仍存在的风险，并在“常用命令和当前验证状态”补充测试日期和结果。
 

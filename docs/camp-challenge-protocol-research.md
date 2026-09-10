@@ -443,11 +443,19 @@ club_getinfo
 
 ## 9. 对当前代码的影响
 
-当前代码需要优先修正或补齐：
+当前已完成第一版 club 级规划接线：
 
-- [src/utils/xyzwWebSocket.js](../src/utils/xyzwWebSocket.js)：注册实际发送所需的 `club_getinfo`、`club_gettargetteam`、`hero_calcpowerbyteam`、`club_attack`、`club_attackmonster`、`club_taskclaim` 和 `club_draw`，同时保留已存在的响应映射。
-- [src/utils/batch/tasksCampChallenge.js](../src/utils/batch/tasksCampChallenge.js)：按 30 个 `nodeId` 收集目标，保留镜像，按服务端共享计数停止，并将 `targetIsMirror` 原样发送。
-- [src/views/BatchDailyTasks.vue](../src/views/BatchDailyTasks.vue)：补齐任务工厂、模式选择和 handler 接线。
-- `test/`：增加节点收集、镜像重复 `roleId`、攻击计数、上限停止和任务领取过滤测试；测试数据不能把尚未确认的奖励映射伪装成协议事实。
+- [src/utils/batch/campChallengePlanner.js](../src/utils/batch/campChallengePlanner.js)：提供 `nodeId` 分组、club 快照合并、剩余击破需求、5/4/3 层可达性评估和最高层级选择。
+- [src/utils/batch/tasksCampChallengeStrategy.js](../src/utils/batch/tasksCampChallengeStrategy.js)：按 `club.legionId` 聚合所选角色，读取真实目标战力，执行选中 club 的计划并保留 `nodeId`/`targetIsMirror`。
+- [src/views/BatchDailyTasks.vue](../src/views/BatchDailyTasks.vue)：复用现有“营地挑战”按钮，支持智能规划和奖励领取模式，并接入自由模板 handler。
+- [test/campChallengePlanner.test.js](../test/campChallengePlanner.test.js)：覆盖 nodeId 分组、镜像重复 roleId、最高层级选择、手动进度和容量不足。
+- [src/utils/xyzwWebSocket.js](../src/utils/xyzwWebSocket.js)：注册 `club_getinfo`、`club_gettargetteam`、`hero_calcpowerbyteam`、`club_attack`、`club_attackmonster`、`club_taskclaim` 和 `club_draw` 请求命令。
+
+当前仍需修正或补齐：
+
+- [src/utils/batch/tasksCampChallengeStrategy.js](../src/utils/batch/tasksCampChallengeStrategy.js)：当前对 `club_getinfo` 未返回今日 `siege.attackMap[YYMMDD]` 的 club 安全跳过自动战斗；需要补到可靠的每日个人计数来源后，才能处理已有手动攻击的角色而不冒险超出 10 次/3 次上限。
+- `club_attackmonster` 尚未接入虚拟规划，当前按钮的智能模式只执行普通攻击计划；宠物攻击需要真实抓包后加入共享成功容量。
+- 任务奖励领取仍需读取 `taskClaimedMap` 后过滤已领取配置，`club_draw` 仍需根据服务端种火石状态决定次数。
+- 需要一次真实低战力单 club 验收，再验证多 club 选中角色的隔离、攻击后重规划和失败释放。
 
 详细实现 TODO 和项目整体状态仍维护在 [PROJECT_CONTEXT.md](../PROJECT_CONTEXT.md)。

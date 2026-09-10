@@ -3331,6 +3331,7 @@ import {
   createTasksLegacy,
   createTasksFootball,
   createTasksApex,
+  createTasksCampChallengeStrategy,
 } from "@/utils/batch";
 
 import { merchantConfig, goldItemsConfig } from "@/utils/dreamConstants";
@@ -3553,6 +3554,25 @@ const selectedTokens = ref([]);
 const tokenStatus = ref({}); // { tokenId: 'waiting' | 'running' | 'completed' | 'failed' }
 const isRunning = ref(false);
 const shouldStop = ref(false);
+const campChallengeMode = ref("strategy");
+const campChallengeModeOptions = [
+  { label: "智能规划战斗", value: "strategy" },
+  { label: "只领取营地奖励", value: "claim" },
+];
+const campChallengeModeLabel = computed(
+  () =>
+    campChallengeModeOptions.find(
+      (option) => option.value === campChallengeMode.value,
+    )?.label || "智能规划战斗",
+);
+const onCampChallengeModeChange = async (value) => {
+  campChallengeMode.value = value;
+  if (value === "claim") {
+    await batchCampClaimTasks();
+  } else {
+    await batchCampChallenge();
+  }
+};
 
 // =====================
 // Token分组管理状态
@@ -6863,6 +6883,13 @@ const { batchLegacyClaim, batchLegacyGiftSendEnhanced } = tasksLegacy;
 const tasksFootball = createTasksFootball(createTaskDeps());
 const { batchFootballBet } = tasksFootball;
 
+const tasksCampChallenge = createTasksCampChallengeStrategy(createTaskDeps());
+const {
+  batchCampChallenge,
+  batchCampChallengePet,
+  batchCampClaimTasks,
+} = tasksCampChallenge;
+
 const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksHangUp(deps),
   ...createTasksBottle(deps),
@@ -6873,6 +6900,7 @@ const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksStore(deps),
   ...createTasksLegacy(deps),
   ...createTasksFootball(deps),
+  ...createTasksCampChallengeStrategy(deps),
 });
 
 const getFlexibleTaskUnavailableReason = (taskId, settings) => {

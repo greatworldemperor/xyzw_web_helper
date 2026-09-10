@@ -286,6 +286,14 @@ export function registerDefaultCommands(reg) {
     .register("presetteam_setteam")
     .register("presetteam_saveteam", { teamId: 1 })
     .register("role_gettargetteam")
+    // 营地挑战
+    .register("club_getinfo")
+    .register("club_gettargetteam")
+    .register("hero_calcpowerbyteam")
+    .register("club_attack")
+    .register("club_attackmonster")
+    .register("club_taskclaim")
+    .register("club_draw")
     .register("hero_exchange")
     .register("hero_gointobattle")
     .register("hero_gobackbattle")
@@ -1143,9 +1151,11 @@ export class XyzwWebSocketClient {
       legion_getinforresp: "legion_getinfo",
       club_getinforesp: "club_getinfo",
       club_gettargetteamresp: "club_gettargetteam",
+      hero_calcpowerbyteamresp: "hero_calcpowerbyteam",
       club_attackresp: "club_attack",
       club_attackmonsterresp: "club_attackmonster",
       club_taskclaimresp: "club_taskclaim",
+      club_drawresp: "club_draw",
       // 车辆相关响应映射
       role_gettargetteamresp: "role_gettargetteam",
       activity_warorderclaimresp: "activity_recyclewarorderrewardclaim",
