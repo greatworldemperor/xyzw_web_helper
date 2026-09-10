@@ -459,7 +459,7 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 - [x] `availableTasks` 已登记 `batchCampChallenge`、`batchCampChallengePet` 和 `batchCampClaimTasks`；任务工厂也已从 [src/utils/batch/index.js](src/utils/batch/index.js) 导出。
 - [x] `club_*` 响应命令映射已加入 [src/utils/xyzwWebSocket.js](src/utils/xyzwWebSocket.js)，但这只覆盖响应匹配，不代表发送命令已经可用。
 - [x] 已确认营地奖励分为两类：A 类为任务进度奖励，B 类为种火石消耗/抽奖奖励；每击败一个营地敌人获得种火石，累计 10 个种火石通过 `club_draw({})` 抽奖一次。
-- [x] 已确认 A 类奖励逻辑：`1` 为累计战斗 3 次（不论胜负）；每个区域都有普通/困难/炼狱三档全清奖励。新增第二组全清抓包确认第二组使用 `confId=8/9/10`，既有第三组全清抓包确认第三组使用 `confId=11/12/13`；第一组尚未实测，高概率为 `5/6/7`，低概率为 `2/3/4`，两者都不能提前写死。
+- [x] 已确认 A 类奖励逻辑：`1` 为累计战斗 3 次（不论胜负）；每个区域都有普通/困难/炼狱三档全清奖励。第一组全清抓包确认 `confId=5/6/7`，第二组确认 `8/9/10`，第三组确认 `11/12/13`；三组配置 ID 连续衔接，先前的 `2/3/4` 低概率备选已被第一组实测排除。
 - [x] 已确认营地共有 3 个区域、每个区域 10 个敌人；每个敌人总共可被击败 5 次，前 3 次为普通难度，普通阶段完成后进入困难，困难阶段完成后进入炼狱。
 - [x] 已确认困难和炼狱奖励存在前置关系：同一区域的困难全清奖励依赖普通全清，炼狱全清奖励依赖困难全清。区域全清判断必须按区域、难度和敌人阶段汇总，不能只看全局成功次数。
 - [x] 用户补充确认：敌方对我方永远表现为 30 个敌人节点；真实玩家不足 30 个时，系统复制部分敌人补满节点。对我方而言 `nodeId` 是敌人的唯一标识，`targetId/roleId` 可能因镜像复制而重复，不能用它去重或替代节点身份。`mirror` 只表示协议层的复制属性；镜像与普通敌人一样可挑战，攻击请求仍需透传 `targetIsMirror`，但目标遍历和敌人数量统计应以 30 个 `nodeId` 为准。
@@ -467,7 +467,9 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 - [x] 新日志还区分了两层“分组”：`club.oppoMap.<key>` 的键（本批出现 `2/3/4`）是敌方俱乐部/来源分组，其 `defenders` 使用全局 `nodeId` 作键并且是稀疏集合；它不是三组十格位置的分组。一个 `oppoMap` 分组可以同时包含不同十格区间的节点，不能用 `oppoMap` 键推导区域或位置组。
 - [x] 两个新日志的攻击阶段完全一致，顺序为 `nodeId=3` 失败、`nodeId=1` 成功、`nodeId=11` 成功、`nodeId=20` 成功；四次响应的 `siege.attackMap[260909]` 依次为 `attackCnt=1/2/3/4`、`aSuccessCnt=0/1/2/3`。其中 `nodeId=20` 请求携带 `targetIsMirror=true`。解码后的响应会在 `club.oppoMap.<key>.defenders.<nodeId>` 下返回对应节点的计数变化。
 - [x] 新日志进一步验证 `roleId` 不能替代 `nodeId`：同一 `oppoMap` 快照中可见非镜像 `nodeId=6, roleId=705342925` 与镜像 `nodeId=20, roleId=705342925`，以及非镜像 `nodeId=11, roleId=710072859` 与镜像 `nodeId=27, roleId=710072859`。因此目标缓存必须以 `nodeId` 为主键，并为每个节点保留自己的 `targetId/roleId` 与 `mirror`。
-- [x] `camp_data_attack_multi_enemies_and_claim_rewards` 确认第三组领奖顺序为 `club_taskclaim { confId: 1 }`、`11`、`12`、`13`，随后出现两次 `club_draw {}`；新增 `camp_data_group2_eliminated` 确认第二组领奖顺序为 `1`、`8`、`9`、`10`，随后出现三次 `club_draw {}`。第一组奖励 ID 尚未抓包确认，目前高概率为 `5/6/7`，低概率为 `2/3/4`，不能提前写死。
+- [x] `camp_data_attack_multi_enemies_and_claim_rewards` 确认第三组领奖顺序为 `club_taskclaim { confId: 1 }`、`11`、`12`、`13`，随后出现两次 `club_draw {}`；`camp_data_group2_eliminated` 确认第二组领奖顺序为 `1`、`8`、`9`、`10`，随后出现三次 `club_draw {}`；新增 `camp_data_group1_cleared` 确认第一组领奖顺序为 `1`、`5`、`6`、`7`，随后出现一次 `club_draw {}`。三组奖励 ID 已全部通过真实抓包确认。
+- [x] 已确定批量 UI 方案：入口使用 [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue) 现有的“营地挑战”按钮；先将复选角色按所属 `club` 分组，再逐个 `club` 独立获取敌我状态、评估三组 5/4/3 层可达性、选择最高奖励组并执行真实攻击。不同 `club` 之间不得共享敌人、`nodeId`、每日次数、成功次数、角色容量或攻击计划。
+- [x] 已明确 [local-data/camp_data/design.txt](local-data/camp_data/design.txt) 是业务策略伪代码，不是最终 JavaScript/TypeScript 的接口或结构规范；最终实现可以使用不同的模块、算法和数据结构，但必须满足单 club 边界、整组可达性评估、最高层级选择和实时状态重规划约束。详细方案见 [docs/camp-challenge-protocol-research.md](docs/camp-challenge-protocol-research.md) 的“UI 入口与 club 独立规划”章节。
 
 ### 当前问题
 
@@ -476,7 +478,8 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 - [ ] `CommandRegistry` 尚未注册 `club_getinfo`、`club_gettargetteam`、`club_attack`、`club_attackmonster` 和 `club_taskclaim`；实际发送时可能触发 `Unknown cmd`。
 - [ ] 普通挑战当前把“最多 3 次”实现为最多 3 次尝试，而不是最多 3 次成功；失败仍会消耗每日 10 次发起额度，但不应消耗 3 次成功额度。
 - [ ] 宠物挑战当前固定执行 3 轮，没有与普通玩家挑战共享成功计数，也没有在达到每日 10 次发起上限时停止。
-- [ ] 领奖流程当前无条件尝试 `confId` 1、2、3、4；实际已确认第二组为 `8/9/10`、第三组为 `11/12/13`，第一组高概率为 `5/6/7`、低概率为 `2/3/4`，必须先补抓第一组全清包再实现固定 ID 列表。
+- [ ] 领奖流程当前无条件尝试 `confId` 1、2、3、4；实际三组全清奖励已确认为第一组 `5/6/7`、第二组 `8/9/10`、第三组 `11/12/13`，需要按区域进度和 `taskClaimedMap` 改为只领取对应的已确认配置。
+- [ ] “营地挑战”按钮尚未接入逐 `club` 的独立规划执行器；当前需要先完成复选角色的 club 聚合，再在每个 club 内执行三组虚拟评估和单组真实攻击，不能沿用跨角色/跨 club 的统一目标池。
 
 ### 协议待验证
 
@@ -486,13 +489,15 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 - [x] 新日志已确认 `club_attack` 请求包含数值型 `nodeId`、`targetId`、`challengeCnt`、`failCnt`，布尔型 `targetIsMirror`、`useItem`，以及 `teamSetParams.lordWeaponId`、`petUId`、`battleTeam`；四次请求中 `challengeCnt=0`、`failCnt=0`，未观察到 `battleVersion`，是否存在其他场景仍待验证。
 - [ ] 确认 `battleData.result.accept.ext.curHP === 0` 是否是普通玩家和宠物挑战的可靠胜利判定。
 - [ ] 确认每日 10 次限制、3 次成功限制和服务端错误码，避免仅依赖客户端本地计数。
-- [ ] 抓取第一组全清后的领奖流程，确认其真实 `confId` 是 `5/6/7`、`2/3/4`，还是其他映射；并在更多账号上验证第二组 `8/9/10`、第三组 `11/12/13` 的稳定性。
+- [ ] 在更多账号上验证三组 `confId` 映射的稳定性，并确认不同全清状态下 `club_draw` 次数与种火石数量的对应关系。
 
 ### 实现与验证 TODO
 
 - [ ] 补齐发送命令注册、任务工厂接线、模式选择回调和自由模板 handler 接线。
+- [ ] 以 BatchDailyTasks.vue 现有营地按钮为入口接入 club 编排：复选角色 -> 按所属 club 分组 -> 每个 club 独立规划 -> 只执行该 club 的最高可达奖励组；UI 不直接实现协议解析和规划算法。
 - [ ] 抽取共享的营地挑战计数逻辑：总发起次数上限 10，普通玩家和宠物共享成功次数上限 3，达到任一上限立即停止。
-- [ ] 按已确认的 A 类奖励 ID、区域/难度进度和 `taskClaimedMap` 过滤已领取/可领取任务；当前仅可使用已确认的 `8/9/10`、`11/12/13`，不得把第一组的 `5/6/7` 或 `2/3/4` 当成事实写死；B 类种火石达到 10 个后另走 `club_draw({})`。
+- [ ] 为每个 club 实现实时状态适配、整组 5/4/3 层可达性评估、最高层级组选择和攻击后重规划；`design.txt` 中的伪代码只作为业务意图参考，不要求逐行翻译。
+- [ ] 按已确认的 A 类奖励 ID（第一组 `5/6/7`、第二组 `8/9/10`、第三组 `11/12/13`）、区域/难度进度和 `taskClaimedMap` 过滤已领取/可领取任务；B 类种火石达到服务端要求后另走 `club_draw({})`。
 - [ ] 为目标收集、成功/失败计数、上限停止和领奖过滤添加 Node mock 测试；测试不得把未验证的响应字段写成协议事实。
 - [ ] 完成一次真实账号单账号低风险验收，再进行多账号并发验证；确认连接槽位、失败释放和停止操作不会重复发起挑战。
 - [ ] 完成后更新本节状态、`KNOWN_ISSUES.md` 中仍存在的风险，并在“常用命令和当前验证状态”补充测试日期和结果。

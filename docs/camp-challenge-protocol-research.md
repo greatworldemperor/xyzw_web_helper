@@ -1,7 +1,7 @@
 # 营地挑战协议与节点模型研究
 
 - 状态：以当前用户规则和真实 WSS 抓包为依据
-- 最近更新：2026-09-09
+- 最近更新：2026-09-10
 - 相关实现：[src/utils/batch/tasksCampChallenge.js](../src/utils/batch/tasksCampChallenge.js)
 - 相关抓包目录：[local-data/camp_data](../local-data/camp_data)
 
@@ -13,6 +13,7 @@
 - [camp_data_attack_multi_enemies.jsonl](../local-data/camp_data/camp_data_attack_multi_enemies.jsonl)：依次攻击不同位置的四个敌人，不含领奖阶段。
 - [camp_data_attack_multi_enemies_and_claim_rewards.jsonl](../local-data/camp_data/camp_data_attack_multi_enemies_and_claim_rewards.jsonl)：与上一份日志的攻击阶段相同，额外包含任务领奖和抽奖。
 - [camp_data_group2_eliminated.jsonl](../local-data/camp_data/camp_data_group2_eliminated.jsonl)：完成第二组敌人后领取第二组的三个难度奖励，并执行三次抽奖。
+- [camp_data_group1_cleared.jsonl](../local-data/camp_data/camp_data_group1_cleared.jsonl)：完成第一组敌人后领取第一组的三个难度奖励，并执行一次抽奖。
 - 既有营地日志：[camp_data.jsonl](../local-data/camp_data/camp_data.jsonl)、[camp_data1.jsonl](../local-data/camp_data/camp_data1.jsonl)、[camp_data2.jsonl](../local-data/camp_data/camp_data2.jsonl)、[camp_data_fail.jsonl](../local-data/camp_data/camp_data_fail.jsonl)、[camp_data_more_rewards.jsonl](../local-data/camp_data/camp_data_more_rewards.jsonl)。
 
 日志中的 WSS 数据按项目现有协议链解码：`px` 帧 -> `x` 解密 -> 外层 BON -> `body` 内层 BON。下面的字段名和命令名均来自解码后的报文，未解码或尚未在抓包中出现的字段会明确标记为待验证。
@@ -223,11 +224,11 @@ body.siege.attackMap[YYMMDD].aSuccessCnt
 { confId: 1 }
 ```
 
-`confId=1` 是累计战斗 3 次奖励，不属于某一个十格位置组。当前已经通过全清日志确认两组位置奖励 ID：
+`confId=1` 是累计战斗 3 次奖励，不属于某一个十格位置组。当前已经通过全清日志确认三组位置奖励 ID：
 
 | 位置组 | 普通难度 | 困难难度 | 炼狱难度 | 证据 |
 | --- | ---: | ---: | ---: | --- |
-| 第一组 | 未确认 | 未确认 | 未确认 | 尚未抓到第一组全清领奖 |
+| 第一组 | `5` | `6` | `7` | `camp_data_group1_cleared` |
 | 第二组 | `8` | `9` | `10` | `camp_data_group2_eliminated` |
 | 第三组 | `11` | `12` | `13` | `camp_data_attack_multi_enemies_and_claim_rewards` 及此前全清记录 |
 
@@ -249,6 +250,15 @@ confId = 12
 confId = 13
 ```
 
+第一组全清日志中的请求顺序为：
+
+```text
+confId = 1
+confId = 5
+confId = 6
+confId = 7
+```
+
 响应包含 `siege.taskClaimedMap`，例如：
 
 ```text
@@ -256,6 +266,9 @@ siege.taskClaimedMap.1  = 1788939946
 siege.taskClaimedMap.8  = 1788948990
 siege.taskClaimedMap.9  = 1788948992
 siege.taskClaimedMap.10 = 1788948993
+siege.taskClaimedMap.5  = 1789008064
+siege.taskClaimedMap.6  = 1789008065
+siege.taskClaimedMap.7  = 1789008067
 ```
 
 这些值表现为领取时间戳或服务端记录值，具体单位和持久化语义仍不需要由客户端推断；判断已领取时应以键是否存在和服务端返回为准。
@@ -265,6 +278,9 @@ siege.taskClaimedMap.10 = 1788948993
 | `confId` | 观察到的奖励 |
 | ---: | --- |
 | 1 | `itemId=41004, value=1` |
+| 5 | `itemId=41004, value=1`；`itemId=41003, value=150` |
+| 6 | `itemId=41004, value=1`；`itemId=41003, value=150`；`itemId=1023, value=1` |
+| 7 | `itemId=1023, value=2`；`itemId=41003, value=200` |
 | 8 | `itemId=41004, value=1`；`itemId=41003, value=150` |
 | 9 | `itemId=41004, value=1`；`itemId=41003, value=150`；`itemId=1022, value=500` |
 | 10 | `itemId=41003, value=200`；`itemId=1022, value=1000` |
@@ -272,7 +288,7 @@ siege.taskClaimedMap.10 = 1788948993
 | 12 | `itemId=41004, value=1`；`itemId=41003, value=150`；`itemId=1001, value=3` |
 | 13 | `itemId=1001, value=5`；`itemId=41003, value=200` |
 
-当前已确认第二组使用 `8/9/10`，第三组使用 `11/12/13`。第一组尚未抓到全清领奖；根据数字连续性，第一组高概率使用 `5/6/7`，低概率使用 `2/3/4`，两者都暂不能作为已确认协议事实。不要在补抓第一组全清领奖前写死第一组配置 ID。
+当前已通过真实全清日志确认第一组使用 `5/6/7`、第二组使用 `8/9/10`、第三组使用 `11/12/13`。三组配置 ID 连续衔接，先前提出的 `2/3/4` 仅是低概率备选，已被第一组实测结果排除。
 
 ### 4.5 `club_draw`
 
@@ -282,11 +298,13 @@ siege.taskClaimedMap.10 = 1788948993
 {}
 ```
 
-两份领奖日志在任务领奖后分别出现两次和三次 `club_draw`。响应为 `Club_DrawResp`，包含 `siege.boxId`、`siege.poolRewards` 和实际 `reward`。最新第二组全清日志中观察到：
+三份领奖日志在任务领奖后分别出现一次、三次和两次 `club_draw`。响应为 `Club_DrawResp`，包含 `siege.boxId`、`siege.poolRewards` 和实际 `reward`。第二组全清日志中观察到：
 
 - 第一次抽奖返回 `boxId=2`，实际奖励包含 `itemId=3008, value=4`。
 - 第二次抽奖返回 `boxId=3`，实际奖励包含 `itemId=3010, value=5`。
 - 第三次抽奖返回 `boxId=4`，实际奖励包含 `itemId=3010, value=5`。
+
+第一组全清日志中的抽奖返回 `boxId=5`，实际奖励包含 `itemId=3009, value=5`。
 
 此前业务分析已确认：击败敌人会获得种火石，累计 10 个种火石后通过 `club_draw({})` 抽奖一次。具体种火石物品 ID和服务端剩余数量字段仍应以更多响应为准。
 
@@ -359,7 +377,7 @@ club_getinfo
 - 不要过滤 `mirror=true` 的节点。
 - 不要把失败次数当成成功次数。
 - 不要把普通挑战和宠物挑战的成功额度分开计算。
-- 目前只允许使用已由抓包确认的 `8/9/10` 和 `11/12/13`；不要推测并硬编码第一组的配置 ID。
+- 目前三组 `confId` 均已有真实抓包确认：第一组 `5/6/7`、第二组 `8/9/10`、第三组 `11/12/13`。
 
 ## 7. 仍待验证
 
@@ -367,11 +385,63 @@ club_getinfo
 2. `hero_calcpowerbyteam` 的请求和响应字段，以及发送前是否为强制步骤。
 3. `battleData.result.accept.ext.curHP === 0` 是否同时适用于普通攻击和宠物攻击的胜利判断。
 4. 每日 10 次和每日 3 次限制触发时的服务端错误码、`code` 和 `hint`。
-5. 第一组普通、困难、炼狱奖励的真实 `confId`，以及三组配置 ID 在更多账号上的稳定性。
+5. 三组配置 ID 在更多账号上的稳定性，以及第一组全清后只出现一次 `club_draw` 的种火石/抽奖前置状态。
 6. `challengeCnt` 和 `failCnt` 在重复攻击同一节点、跨难度阶段时的服务端递增语义。
 7. 种火石对应的物品 ID、当前数量字段和 `club_draw` 的服务端前置条件。
 
-## 8. 对当前代码的影响
+## 8. UI 入口与 club 独立规划
+
+### 8.1 UI 入口
+
+批量营地挑战使用 [src/views/BatchDailyTasks.vue](../src/views/BatchDailyTasks.vue) 中现有的“营地挑战”按钮作为唯一入口。用户可以在批量角色列表中复选多个角色；执行器先按照所选角色所属的 `club` 分组，再逐个处理每个 `club`。
+
+这里的 `club` 是战斗边界，不是仅用于 UI 展示的分组标签。每个 `club` 都有自己的：
+
+- 敌方 30 个 `nodeId` 节点和 `oppoMap` 数据。
+- 敌方节点的已击破进度、剩余需求和镜像属性。
+- 所选我方角色、每日 `attackCnt`、共享 `aSuccessCnt` 和可用攻击容量。
+- 三组可达性评估结果、最终选择的目标组和真实攻击计划。
+
+不同 `club` 之间不得共享敌人、`nodeId`、每日次数、成功次数、角色战斗容量或攻击计划。一个 `club` 的敌人不能由另一个 `club` 的角色攻击；多个 `club` 的角色也不能合并成一个虚拟战斗池。
+
+### 8.2 每个 club 的规划顺序
+
+每个 `club` 独立执行以下流程：
+
+```text
+选中角色
+  -> 按所属 club 分组
+  -> 获取该 club 的实时 club_getinfo
+  -> 获取该 club 仍有需求节点的真实目标阵容和战力
+  -> 虚拟评估第一组、第二组、第三组的 5/4/3 层可达性
+  -> 选择该 club 可达层级最高的一个组
+  -> 只对该 club 的目标组执行真实攻击
+  -> 每次攻击后刷新该 club 状态，必要时重新规划
+  -> 按该 club 的完成状态领取奖励
+```
+
+三组评估必须在真实攻击前全部完成。比较依据是每组的最高可达层级：
+
+```text
+5 层 > 4 层 > 3 层 > 不可达
+```
+
+例如同一个 `club` 的第一组最高只能达到 3 层、第二组可以达到 5 层、第三组不可达，则选择第二组；另一个 `club` 应根据自己的敌人和角色状态独立选择，不受前一个 `club` 的结果影响。
+
+### 8.3 设计稿与实现的边界
+
+[local-data/camp_data/design.txt](../local-data/camp_data/design.txt) 是业务策略和约束的伪代码说明，不是最终 JavaScript/TypeScript 的接口或结构规范。最终实现不需要逐行翻译其中的 C++ 风格代码，也不需要复用其中的类名、循环方式、排序方式或数据结构。
+
+实现可以使用纯规划函数、服务端状态适配器、最大匹配/回溯/贪心算法、独立任务执行器或其他等价结构，但必须保留以下行为契约：
+
+1. 以单个 `club` 为规划和执行边界。
+2. 先获取实时敌方状态，再虚拟判断整组 5/4/3 层是否可达。
+3. 整组奖励要求所有仍有需求的 `nodeId` 都能完成，不能跳过无法击败的节点后把部分成功当作整组可达。
+4. 选定最高奖励组后才发送真实攻击。
+5. 真实攻击改变状态后，以服务端响应为准，过期计划需要停止并重新规划。
+6. UI 层只负责读取复选角色、触发任务和展示进度，不直接承担协议解码和战斗规划细节。
+
+## 9. 对当前代码的影响
 
 当前代码需要优先修正或补齐：
 
