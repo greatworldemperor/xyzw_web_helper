@@ -18,8 +18,6 @@ import {
 import {
   is400340Error,
   isRateLimitError,
-  markRateLimitRetriesExhausted,
-  RATE_LIMIT_MAX_RETRIES,
   RATE_LIMIT_RETRY_DELAY_MS,
 } from "@/utils/helperTaskRunner";
 import { emitPlus, $emit } from "./events/index.js";
@@ -1133,15 +1131,8 @@ export const useTokenStore = defineStore("tokens", () => {
 
         return result;
       } catch (error) {
-        const isRateLimit400340 = is400340Error(error);
-        if (
-          !isRateLimit400340 ||
-          retryCount >= RATE_LIMIT_MAX_RETRIES
-        ) {
-          if (isRateLimit400340 && retryCount >= RATE_LIMIT_MAX_RETRIES) {
-            return Promise.reject(markRateLimitRetriesExhausted(error));
-          }
-
+        // 400340 仅表示限流：以每秒1次的频率持续重试，直到成功或连接关闭
+        if (!is400340Error(error)) {
           // 特殊日志：fight_starttower 错误
           if (cmd === "fight_starttower") {
             wsLogger.error(
@@ -1154,7 +1145,7 @@ export const useTokenStore = defineStore("tokens", () => {
 
         retryCount++;
         wsLogger.warn(
-          `请求触发400340限流 [${tokenId}] ${cmd}，1秒后重试（第${retryCount}/${RATE_LIMIT_MAX_RETRIES}次）`,
+          `请求触发400340限流 [${tokenId}] ${cmd}，1秒后重试（第${retryCount}次）`,
         );
         await new Promise((resolve) =>
           setTimeout(resolve, RATE_LIMIT_RETRY_DELAY_MS),

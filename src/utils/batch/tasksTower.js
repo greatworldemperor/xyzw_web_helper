@@ -59,6 +59,12 @@ async function claimPendingEvoTowerRewards(tokenStore, tokenId, evoTower, onLog)
       onLog?.(`已领取第 ${res?.evoTower?.rewardTowerId ?? rewardTowerId + claimed} 章通关奖励`, "success");
       await new Promise((r) => setTimeout(r, 300));
     } catch (error) {
+      // 400340 仅限流，冷却1秒后继续补领
+      if (is400340Error(error)) {
+        onLog?.("补领章节奖励触发400340限流，冷却1秒后继续重试", "warning");
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
       // 领奖失败则停止：继续爬塔只会持续返回 12200020
       onLog?.(
         `领取章节奖励失败，已补领 ${claimed}/${claimed + pending} 个：${error?.message || error}`,
@@ -552,10 +558,11 @@ export function createTasksTower(deps) {
             if (is400340Error(err)) {
               addLog({
                 time: new Date().toLocaleTimeString(),
-                message: `${token.name} 触发400340冷却，已按每秒重试${RATE_LIMIT_MAX_RETRIES}次仍失败，停止爬塔`,
-                type: "error",
+                message: `${token.name} 触发400340限流，冷却1秒后继续重试`,
+                type: "warning",
               });
-              break;
+              await new Promise((r) => setTimeout(r, 1000));
+              continue;
             }
 
             if (err.message && err.message.includes("200400")) {
@@ -894,10 +901,11 @@ export function createTasksTower(deps) {
             if (is400340Error(err)) {
               addLog({
                 time: new Date().toLocaleTimeString(),
-                message: `${token.name} 触发400340冷却，已按每秒重试${RATE_LIMIT_MAX_RETRIES}次仍失败，停止爬怪异塔`,
-                type: "error",
+                message: `${token.name} 触发400340限流，冷却1秒后继续重试`,
+                type: "warning",
               });
-              break;
+              await new Promise((r) => setTimeout(r, 1000));
+              continue;
             }
 
             consecutiveFailures++;
@@ -950,9 +958,7 @@ export function createTasksTower(deps) {
         tokenStatus.value[tokenId] = "failed";
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: is400340Error(error)
-            ? `${token.name} 触发400340冷却，已按每秒重试${RATE_LIMIT_MAX_RETRIES}次仍失败，停止爬怪异塔`
-            : `${token.name} 爬怪异塔失败: ${error.message}`,
+          message: `${token.name} 爬怪异塔失败: ${error.message}`,
           type: "error",
         });
       } finally {
