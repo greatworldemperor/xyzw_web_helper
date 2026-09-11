@@ -22,7 +22,11 @@ const expectedRuntimeFiles = [
   "cocos2d-js-min.a5841.js",
   "xh.js",
   "diagnose_require.js",
-  "push-level-research-bridge.js?v=20260903.21",
+  "push-level-research-bridge.js?v=20260907.13",
+];
+const expectedAutomationFiles = [
+  "salt-field-auto.js?v=20260911.1",
+  "multi-game-control-bridge.js?v=20260911.1",
 ];
 
 function executeBootstrap(boot) {
@@ -127,6 +131,10 @@ test("multi-game bootstrap waits for boot completion before reporting ready", as
 
   resolveBoot();
   await flushBootstrap();
+  assert.deepEqual(loadedScripts, [
+    ...expectedRuntimeFiles,
+    ...expectedAutomationFiles,
+  ]);
   assert.equal(messages.length, 1);
   assert.deepEqual(JSON.parse(JSON.stringify(messages[0])), {
     payload: {

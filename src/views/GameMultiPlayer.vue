@@ -6,6 +6,7 @@
       </button>
       <strong class="toolbar-title">批量运行时</strong>
       <span class="toolbar-count">{{ frames.length }} 个窗口</span>
+      <span class="toolbar-ready">{{ readyCount }} 个已就绪</span>
       <span
         v-if="skippedSummary"
         class="toolbar-skipped"
@@ -13,8 +14,42 @@
       >
         {{ skippedSummary }}
       </span>
+      <div class="automation-actions" role="group" aria-label="自动盐场批量操作">
+        <span class="selection-count">已选 {{ selectedScopes.size }} 个</span>
+        <button
+          class="toolbar-action"
+          type="button"
+          @click="toggleAllSelection"
+        >
+          {{ selectedScopes.size === frames.length ? "取消全选" : "全选" }}
+        </button>
+        <button
+          class="toolbar-action toolbar-action-primary"
+          type="button"
+          :disabled="selectedReadyCount === 0 || controlBusy"
+          @click="runSelectedAction('start')"
+        >
+          启动选中
+        </button>
+        <button
+          class="toolbar-action toolbar-action-warning"
+          type="button"
+          :disabled="selectedReadyCount === 0 || controlBusy"
+          @click="runSelectedAction('stop')"
+        >
+          暂停选中
+        </button>
+        <button
+          class="toolbar-action"
+          type="button"
+          :disabled="readyCount === 0 || controlBusy"
+          @click="refreshAutomationStatus()"
+        >
+          刷新状态
+        </button>
+      </div>
       <span class="toolbar-warning">
-        在窗口标题栏滚动可横向浏览；按住 Ctrl + 滚轮缩放页面，可同时查看更多账号
+        自动盐场仍需活动开放；未就绪窗口不会接收操作
       </span>
       <n-popover trigger="hover" placement="bottom-end" :width="360">
         <template #trigger>
@@ -54,12 +89,25 @@
         :style="{ order: frame.order }"
       >
         <header class="game-panel-header">
+          <input
+            class="frame-select"
+            type="checkbox"
+            :checked="isFrameSelected(frame.scopeId)"
+            :aria-label="`选择 ${frame.name}`"
+            @change="toggleFrameSelection(frame.scopeId)"
+          />
           <span class="account-name" :title="frame.name">{{ frame.name }}</span>
           <span
             class="frame-status"
             :class="`is-${frameStates[frame.scopeId]?.status || 'loading'}`"
           >
             {{ statusLabel(frame.scopeId) }}
+          </span>
+          <span
+            class="automation-status"
+            :class="`is-${automationStatus(frame.scopeId).tone}`"
+          >
+            {{ automationStatus(frame.scopeId).label }}
           </span>
           <button
             class="move-button move-button-first"
@@ -138,6 +186,63 @@
             </button>
           </div>
         </div>
+        <footer class="game-panel-actions">
+          <button
+            class="panel-action panel-action-primary"
+            type="button"
+            :disabled="!isFrameReady(frame.scopeId) || controlBusy"
+            @click="runFrameAction(frame.scopeId, 'start')"
+          >
+            启动自动盐场
+          </button>
+          <button
+            class="panel-action panel-action-warning"
+            type="button"
+            :disabled="!isFrameReady(frame.scopeId) || controlBusy"
+            @click="runFrameAction(frame.scopeId, 'stop')"
+          >
+            暂停
+          </button>
+          <button
+            class="panel-action"
+            type="button"
+            :disabled="!isFrameReady(frame.scopeId) || controlBusy"
+            @click="runFrameAction(frame.scopeId, 'deploy')"
+          >
+            布阵
+          </button>
+          <button
+            class="panel-action"
+            type="button"
+            :disabled="!isFrameReady(frame.scopeId) || controlBusy"
+            @click="runFrameAction(frame.scopeId, 'march')"
+          >
+            寻盐田
+          </button>
+          <button
+            class="panel-action"
+            type="button"
+            :disabled="!isFrameReady(frame.scopeId) || controlBusy"
+            @click="runFrameAction(frame.scopeId, 'attack')"
+          >
+            攻击当前
+          </button>
+          <button
+            class="panel-action"
+            type="button"
+            :disabled="!isFrameReady(frame.scopeId) || controlBusy"
+            @click="runFrameAction(frame.scopeId, 'speedUp')"
+          >
+            加速
+          </button>
+          <span
+            v-if="frameStates[frame.scopeId]?.automationError"
+            class="automation-error"
+            :title="frameStates[frame.scopeId].automationError"
+          >
+            控制失败
+          </span>
+        </footer>
       </article>
     </main>
 
@@ -195,14 +300,35 @@ const frames = computed(() => {
 });
 const frameElements = new Map();
 const frameTimeouts = new Map();
+const controlPending = reactive(new Map());
+const selectedScopes = ref(new Set(frames.value.map((frame) => frame.scopeId)));
+let controlSequence = 0;
+let statusPollTimer = 0;
 const frameStates = reactive(
   Object.fromEntries(
     frames.value.map((frame) => [
       frame.scopeId,
-      { status: "loading", revision: 0 },
+      {
+        status: "loading",
+        revision: 0,
+        automation: null,
+        automationError: "",
+      },
     ]),
   ),
 );
+
+const readyCount = computed(
+  () => frames.value.filter((frame) => isFrameReady(frame.scopeId)).length,
+);
+const selectedReadyCount = computed(
+  () =>
+    frames.value.filter(
+      (frame) =>
+        selectedScopes.value.has(frame.scopeId) && isFrameReady(frame.scopeId),
+    ).length,
+);
+const controlBusy = computed(() => controlPending.size > 0);
 
 const skippedDetails = computed(() =>
   (launch.value?.failures || [])
@@ -245,6 +371,111 @@ function statusLabel(scopeId) {
   }[frameStates[scopeId]?.status || "loading"];
 }
 
+function isFrameReady(scopeId) {
+  return frameStates[scopeId]?.status === "ready";
+}
+
+function isFrameSelected(scopeId) {
+  return selectedScopes.value.has(scopeId);
+}
+
+function toggleFrameSelection(scopeId) {
+  const next = new Set(selectedScopes.value);
+  if (next.has(scopeId)) next.delete(scopeId);
+  else next.add(scopeId);
+  selectedScopes.value = next;
+}
+
+function toggleAllSelection() {
+  selectedScopes.value =
+    selectedScopes.value.size === frames.value.length
+      ? new Set()
+      : new Set(frames.value.map((frame) => frame.scopeId));
+}
+
+function automationStatus(scopeId) {
+  const state = frameStates[scopeId];
+  if (!isFrameReady(scopeId)) return { label: "未就绪", tone: "offline" };
+  if (!state?.automation) return { label: "等待状态", tone: "loading" };
+  if (state.automation.running) return { label: "自动运行", tone: "running" };
+  return { label: "已暂停", tone: "paused" };
+}
+
+function clearControlPending(scopeId, reason = "运行窗口已关闭") {
+  for (const [requestId, pending] of controlPending) {
+    if (pending.scopeId !== scopeId) continue;
+    window.clearTimeout(pending.timeoutId);
+    controlPending.delete(requestId);
+    pending.reject(new Error(reason));
+  }
+}
+
+function sendFrameCommand(scopeId, action) {
+  const frameElement = frameElements.get(scopeId);
+  if (!frameElement?.contentWindow || !isFrameReady(scopeId)) {
+    return Promise.reject(new Error("运行窗口尚未就绪"));
+  }
+
+  const requestId = `${scopeId}-${Date.now()}-${controlSequence++}`;
+  return new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      controlPending.delete(requestId);
+      reject(new Error("自动盐场控制请求超时"));
+    }, 10000);
+    controlPending.set(requestId, { scopeId, resolve, reject, timeoutId });
+    frameElement.contentWindow.postMessage(
+      {
+        channel: "multi-game-control",
+        version: 1,
+        type: "command",
+        requestId,
+        action,
+      },
+      window.location.origin,
+    );
+  });
+}
+
+function applyAutomationResult(scopeId, result) {
+  const state = frameStates[scopeId];
+  if (!state || !result || typeof result !== "object") return;
+  state.automation = result;
+  state.automationError = "";
+}
+
+async function runFrameAction(scopeId, action) {
+  const state = frameStates[scopeId];
+  if (!state || !isFrameReady(scopeId)) return null;
+  state.automationError = "";
+  try {
+    const result = await sendFrameCommand(scopeId, action);
+    applyAutomationResult(scopeId, result);
+    return result;
+  } catch (error) {
+    state.automationError = error?.message || "自动盐场控制失败";
+    return null;
+  }
+}
+
+async function runSelectedAction(action) {
+  const scopeIds = frames.value
+    .filter(
+      (frame) =>
+        selectedScopes.value.has(frame.scopeId) && isFrameReady(frame.scopeId),
+    )
+    .map((frame) => frame.scopeId);
+  await Promise.all(scopeIds.map((scopeId) => runFrameAction(scopeId, action)));
+}
+
+async function refreshAutomationStatus(scopeId = null) {
+  const scopeIds = scopeId
+    ? [scopeId]
+    : frames.value
+        .filter((frame) => isFrameReady(frame.scopeId))
+        .map((frame) => frame.scopeId);
+  await Promise.all(scopeIds.map((id) => runFrameAction(id, "getStats")));
+}
+
 function setFrameElement(scopeId, element) {
   if (element) frameElements.set(scopeId, element);
   else frameElements.delete(scopeId);
@@ -281,9 +512,12 @@ function markFrameFatal(scopeId) {
 function reloadFrame(scopeId) {
   const state = frameStates[scopeId];
   if (!state) return;
+  clearControlPending(scopeId, "运行窗口正在重新加载");
   frameElements.delete(scopeId);
   state.status = "loading";
   state.revision += 1;
+  state.automation = null;
+  state.automationError = "";
   armFrameTimeout(scopeId);
 }
 
@@ -401,8 +635,12 @@ function closeFrame(frame) {
       sessionStorage: window.sessionStorage,
     });
     clearFrameTimeout(frame.scopeId);
+    clearControlPending(frame.scopeId);
     frameElements.delete(frame.scopeId);
     delete frameStates[frame.scopeId];
+    const nextSelection = new Set(selectedScopes.value);
+    nextSelection.delete(frame.scopeId);
+    selectedScopes.value = nextSelection;
     launch.value = updatedLaunch;
   } catch (error) {
     console.error("Unable to close MultiGame frame:", error);
@@ -411,6 +649,35 @@ function closeFrame(frame) {
 }
 
 function handleMessage(event) {
+  const payload = event.data;
+  if (payload?.channel === "multi-game" && payload.type === "control-result") {
+    const pending = controlPending.get(payload.requestId);
+    const frame = frames.value.find((item) => item.scopeId === payload.scope);
+    const element = frame && frameElements.get(frame.scopeId);
+    if (
+      !pending ||
+      event.origin !== window.location.origin ||
+      payload.version !== 1 ||
+      pending.scopeId !== payload.scope ||
+      !frame ||
+      !element ||
+      event.source !== element.contentWindow
+    ) {
+      return;
+    }
+    window.clearTimeout(pending.timeoutId);
+    controlPending.delete(payload.requestId);
+    if (payload.ok) {
+      applyAutomationResult(frame.scopeId, payload.result);
+      pending.resolve(payload.result);
+    } else {
+      frameStates[frame.scopeId].automationError =
+        payload.error || "自动盐场控制失败";
+      pending.reject(new Error(frameStates[frame.scopeId].automationError));
+    }
+    return;
+  }
+
   const result = resolveMultiGameFrameMessage({
     event,
     expectedOrigin: window.location.origin,
@@ -420,6 +687,7 @@ function handleMessage(event) {
   if (result && frameStates[result.scopeId]) {
     clearFrameTimeout(result.scopeId);
     frameStates[result.scopeId].status = result.status;
+    if (result.status === "ready") refreshAutomationStatus(result.scopeId);
   }
 }
 
@@ -428,11 +696,22 @@ function goToTokens() {
 }
 
 onBeforeMount(() => window.addEventListener("message", handleMessage));
-onMounted(() => frames.value.forEach((frame) => armFrameTimeout(frame.scopeId)));
+onMounted(() => {
+  frames.value.forEach((frame) => armFrameTimeout(frame.scopeId));
+  statusPollTimer = window.setInterval(() => {
+    if (!controlBusy.value) refreshAutomationStatus();
+  }, 5000);
+});
 onUnmounted(() => {
   window.removeEventListener("message", handleMessage);
   stopStripScrollAnimation();
   for (const scopeId of frameTimeouts.keys()) clearFrameTimeout(scopeId);
+  for (const pending of controlPending.values()) {
+    window.clearTimeout(pending.timeoutId);
+    pending.reject(new Error("多开页面已关闭"));
+  }
+  controlPending.clear();
+  if (statusPollTimer) window.clearInterval(statusPollTimer);
 });
 </script>
 
@@ -449,11 +728,11 @@ onUnmounted(() => {
   box-sizing: border-box;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
-  height: 52px;
+  min-height: 52px;
   padding: 8px 12px;
   overflow-x: auto;
-  white-space: nowrap;
   border-bottom: 1px solid #273244;
   background: #111827;
 }
@@ -493,14 +772,70 @@ onUnmounted(() => {
   color: #93c5fd;
 }
 
+.toolbar-ready {
+  color: #86efac;
+  font-size: 12px;
+}
+
 .toolbar-skipped {
   color: #fbbf24;
 }
 
-.toolbar-warning {
+.automation-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-left: auto;
+}
+
+.selection-count {
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+.toolbar-action,
+.panel-action {
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 1px solid #475569;
+  border-radius: 5px;
+  color: #e2e8f0;
+  background: #1e293b;
+  cursor: pointer;
+}
+
+.toolbar-action:hover:not(:disabled),
+.panel-action:hover:not(:disabled) {
+  background: #334155;
+}
+
+.toolbar-action-primary,
+.panel-action-primary {
+  border-color: #2563eb;
+  color: #dbeafe;
+  background: #1d4ed8;
+}
+
+.toolbar-action-warning,
+.panel-action-warning {
+  border-color: #92400e;
+  color: #fef3c7;
+  background: #78350f;
+}
+
+.toolbar-action:disabled,
+.panel-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.toolbar-warning {
+  flex: 1 1 180px;
+  min-width: 180px;
   color: #94a3b8;
   font-size: 12px;
+  text-align: right;
 }
 
 
@@ -535,22 +870,26 @@ onUnmounted(() => {
 }
 .game-strip {
   box-sizing: border-box;
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 390px), 1fr));
+  grid-auto-rows: max-content;
   align-items: flex-start;
-  flex-flow: row nowrap;
+  align-content: flex-start;
   gap: 12px;
-  height: calc(100dvh - 52px);
+  height: calc(100dvh - 68px);
   padding: 12px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: auto;
 }
 
 .game-panel {
   box-sizing: border-box;
-  flex: 0 0
-    min(clamp(360px, 32vw, 480px), calc((100dvh - 112px) * 9 / 16));
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 520px;
   min-width: 0;
-  height: auto;
+  justify-self: center;
   overflow: hidden;
   border: 1px solid #334155;
   border-radius: 8px;
@@ -566,6 +905,13 @@ onUnmounted(() => {
   height: 36px;
   padding: 4px 8px;
   background: #172033;
+}
+
+.frame-select {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  accent-color: #60a5fa;
 }
 
 .account-name {
@@ -592,6 +938,27 @@ onUnmounted(() => {
 
 .frame-status.is-fatal {
   color: #f87171;
+}
+
+.automation-status {
+  flex: none;
+  font-size: 11px;
+}
+
+.automation-status.is-offline {
+  color: #94a3b8;
+}
+
+.automation-status.is-loading {
+  color: #fbbf24;
+}
+
+.automation-status.is-running {
+  color: #4ade80;
+}
+
+.automation-status.is-paused {
+  color: #cbd5e1;
 }
 
 .move-button {
@@ -637,6 +1004,32 @@ onUnmounted(() => {
   position: relative;
   height: auto;
   aspect-ratio: 9 / 16;
+  flex: 0 0 auto;
+  width: 100%;
+  height: 177.7777778cqw;
+}
+
+.game-panel-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 42px;
+  padding: 6px 8px;
+  background: #111827;
+}
+
+.panel-action {
+  font-size: 12px;
+}
+
+.automation-error {
+  margin-left: auto;
+  overflow: hidden;
+  color: #fca5a5;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .game-frame {
@@ -695,5 +1088,32 @@ onUnmounted(() => {
 
 .empty-card button {
   padding: 9px 18px;
+}
+
+@media (max-width: 720px) {
+  .multi-game-toolbar {
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .automation-actions,
+  .toolbar-warning {
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+
+  .toolbar-warning {
+    text-align: left;
+  }
+
+  .game-strip {
+    grid-template-columns: minmax(0, 1fr);
+    height: calc(100dvh - 142px);
+    padding: 8px;
+  }
+
+  .game-panel {
+    max-width: none;
+  }
 }
 </style>

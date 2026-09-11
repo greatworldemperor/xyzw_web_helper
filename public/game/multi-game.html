@@ -87,6 +87,8 @@
           document.getElementById("splash").style.display = "none";
           if (window.__pushResearchSh1Ready) await window.__pushResearchSh1Ready;
           await window.boot();
+          await loadScript("salt-field-auto.js?v=20260911.1");
+          await loadScript("multi-game-control-bridge.js?v=20260911.1");
           notify("ready");
         })().catch(() => {
           document.getElementById("splash").textContent = "游戏资源加载失败";

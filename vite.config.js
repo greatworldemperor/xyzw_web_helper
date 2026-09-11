@@ -5,6 +5,33 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const saltFieldScriptSource = path.resolve(__dirname, "scripts/自动盐场.js");
+const saltFieldScriptPath = "/game/salt-field-auto.js";
+
+function saltFieldRuntimePlugin() {
+  return {
+    name: "salt-field-runtime",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const pathname = String(req.url || "").split("?", 1)[0];
+        if (pathname !== saltFieldScriptPath) {
+          next();
+          return;
+        }
+
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+        fs.createReadStream(saltFieldScriptSource).on("error", next).pipe(res);
+      });
+    },
+    closeBundle() {
+      const destination = path.resolve(__dirname, "dist/game/salt-field-auto.js");
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      fs.copyFileSync(saltFieldScriptSource, destination);
+      console.log("\n[salt-field-runtime] salt-field-auto.js copied to dist/game");
+    },
+  };
+}
 
 async function safeImport(moduleName, humanName) {
   try {
@@ -102,6 +129,7 @@ export default defineConfig(async () => {
     autoImportPlugin,
     componentsPlugin,
     vueI18nPlugin,
+    saltFieldRuntimePlugin(),
     {
       name: "copy-worker",
       closeBundle() {

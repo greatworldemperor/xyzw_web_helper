@@ -80,4 +80,5 @@ dist.zip
 *.bin
 bin/
 server/config.json
-/scripts/
+/scripts/*
+!/scripts/自动盐场.js
