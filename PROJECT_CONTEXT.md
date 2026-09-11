@@ -471,6 +471,13 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 - [x] 已确定批量 UI 方案：入口使用 [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue) 现有的“营地挑战”按钮；先将复选角色按所属 `club` 分组，再逐个 `club` 独立获取敌我状态、评估三组 5/4/3 层可达性、选择最高奖励组并执行真实攻击。不同 `club` 之间不得共享敌人、`nodeId`、每日次数、成功次数、角色容量或攻击计划。
 - [x] 已明确 [local-data/camp_data/design.txt](local-data/camp_data/design.txt) 是业务策略伪代码，不是最终 JavaScript/TypeScript 的接口或结构规范；最终实现可以使用不同的模块、算法和数据结构，但必须满足单 club 边界、整组可达性评估、最高层级选择和实时状态重规划约束。详细方案见 [docs/camp-challenge-protocol-research.md](docs/camp-challenge-protocol-research.md) 的“UI 入口与 club 独立规划”章节。
 - [x] 已完成第一版规划器和 UI 接线：[src/utils/batch/campChallengePlanner.js](src/utils/batch/campChallengePlanner.js) 负责 nodeId/club 快照和 5/4/3 层选择，[src/utils/batch/tasksCampChallengeStrategy.js](src/utils/batch/tasksCampChallengeStrategy.js) 负责逐 club 执行；现有 BatchDailyTasks.vue 营地按钮已支持智能规划/奖励领取模式。
+- [x] 已修正批量任务 Token 生命周期：通用 `ensureConnection` 在账号切换建连前主动刷新短生命周期 Role Token；同一账号 60 秒内复用最近刷新结果，已有旧连接在刷新后关闭重建，超时/初始化恢复不会立即重复刷新。
+- [x] 新批量调试日志确认 `club_getinfo.siege.attackMap` 的语义：存在历史日期但没有今日 `YYMMDD` 键时，表示今日尚未攻击，应按今日 `attackCnt=0/aSuccessCnt=0` 规划；仅 attackMap 为空或今日键字段不完整时才视为未知并跳过。
+- [x] 已针对批量 `club_gettargetteam` 突发导致的 `200020` 增加串行延迟、一次重试和单目标降级：已完成节点不查询，单目标最终不可查询只影响其所在组评估，不中止整个 club。
+- [x] 新增 `camp_data_get_enemy_info` 抓包确认界面会查询少量镜像目标；自动规划仍按 `targetId` 去重，已有普通节点时镜像复用战力，不重复探测；无普通原版可参考的镜像节点标记为不可评估。
+- [x] 已确认 `club_getinfo` 的 30 节点大包只提供节点身份/击破状态，不包含 `power` 或 `battleTeam`；真实战力仍需 `club_gettargetteam`。
+- [x] 已按真实 UI 抓包补齐营地链路：`legion_getinfo -> saltroad_getwartype -> club_getinfo -> club_gettargetteam -> hero_calcpowerbyteam -> club_attack`；重连后查询或攻击前需重新建立该上下文。
+- [x] 已根据历史真实抓包补齐目标查询上下文：重新建连的查询角色必须先发送 `club_getinfo`，再发送 `club_gettargetteam`；不能只完成通用初始化后直接查询目标。
 
 ### 当前问题
 
@@ -490,7 +497,11 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 - [ ] 确认 `battleData.result.accept.ext.curHP === 0` 是否是普通玩家和宠物挑战的可靠胜利判定。
 - [ ] 确认每日 10 次限制、3 次成功限制和服务端错误码，避免仅依赖客户端本地计数。
 - [ ] 在更多账号上验证三组 `confId` 映射的稳定性，并确认不同全清状态下 `club_draw` 次数与种火石数量的对应关系。
-- [ ] 当前抓包显示 `club_getinfo` 通常不返回 `siege.attackMap[YYMMDD]`，策略执行器在无法确认每日个人 `attackCnt/aSuccessCnt` 时会安全跳过自动攻击；需要补抓可靠计数来源后才能放开已有手动战斗进度的自动执行。
+- [x] 已根据批量调试日志修正每日计数判定：历史 attackMap 存在但缺少今日键时按零次处理；仅 attackMap 为空或今日计数不完整时安全跳过。日志显示主动刷新 Token、WSS 建连和初始化均成功，连接超时应单独排查。
+- [x] 已确认 `club.members.<slot>.challengeCnt/failCnt/score` 不是当前角色每日攻击计数：39 号当天已攻击 3 次但这些成员字段仍为 `0/0/26`；自动规划不读取成员字段，只使用 `siege.attackMap[YYMMDD]`。
+- [x] 已将 `club.members.<key>` 解析为当前角色的 `ownNodeId` 诊断信息：39 号角色与 `members["2"]` 对应；该键只表示我方节点/阵位身份，不改变每日次数仍由 `siege.attackMap[YYMMDD]` 提供的规则。
+- [x] 已修正目标阵容查询：`club_gettargetteam` 只针对 `remainingTo5>0` 且未 `defeated` 的敌方节点发送；已完成节点不再重复查询，避免服务端返回 `200020` 中止整个 club 计划。
+- [x] 批量任务账号切换前主动刷新 Token 的通用连接逻辑已实现；后续测试重点观察 `[连接诊断]` 是否显示“切换账号先刷新”，以及 60 秒内重复任务是否正确复用。
 
 ### 实现与验证 TODO
 

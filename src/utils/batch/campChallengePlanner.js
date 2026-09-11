@@ -38,6 +38,20 @@ export const getCampGroupId = (nodeId) => {
   return Math.floor((numericNodeId - CAMP_NODE_MIN) / CAMP_GROUP_SIZE) + 1;
 };
 
+export const findCampOwnNodeId = (club, roleId) => {
+  if (roleId === undefined || roleId === null) return null;
+
+  for (const [rawNodeId, member] of Object.entries(club?.members || {})) {
+    if (rawNodeId === "null" || String(member?.roleId) !== String(roleId)) {
+      continue;
+    }
+    const nodeId = toFiniteNumber(rawNodeId);
+    return nodeId !== null && Number.isInteger(nodeId) ? nodeId : null;
+  }
+
+  return null;
+};
+
 export const getCampTodayKey = (date = new Date()) => {
   const year = String(date.getFullYear() % 100).padStart(2, "0");
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -49,11 +63,25 @@ export const getCampAttackStats = (siege, date = new Date()) => {
   const attackMap = siege?.attackMap || {};
   const todayKey = getCampTodayKey(date);
   const stats = attackMap[todayKey] || {};
-  const known =
+  const todayRecordPresent = Object.prototype.hasOwnProperty.call(
+    attackMap,
+    todayKey,
+  );
+  const todayCountersPresent =
     Object.prototype.hasOwnProperty.call(stats, "attackCnt") &&
     Object.prototype.hasOwnProperty.call(stats, "aSuccessCnt");
+  // The server stores daily entries only after an attack. Historical entries
+  // prove that an omitted current-day key means zero attacks today.
+  const known = todayRecordPresent
+    ? todayCountersPresent
+    : Object.keys(attackMap).length > 0;
   return {
     known,
+    todayRecordPresent,
+    todayCountersPresent,
+    todayKey,
+    attackMapKeys: Object.keys(attackMap),
+    statsKeys: Object.keys(stats),
     attackCnt: Math.max(0, toFiniteNumber(stats.attackCnt) ?? 0),
     aSuccessCnt: Math.max(0, toFiniteNumber(stats.aSuccessCnt) ?? 0),
   };
@@ -104,6 +132,46 @@ export const getCampSuccessCount = (defender) => {
   }
 
   return defender?.defeated === true ? 5 : 0;
+};
+
+export const selectCampProbeTargets = (enemies) => {
+  const byTargetId = new Map();
+  const reusedMirrorNodes = [];
+  const mirrorOnlyNodes = [];
+
+  for (const enemy of enemies || []) {
+    if (enemy.roleId === undefined || enemy.roleId === null) continue;
+    const key = String(enemy.roleId);
+    const current = byTargetId.get(key) || [];
+    current.push(enemy);
+    byTargetId.set(key, current);
+  }
+
+  const targets = [];
+  for (const enemiesWithTarget of byTargetId.values()) {
+    const activeNodes = enemiesWithTarget.filter(
+      (enemy) => enemy.remainingTo5 > 0 && enemy.defeated !== true,
+    );
+    if (activeNodes.length === 0) continue;
+
+    const original = enemiesWithTarget.find((enemy) => !enemy.targetIsMirror);
+    if (original) {
+      // The original is the probe source even when its own node is complete;
+      // an active mirror with the same targetId can reuse its power/team.
+      targets.push(original);
+      reusedMirrorNodes.push(
+        ...activeNodes.filter((enemy) => enemy.targetIsMirror),
+      );
+    } else {
+      mirrorOnlyNodes.push(...activeNodes);
+    }
+  }
+
+  return {
+    targets,
+    reusedMirrorNodes,
+    mirrorOnlyNodes,
+  };
 };
 
 export const collectCampEnemies = (oppoMap, targetPowers = {}) => {

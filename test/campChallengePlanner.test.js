@@ -3,15 +3,29 @@ import { test } from "node:test";
 
 import {
   collectCampEnemies,
+  findCampOwnNodeId,
   getCampAttackStats,
   getCampGroupId,
   mergeCampOppoMaps,
   planCampGroup,
+  selectCampProbeTargets,
   selectBestCampGroup,
 } from "../src/utils/batch/campChallengePlanner.js";
 
 test("daily attack stats are unknown unless both server counters are present", () => {
   assert.equal(getCampAttackStats({}).known, false);
+  const noAttackToday = getCampAttackStats(
+    {
+      attackMap: {
+        "260909": { attackCnt: 4, aSuccessCnt: 3 },
+      },
+    },
+    new Date(2026, 8, 10),
+  );
+  assert.equal(noAttackToday.known, true);
+  assert.equal(noAttackToday.todayRecordPresent, false);
+  assert.equal(noAttackToday.attackCnt, 0);
+  assert.equal(noAttackToday.aSuccessCnt, 0);
   assert.equal(
     getCampAttackStats({
       attackMap: {
@@ -56,6 +70,30 @@ test("camp node ids map to three groups without using zero", () => {
   assert.equal(getCampGroupId(20), 2);
   assert.equal(getCampGroupId(21), 3);
   assert.equal(getCampGroupId(30), 3);
+});
+
+test("maps a selected role to its own club node without using member counters", () => {
+  assert.equal(
+    findCampOwnNodeId(
+      { members: { 2: { roleId: 139076719, challengeCnt: 0, failCnt: 0, score: 26 } } },
+      139076719,
+    ),
+    2,
+  );
+  assert.equal(findCampOwnNodeId({ members: {} }, 139076719), null);
+});
+
+test("probe targets deduplicate mirrors by target id and prefer the original node", () => {
+  const result = selectCampProbeTargets([
+    { nodeId: 16, roleId: 704821233, targetIsMirror: true, remainingTo5: 5 },
+    { nodeId: 8, roleId: 704821233, targetIsMirror: false, remainingTo5: 0 },
+    { nodeId: 21, roleId: 700118197, targetIsMirror: true, remainingTo5: 5 },
+    { nodeId: 22, roleId: 105811792, targetIsMirror: false, remainingTo5: 5 },
+  ]);
+
+  assert.deepEqual(result.targets.map((enemy) => enemy.nodeId), [8, 22]);
+  assert.deepEqual(result.reusedMirrorNodes.map((enemy) => enemy.nodeId), [16]);
+  assert.deepEqual(result.mirrorOnlyNodes.map((enemy) => enemy.nodeId), [21]);
 });
 
 test("merging club snapshots keeps mirror nodes with duplicate role ids", () => {

@@ -56,6 +56,8 @@ nodeId = (组序号 - 1) * 10 + 组内位置
 body.club.oppoMap.<来源分组键>.defenders.<nodeId>
 ```
 
+同一响应中的 `body.club.members.<key>` 是我方成员集合。历史日志显示当前角色的 `roleId` 能与这个 `<key>` 对上，例如 39 号角色对应 `members["2"]`，因此代码可将该键记录为 `ownNodeId=2` 用于我方节点身份和诊断。`members` 的 `challengeCnt`、`failCnt`、`score` 仍不能用于个人每日攻击计数；每日攻击计数只读取 `siege.attackMap[YYMMDD]`。
+
 新日志中 `oppoMap` 的键出现过 `2`、`3`、`4`。它表示敌方俱乐部或来源分组，不是第一组、第二组、第三组的位置组。
 
 `defenders` 是稀疏集合：
@@ -121,7 +123,7 @@ siege.attackMap[260909].aSuccessCnt = 3
 | --- | --- | --- | --- |
 | `club_getinfo` | `Club_GetInfoResp` | 获取俱乐部、敌方来源分组和节点状态 | 已确认 |
 | `club_gettargetteam` | `Club_GetTargetTeamResp` | 获取目标角色和战斗队伍 | 已确认 |
-| `hero_calcpowerbyteam` | 尚未在本批摘要中确认 | 攻击前计算己方队伍战力 | 观察到发送，字段仍需补抓 |
+| `hero_calcpowerbyteam` | `Hero_CalcPowerByTeamResp` | 攻击前计算己方队伍战力 | 已确认 |
 | `club_attack` | `Club_AttackResp` | 普通敌人攻击 | 已确认 |
 | `club_attackmonster` | `Club_AttackMonsterResp` | 宠物攻击 | 本批未出现，待验证 |
 | `club_taskclaim` | `Club_TaskClaimResp` | 领取营地任务进度奖励 | 已确认 |
@@ -152,6 +154,8 @@ challengeCnt
 mirror
 ```
 
+新增敌情查看抓包确认：`club_getinfo` 返回的 30 节点大包只包含节点身份和状态字段，例如 `roleId`、`name`、`score`、`petId`、`defeated`、`failCnt`、`challengeCnt`、`mirror`；其中没有 `power`，也没有 `battleTeam`。因此大包可以用于节点、镜像和击破进度筛选，不能直接替代目标战力查询。
+
 由于节点集合可能是稀疏的，`defenders` 中缺少某个键不能直接解释为该节点不存在或已完成，需要结合完整的 30 节点模型和服务端返回状态判断。
 
 ### 4.2 `club_gettargetteam`
@@ -172,7 +176,28 @@ body.roleBattleTeam.battleTeam
 
 目标战力可从 `roleBattleTeam.role.power` 读取。`battleTeam` 是目标阵容详情，不能把它当成攻击请求中的己方 `teamSetParams.battleTeam`。
 
+查询目标阵容前应先按节点状态过滤：`remainingTo5 <= 0` 或 `defeated=true` 的节点已经没有可完成的击破次数，不应再发送 `club_gettargetteam`。最新调试日志中 `targetId=719442918`（历史上对应 `nodeId=11`）在此前抓包中可以正常查询，但在该节点可能已被其他角色击败完成后重复查询返回 `200020`；这类错误不能直接归因于当前低战力角色没有出战。
+
+历史手动抓包中的连续 `club_gettargetteam` 请求通常间隔约 1 到 5 秒；批量实现不能在同一秒突发查询全部目标。当前执行器按命令延迟串行查询，临时失败会等待后重试一次；单个目标最终仍不可查询时，只将该目标标记为不可评估，让规划器继续比较其他位置组，不再中止整个 club。
+
+新增的 `camp_data_get_enemy_info` 抓包确认界面本身会对用户查看的少量目标发送 `club_gettargetteam`，其中也可能包含镜像节点；这不改变自动规划规则：同一 `targetId` 已有普通节点时，镜像复用普通节点的战力，不重复探测；只有镜像且没有可参考的普通节点时，自动规划将其标记为不可评估。
+
+历史成功链路还确认了连接上下文顺序：同一条 WSS 连接上先发送 `club_getinfo`，再发送 `club_gettargetteam`，之后才发送 `club_attack`。批量执行器如果为了查询目标重新建立连接，必须在该新连接上再次发送 `club_getinfo`，不能只完成通用角色/战斗初始化后直接查询目标。
+
 ### 4.3 `club_attack`
+
+真实 UI 的单次普通攻击链路为：
+
+```text
+legion_getinfo
+  -> saltroad_getwartype({ date: 最近/当前营地周六 })
+  -> club_getinfo
+  -> club_gettargetteam({ targetId })
+  -> hero_calcpowerbyteam({ battleTeam, lordWeaponId, petUId })
+  -> club_attack({ nodeId, targetId, targetIsMirror, ... })
+```
+
+重新建立 WSS 后，不能只执行通用角色初始化再直接发送 `club_gettargetteam`；必须在该连接上重新建立营地上下文。`hero_calcpowerbyteam` 是真实攻击前的战力计算步骤，不能省略。
 
 新日志观察到的请求结构为：
 
@@ -216,7 +241,11 @@ body.siege.attackMap[YYMMDD].attackCnt
 body.siege.attackMap[YYMMDD].aSuccessCnt
 ```
 
-普通攻击和宠物攻击共用这两个计数。当前尚未把 `battleData` 中的某个字段单独认定为所有场景通用的胜负判定；`battleData` 常见顶层键包括 `id`、`mode`、`randomSeed`、`version`、`maxRound`、`leftTeam`、`rightTeam` 和 `result`，胜利判定仍需覆盖宠物攻击后再最终确认。
+普通攻击和宠物攻击共用这两个计数。最新批量调试日志确认：`club_getinfo` 的 `siege.attackMap` 会保留历史日期；如果存在历史日期键但没有今日 `YYMMDD` 键，应解释为今日尚未发起攻击，即今日 `attackCnt=0`、`aSuccessCnt=0`。只有 `attackMap` 完全缺失/为空，或今日键存在但缺少两个计数字段，才应视为计数未知并停止自动规划。
+
+不要使用 `club.members.<slot>.challengeCnt`、`failCnt` 或 `score` 推导当前角色的每日攻击次数：新日志中 39 号角色当天已完成 3 次攻击，但成员记录仍为 `challengeCnt=0`、`failCnt=0`、`score=26`。这些成员字段与个人每日攻击计数不是同一语义；自动规划只读取 `siege.attackMap[YYMMDD]`。
+
+日志还确认批量账号切换前的 Token 主动刷新和 WSS 初始化均成功；后续 `[连接诊断]` 的连接超时应与营地计数缺失分开排查。当前尚未把 `battleData` 中的某个字段单独认定为所有场景通用的胜负判定；`battleData` 常见顶层键包括 `id`、`mode`、`randomSeed`、`version`、`maxRound`、`leftTeam`、`rightTeam` 和 `result`，胜利判定仍需覆盖宠物攻击后再最终确认。
 
 ### 4.4 `club_taskclaim`
 
@@ -382,7 +411,7 @@ club_getinfo
 ## 7. 仍待验证
 
 1. `club_attackmonster` 的完整请求体、响应体，以及它是否完全复用 `attackCnt/aSuccessCnt`。
-2. `hero_calcpowerbyteam` 的请求和响应字段，以及发送前是否为强制步骤。
+2. `hero_calcpowerbyteam` 的更多错误响应语义；请求字段和攻击前调用顺序已由真实抓包确认。
 3. `battleData.result.accept.ext.curHP === 0` 是否同时适用于普通攻击和宠物攻击的胜利判断。
 4. 每日 10 次和每日 3 次限制触发时的服务端错误码、`code` 和 `hint`。
 5. 三组配置 ID 在更多账号上的稳定性，以及第一组全清后只出现一次 `club_draw` 的种火石/抽奖前置状态。
@@ -448,12 +477,15 @@ club_getinfo
 - [src/utils/batch/campChallengePlanner.js](../src/utils/batch/campChallengePlanner.js)：提供 `nodeId` 分组、club 快照合并、剩余击破需求、5/4/3 层可达性评估和最高层级选择。
 - [src/utils/batch/tasksCampChallengeStrategy.js](../src/utils/batch/tasksCampChallengeStrategy.js)：按 `club.legionId` 聚合所选角色，读取真实目标战力，执行选中 club 的计划并保留 `nodeId`/`targetIsMirror`。
 - [src/views/BatchDailyTasks.vue](../src/views/BatchDailyTasks.vue)：复用现有“营地挑战”按钮，支持智能规划和奖励领取模式，并接入自由模板 handler。
+- 批量任务的通用 [ensureConnection](../src/views/BatchDailyTasks.vue) 已在账号切换建连前主动刷新短生命周期 Role Token；同一账号在 60 秒窗口内复用最近刷新结果，并通过 pending Promise 避免并发重复刷新。已有旧连接在 Token 刷新后会关闭并使用新 Token 重建。
 - [test/campChallengePlanner.test.js](../test/campChallengePlanner.test.js)：覆盖 nodeId 分组、镜像重复 roleId、最高层级选择、手动进度和容量不足。
 - [src/utils/xyzwWebSocket.js](../src/utils/xyzwWebSocket.js)：注册 `club_getinfo`、`club_gettargetteam`、`hero_calcpowerbyteam`、`club_attack`、`club_attackmonster`、`club_taskclaim` 和 `club_draw` 请求命令。
+- 目标查询和真实攻击已按真实 UI 顺序补齐 `legion_getinfo -> saltroad_getwartype -> club_getinfo` 上下文；目标查询按 `targetId` 去重、普通节点优先、镜像复用，并对单目标失败做延迟重试和降级。
 
 当前仍需修正或补齐：
 
-- [src/utils/batch/tasksCampChallengeStrategy.js](../src/utils/batch/tasksCampChallengeStrategy.js)：当前对 `club_getinfo` 未返回今日 `siege.attackMap[YYMMDD]` 的 club 安全跳过自动战斗；需要补到可靠的每日个人计数来源后，才能处理已有手动攻击的角色而不冒险超出 10 次/3 次上限。
+- [src/utils/batch/tasksCampChallengeStrategy.js](../src/utils/batch/tasksCampChallengeStrategy.js)：当前对 `club_getinfo` 的 `attackMap` 为空，或今日记录字段不完整的 club 安全跳过自动战斗；存在历史日期但缺少今日日期时按今日零次处理。
+- [src/views/BatchDailyTasks.vue](../src/views/BatchDailyTasks.vue)：批量账号切换前刷新 Token 的通用连接逻辑已接入；若连接超时或初始化失败，恢复流程会复用刚刷新 Token，不会立即重复刷新。
 - `club_attackmonster` 尚未接入虚拟规划，当前按钮的智能模式只执行普通攻击计划；宠物攻击需要真实抓包后加入共享成功容量。
 - 任务奖励领取仍需读取 `taskClaimedMap` 后过滤已领取配置，`club_draw` 仍需根据服务端种火石状态决定次数。
 - 需要一次真实低战力单 club 验收，再验证多 club 选中角色的隔离、攻击后重规划和失败释放。

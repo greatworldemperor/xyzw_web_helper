@@ -6444,6 +6444,11 @@ const waitForConnection = async (
 
 // 全局连接队列控制 - 限制并发连接数
 const connectionQueue = { active: 0 };
+// Role tokens are short-lived. Reuse a token refreshed during the current
+// batch window, but refresh again when the window has expired.
+const BATCH_TOKEN_REUSE_WINDOW_MS = 60 * 1000;
+const recentBatchTokenRefreshAt = new Map();
+const pendingBatchTokenRefreshes = new Map();
 
 const waitForConnectionSlot = async () => {
   while (connectionQueue.active >= batchSettings.maxActive) {
@@ -6458,14 +6463,17 @@ const releaseConnectionSlot = () => {
   }
 };
 
-const refreshTokenUntilSuccess = async (tokenId) => {
+const refreshTokenUntilSuccess = async (
+  tokenId,
+  reason = "连接失败，开始刷新Token",
+) => {
   let refreshAttempt = 0;
 
   while (!shouldStop.value) {
     refreshAttempt++;
     addLog({
       time: new Date().toLocaleTimeString(),
-      message: `连接失败，开始刷新Token（第${refreshAttempt}次）`,
+      message: `${reason}（第${refreshAttempt}次）`,
       type: "warning",
     });
 
@@ -6479,6 +6487,7 @@ const refreshTokenUntilSuccess = async (tokenId) => {
     );
 
     if (result.success) {
+      recentBatchTokenRefreshAt.set(tokenId, Date.now());
       addLog({
         time: new Date().toLocaleTimeString(),
         message: `Token刷新成功，准备使用最新Token重连（第${refreshAttempt}次）`,
@@ -6502,6 +6511,40 @@ const refreshTokenUntilSuccess = async (tokenId) => {
   throw new Error("批量任务已停止，取消Token刷新");
 };
 
+const refreshTokenBeforeBatchConnection = async (tokenId) => {
+  const now = Date.now();
+  const lastRefreshAt = recentBatchTokenRefreshAt.get(tokenId) || 0;
+  if (now - lastRefreshAt < BATCH_TOKEN_REUSE_WINDOW_MS) {
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `[连接诊断] ${tokenId} 最近已刷新Token，复用本轮Token（${Math.round((now - lastRefreshAt) / 1000)}秒前）`,
+      type: "info",
+    });
+    return false;
+  }
+
+  const pendingRefresh = pendingBatchTokenRefreshes.get(tokenId);
+  if (pendingRefresh) {
+    await pendingRefresh;
+    return true;
+  }
+
+  addLog({
+    time: new Date().toLocaleTimeString(),
+    message: `[连接诊断] ${tokenId} 批量任务切换账号，先刷新短生命周期Token`,
+    type: "info",
+  });
+  const refreshPromise = refreshTokenUntilSuccess(
+    tokenId,
+    "批量任务切换账号，开始刷新Token",
+  ).finally(() => {
+    pendingBatchTokenRefreshes.delete(tokenId);
+  });
+  pendingBatchTokenRefreshes.set(tokenId, refreshPromise);
+  await refreshPromise;
+  return true;
+};
+
 const reconnectWithLatestToken = async (tokenId, reason) => {
   addLog({
     time: new Date().toLocaleTimeString(),
@@ -6510,7 +6553,7 @@ const reconnectWithLatestToken = async (tokenId, reason) => {
   });
 
   await tokenStore.closeWebSocketConnection(tokenId);
-  await refreshTokenUntilSuccess(tokenId);
+  await refreshTokenBeforeBatchConnection(tokenId);
   await new Promise((resolve) =>
     setTimeout(resolve, batchSettings.reconnectDelay),
   );
@@ -6605,6 +6648,8 @@ const sendRoleInfo = async (
 };
 
 const initializeGameData = async (tokenId) => {
+  const token = tokens.value.find((item) => item.id === tokenId);
+  const tokenLabel = token?.name || tokenId;
   const sendInitializationCommand = (command, operation) =>
     runWithRateLimitRetry({
       execute: () =>
@@ -6620,6 +6665,11 @@ const initializeGameData = async (tokenId) => {
       },
     });
 
+  addLog({
+    time: new Date().toLocaleTimeString(),
+    message: `[连接诊断] ${tokenLabel} 开始初始化 role_getroleinfo/fight_startlevel`,
+    type: "info",
+  });
   await sendInitializationCommand("role_getroleinfo", "初始化角色数据");
 
   const res = await sendInitializationCommand(
@@ -6629,6 +6679,11 @@ const initializeGameData = async (tokenId) => {
   if (res?.battleData?.version) {
     tokenStore.setBattleVersion(res.battleData.version);
   }
+  addLog({
+    time: new Date().toLocaleTimeString(),
+    message: `[连接诊断] ${tokenLabel} 初始化完成，battleVersion=${res?.battleData?.version ?? "-"}`,
+    type: "info",
+  });
 };
 
 const ensureConnection = async (
@@ -6646,22 +6701,43 @@ const ensureConnection = async (
     await waitForConnectionSlot();
   }
 
+  const tokenWasRefreshed = await refreshTokenBeforeBatchConnection(tokenId);
   let status = tokenStore.getWebSocketStatus(tokenId);
   let connected = status === "connected";
 
-  if (!connected) {
+  if (connected && tokenWasRefreshed) {
     addLog({
       time: new Date().toLocaleTimeString(),
-      message: `正在连接... (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
+      message: `[连接诊断] ${latestToken.name || tokenId} Token 已更新，关闭旧WSS后使用新Token建连`,
+      type: "info",
+    });
+    await tokenStore.closeWebSocketConnection(tokenId);
+    connected = false;
+  }
+
+  if (!connected) {
+    const tokenLabel = latestToken.name || tokenId;
+    const refreshedToken = tokens.value.find((t) => t.id === tokenId);
+    if (!refreshedToken) {
+      throw new Error(`刷新Token后未找到账号: ${tokenId}`);
+    }
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `[连接诊断] ${tokenLabel} 开始 WebSocket 建连 (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
       type: "info",
     });
 
     await tokenStore.createWebSocketConnection(
       tokenId,
-      latestToken.token,
-      latestToken.wsUrl,
+      refreshedToken.token,
+      refreshedToken.wsUrl,
       { monitorTimeout: false, autoRefresh: false },
     );
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `[连接诊断] ${tokenLabel} createWebSocketConnection 已调用，当前状态=${tokenStore.getWebSocketStatus(tokenId)}`,
+      type: "info",
+    });
     connected = await waitForConnection(tokenId);
 
     const reconnectAttempts = Math.max(1, maxRetries);
@@ -6672,12 +6748,12 @@ const ensureConnection = async (
     ) {
       addLog({
         time: new Date().toLocaleTimeString(),
-        message: `连接超时，先刷新Token再重连（第${reconnectAttempt}/${reconnectAttempts}次）`,
+        message: `[连接诊断] ${tokenLabel} WebSocket ${batchSettings.connectionTimeout}ms 内未进入 connected，最终状态=${tokenStore.getWebSocketStatus(tokenId)}；先刷新Token再重连（第${reconnectAttempt}/${reconnectAttempts}次）`,
         type: "warning",
       });
 
       await tokenStore.closeWebSocketConnection(tokenId);
-      await refreshTokenUntilSuccess(tokenId);
+      await refreshTokenBeforeBatchConnection(tokenId);
       await new Promise((r) => setTimeout(r, batchSettings.reconnectDelay));
 
       const refreshedToken = tokens.value.find((t) => t.id === tokenId);
@@ -6687,7 +6763,7 @@ const ensureConnection = async (
 
       addLog({
         time: new Date().toLocaleTimeString(),
-        message: `正在使用最新Token重连（第${reconnectAttempt}/${reconnectAttempts}次）`,
+        message: `[连接诊断] ${tokenLabel} 使用最新Token重连（第${reconnectAttempt}/${reconnectAttempts}次）`,
         type: "info",
       });
 
@@ -6699,6 +6775,12 @@ const ensureConnection = async (
       );
 
       connected = await waitForConnection(tokenId);
+
+      addLog({
+        time: new Date().toLocaleTimeString(),
+        message: `[连接诊断] ${tokenLabel} 重连等待结束，connected=${connected}，最终状态=${tokenStore.getWebSocketStatus(tokenId)}`,
+        type: connected ? "info" : "warning",
+      });
 
       if (!connected) {
         addLog({
@@ -6713,6 +6795,12 @@ const ensureConnection = async (
       throw new Error("连接失败 (重试后仍超时)");
     }
   }
+
+  addLog({
+    time: new Date().toLocaleTimeString(),
+    message: `[连接诊断] ${latestToken.name || tokenId} WebSocket 已连接，开始初始化，status=${tokenStore.getWebSocketStatus(tokenId)}`,
+    type: "info",
+  });
 
   // 连接成功，槽位保持占用，直到任务完成后手动释放
 
@@ -6747,7 +6835,7 @@ const ensureConnection = async (
       });
 
       await tokenStore.closeWebSocketConnection(tokenId);
-      await refreshTokenUntilSuccess(tokenId);
+      await refreshTokenBeforeBatchConnection(tokenId);
       await new Promise((resolve) =>
         setTimeout(resolve, batchSettings.reconnectDelay),
       );
