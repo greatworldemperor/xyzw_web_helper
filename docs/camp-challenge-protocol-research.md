@@ -2,7 +2,7 @@
 
 - 状态：以当前用户规则和真实 WSS 抓包为依据
 - 最近更新：2026-09-10
-- 相关实现：[src/utils/batch/tasksCampChallenge.js](../src/utils/batch/tasksCampChallenge.js)
+- 相关实现：[src/utils/batch/tasksCampChallengeStrategy.js](../src/utils/batch/tasksCampChallengeStrategy.js)
 - 相关抓包目录：[local-data/camp_data](../local-data/camp_data)
 
 ## 1. 证据范围

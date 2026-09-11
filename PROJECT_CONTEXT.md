@@ -453,7 +453,7 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 
 ### 已确认
 
-- [x] 已定位批量执行器：[src/utils/batch/tasksCampChallenge.js](src/utils/batch/tasksCampChallenge.js)。当前包含普通玩家挑战、宠物挑战和营地任务领奖三条流程。
+- [x] 已定位批量执行器：[src/utils/batch/tasksCampChallengeStrategy.js](src/utils/batch/tasksCampChallengeStrategy.js)。当前包含普通玩家挑战、宠物挑战和营地任务领奖三条流程；旧版未使用执行器已移除。
 - [x] 已确认业务规则（2026-09-07）：每日最多发起 10 次挑战；每日成功挑战最多 3 次；普通玩家挑战和宠物挑战共享 3 次成功额度；达到 3 次成功后不可再次挑战。
 - [x] 已确认现有代码的基础执行顺序：建立 WebSocket -> 获取阵容和角色信息 -> 获取营地信息 -> 选择目标 -> 发起挑战 -> 判断结果 -> 关闭连接。
 - [x] `availableTasks` 已登记 `batchCampChallenge`、`batchCampChallengePet` 和 `batchCampClaimTasks`；任务工厂也已从 [src/utils/batch/index.js](src/utils/batch/index.js) 导出。
