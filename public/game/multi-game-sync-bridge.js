@@ -275,6 +275,133 @@
     });
   }
 
+  // ===== 滚动隔离：同步必须静默发生，不得改变宿主页面（多开网格）的滚动位置 =====
+  // 游戏内的 DOM 输入框（EditBox）进入编辑态时，cocos 运行时会：
+  //   1) 调用 input.focus()；
+  //   2) 800ms 后调用 input.scrollIntoView({ block: "start", behavior: "smooth" })。
+  // 这两处滚动副作用会沿包含链跨越 iframe 边界向上冒泡，把宿主页面的网格容器
+  // 滚到当前窗口所在的位置 —— 表现就是"点了主窗口，页面却移到后面那一行的窗口"。
+  // 从窗口是被同步驱动的，这类滚动毫无意义，因此统一限制在当前 iframe 文档内部。
+  let scrollIsolationPatched = false;
+  let nativeScrollIntoView = null;
+  let nativeFocus = null;
+
+  /**
+   * scrollIntoView 的等价实现：只滚动当前 iframe 文档内的滚动容器
+   * 与原生实现的关键差异是——parentElement 链在本文档的 documentElement 终止，
+   * 绝不会再上溯到宿主文档，因此宿主滚动位置永远不受影响。
+   */
+  function scrollIntoViewWithinDocument(element, options) {
+    const config = options && typeof options === "object" ? options : {};
+    const block = config.block;
+    const inline = config.inline;
+    let node = element.parentElement;
+    while (node) {
+      const scrollableY = node.scrollHeight > node.clientHeight + 1;
+      const scrollableX = node.scrollWidth > node.clientWidth + 1;
+      if (scrollableY || scrollableX) {
+        const containerRect = node.getBoundingClientRect();
+        const rect = element.getBoundingClientRect();
+
+        if (scrollableY) {
+          const visible =
+            rect.top >= containerRect.top && rect.bottom <= containerRect.bottom;
+          // 未指定 block（或 nearest）时只在不可见时滚，其余对齐值一律生效
+          const shouldScroll =
+            !visible || block === "start" || block === "center" || block === "end";
+          if (shouldScroll) {
+            const offset = rect.top - containerRect.top + node.scrollTop;
+            const target =
+              block === "center"
+                ? offset - node.clientHeight / 2 + rect.height / 2
+                : block === "end"
+                  ? offset - node.clientHeight + rect.height
+                  : offset;
+            node.scrollTop = Math.max(0, target);
+          }
+        }
+
+        if (scrollableX) {
+          const visible =
+            rect.left >= containerRect.left && rect.right <= containerRect.right;
+          const shouldScroll =
+            !visible || inline === "start" || inline === "center" || inline === "end";
+          if (shouldScroll) {
+            const offset = rect.left - containerRect.left + node.scrollLeft;
+            const target =
+              inline === "center"
+                ? offset - node.clientWidth / 2 + rect.width / 2
+                : inline === "end"
+                  ? offset - node.clientWidth + rect.width
+                  : offset;
+            node.scrollLeft = Math.max(0, target);
+          }
+        }
+      }
+      node = node.parentElement;
+    }
+
+    // 本文档视口自身的滚动，同样只作用于当前窗口
+    const doc = root.document;
+    const viewportHeight = root.innerHeight || doc?.documentElement?.clientHeight || 0;
+    if (viewportHeight > 0) {
+      const rect = element.getBoundingClientRect();
+      if (rect.top < 0 || rect.bottom > viewportHeight) {
+        root.scrollTo(root.scrollX, Math.max(0, root.scrollY + rect.top));
+      }
+    }
+  }
+
+  function enableScrollIsolation() {
+    if (scrollIsolationPatched) return;
+    const elementProto = root.Element && root.Element.prototype;
+    const htmlElementProto = root.HTMLElement && root.HTMLElement.prototype;
+    if (!elementProto && !htmlElementProto) return;
+
+    if (elementProto && typeof elementProto.scrollIntoView === "function") {
+      nativeScrollIntoView = elementProto.scrollIntoView;
+      elementProto.scrollIntoView = function scrollIntoView(options) {
+        try {
+          scrollIntoViewWithinDocument(this, options);
+        } catch {
+          // 隔离失败时宁可不动，也绝不把宿主页面滚走
+        }
+      };
+    }
+
+    if (htmlElementProto && typeof htmlElementProto.focus === "function") {
+      nativeFocus = htmlElementProto.focus;
+      htmlElementProto.focus = function focus(options) {
+        const nextOptions =
+          options && typeof options === "object"
+            ? { ...options, preventScroll: true }
+            : { preventScroll: true };
+        try {
+          return nativeFocus.call(this, nextOptions);
+        } catch {
+          return nativeFocus.call(this);
+        }
+      };
+    }
+
+    scrollIsolationPatched = true;
+  }
+
+  function disableScrollIsolation() {
+    if (!scrollIsolationPatched) return;
+    const elementProto = root.Element && root.Element.prototype;
+    const htmlElementProto = root.HTMLElement && root.HTMLElement.prototype;
+    if (elementProto && nativeScrollIntoView) {
+      elementProto.scrollIntoView = nativeScrollIntoView;
+    }
+    if (htmlElementProto && nativeFocus) {
+      htmlElementProto.focus = nativeFocus;
+    }
+    nativeScrollIntoView = null;
+    nativeFocus = null;
+    scrollIsolationPatched = false;
+  }
+
   function handleParentMessage(event) {
     if (event.origin !== root.location.origin || event.source !== root.parent) {
       return;
@@ -292,6 +419,10 @@
       syncEnabled = !!payload.enabled;
       throttleMs = typeof payload.throttleMs === "number" ? payload.throttleMs : 16;
 
+      // 同步开启期间隔离滚动副作用，避免从窗口把宿主网格滚到别处
+      if (syncEnabled) enableScrollIsolation();
+      else disableScrollIsolation();
+
       if (syncEnabled && !prevEnabled) {
         // 重新挂载监听器（以防 canvas 被重建）
         detachLocalListeners();
@@ -308,6 +439,7 @@
       payload.scope !== scope && // 不是自己发回来的
       syncEnabled
     ) {
+      enableScrollIsolation();
       ignoreNextRemoteEvents = true;
       dispatchRemoteEvent(payload.event);
       // 下一帧恢复
@@ -343,15 +475,18 @@
       isEnabled: () => syncEnabled,
       enable: () => {
         syncEnabled = true;
+        enableScrollIsolation();
         attachLocalListeners();
       },
       disable: () => {
         syncEnabled = false;
+        disableScrollIsolation();
         detachLocalListeners();
       },
       setThrottle: (ms) => {
         throttleMs = typeof ms === "number" ? ms : 16;
       },
+      isScrollIsolated: () => scrollIsolationPatched,
     },
   };
 })(window);

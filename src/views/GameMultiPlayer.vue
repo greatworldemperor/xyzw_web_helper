@@ -112,6 +112,9 @@
       ref="gameStrip"
       class="game-strip"
       @wheel="handleStripWheel"
+      @scroll="handleStripScroll"
+      @pointerdown="releaseStripScrollLock"
+      @touchstart.passive="releaseStripScrollLock"
     >
       <article
         v-for="frame in frames"
@@ -646,6 +649,8 @@ function handleUserEventFromFrame(scopeId, eventData) {
       window.location.origin,
     );
   }
+  // 兜底：同步转发可能引发 iframe 内部的跨文档滚动，锁定宿主网格位置
+  if (targetScopeIds.length > 0) lockStripScroll();
 }
 
 // ========== 同步操作相关状态结束 ==========
@@ -868,6 +873,56 @@ function stopStripScrollAnimation(strip = gameStrip.value) {
   if (strip) stripScrollTarget = strip.scrollLeft;
 }
 
+// ===== 同步静默化：转发同步事件期间锁定网格滚动位置 =====
+// 从窗口内的游戏运行时（cocos EditBox）会调用 scrollIntoView / focus，
+// 这两者的滚动副作用能跨 iframe 上溯，把宿主网格滚到该窗口所在行。
+// multi-game-sync-bridge.js 已把滚动限制在 iframe 内部，这里再兜底一层：
+// 同步转发后的一小段时间内，任何非用户发起的滚动都立即还原。
+const STRIP_SCROLL_LOCK_MS = 1800;
+let stripScrollLock = null;
+
+function lockStripScroll() {
+  if (!syncEnabled.value) return;
+  const strip = gameStrip.value;
+  if (!strip) return;
+  const now = performance.now();
+  // 已在锁定窗口内则只续期，避免以"被滚走的位置"为新基准
+  if (stripScrollLock && now <= stripScrollLock.until) {
+    stripScrollLock.until = now + STRIP_SCROLL_LOCK_MS;
+    return;
+  }
+  stripScrollLock = {
+    scrollLeft: strip.scrollLeft,
+    scrollTop: strip.scrollTop,
+    until: now + STRIP_SCROLL_LOCK_MS,
+  };
+}
+
+function releaseStripScrollLock() {
+  stripScrollLock = null;
+}
+
+function handleStripScroll() {
+  const strip = gameStrip.value;
+  const lock = stripScrollLock;
+  if (!strip || !lock) return;
+  if (performance.now() > lock.until) {
+    stripScrollLock = null;
+    return;
+  }
+  // 用户滚轮平滑滚动进行中，不打断
+  if (stripScrollAnimationId) return;
+  if (
+    Math.abs(strip.scrollLeft - lock.scrollLeft) <= 0.5 &&
+    Math.abs(strip.scrollTop - lock.scrollTop) <= 0.5
+  ) {
+    return;
+  }
+  strip.scrollLeft = lock.scrollLeft;
+  strip.scrollTop = lock.scrollTop;
+  stripScrollTarget = strip.scrollLeft;
+}
+
 function animateStripScroll() {
   const strip = gameStrip.value;
   if (!strip) {
@@ -888,6 +943,8 @@ function animateStripScroll() {
 
 function handleStripWheel(event) {
   const strip = gameStrip.value;
+  // 用户主动滚动，解除同步兜底锁定
+  releaseStripScrollLock();
   if (!strip || !event.deltaY) return;
   if (event.ctrlKey || event.metaKey) {
     stopStripScrollAnimation(strip);
@@ -1068,6 +1125,7 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener("message", handleMessage);
   stopStripScrollAnimation();
+  releaseStripScrollLock();
   for (const scopeId of frameTimeouts.keys()) clearFrameTimeout(scopeId);
   for (const pending of controlPending.values()) {
     window.clearTimeout(pending.timeoutId);
