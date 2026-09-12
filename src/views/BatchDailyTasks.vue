@@ -3241,6 +3241,41 @@
         </div>
       </div>
     </n-modal>
+
+    <!-- 400340 限流暂停弹窗（全局阻塞式，必须手动确认） -->
+    <n-modal
+      v-model:show="showRateLimitModal"
+      preset="card"
+      title="🚦 遇到 IP 限流"
+      style="max-width: 420px"
+      :mask-closable="false"
+      :closable="false"
+      :auto-focus="true"
+    >
+      <div style="padding: 8px 4px 16px 4px; line-height: 1.7">
+        <p>
+          服务端检测到当前 IP 被限流（错误码
+          <code>400340</code>
+          ），批量任务已自动暂停。
+        </p>
+        <p style="margin-top: 8px">
+          <strong>触发 token:</strong>
+          <span style="font-family: monospace">{{ rateLimitPauseInfo?.tokenId }}</span>
+        </p>
+        <p>
+          <strong>触发命令:</strong>
+          <span style="font-family: monospace">{{ rateLimitPauseInfo?.cmd }}</span>
+        </p>
+        <p style="margin-top: 12px; color: #d05050">
+          请先断网重连或切换 VPN 更换 IP，然后点击下方按钮继续。
+        </p>
+      </div>
+      <div class="modal-actions" style="text-align: right">
+        <n-button type="warning" @click="handleRateLimitResume">
+          ✅ 已更换 IP，继续运行
+        </n-button>
+      </div>
+    </n-modal>
   </div>
 </template>
 
@@ -3341,6 +3376,29 @@ import { merchantConfig, goldItemsConfig } from "@/utils/dreamConstants";
 const tokenStore = useTokenStore();
 const message = useMessage();
 const weirdTowerMaxClimb = ref(DEFAULT_WEIRD_TOWER_MAX_CLIMB);
+
+// ===== 400340 限流弹窗 =====
+const showRateLimitModal = ref(false);
+const rateLimitPauseInfo = ref(null); // 本地缓存，供模板渲染
+// tokenStore.rateLimitPauseInfo 是唯一数据源，UI 层只 watch 它
+watch(
+  () => tokenStore.rateLimitPauseInfo,
+  (info) => {
+    if (info) {
+      rateLimitPauseInfo.value = info;
+      showRateLimitModal.value = true;
+    } else {
+      rateLimitPauseInfo.value = null;
+      showRateLimitModal.value = false;
+    }
+  },
+  { immediate: true },
+);
+
+const handleRateLimitResume = () => {
+  tokenStore.resumeAfterRateLimit();
+  message.success("已恢复，继续运行");
+};
 
 // 排序配置（从localStorage读取，与TokenImport共享）
 const savedSortConfig = localStorage.getItem("tokenSortConfig");

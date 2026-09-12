@@ -112,6 +112,50 @@ export const useTokenStore = defineStore("tokens", () => {
   const wsConnections = ref<WebCtx>({}); // WebSocket连接状态
   const connectionLocks = ref<LockCtx>({}); // 连接操作锁，防止竞态条件
 
+  // 400340 限流全局暂停控制器
+  // 当任意 token 连续触发 400340 超过 PAUSE_THRESHOLD 次时，所有 token 的
+  // sendMessageWithPromise 都会 await 这个 pause 信号，直到用户点击"已换IP，继续"
+  const RATE_LIMIT_PAUSE_THRESHOLD = 30; // 连续 30 次 400340（约 30 秒）后触发暂停
+  const rateLimitPauseInfo = ref<{
+    tokenId: string;
+    tokenName?: string;
+    cmd: string;
+    retryCount: number;
+  } | null>(null);
+  let rateLimitPausePromise: Promise<void> | null = null;
+  let rateLimitPauseResolver: (() => void) | null = null;
+
+  // 请求全局限流暂停：幂等，已暂停则直接返回现有 Promise
+  const requestRateLimitPause = (
+    tokenId: string,
+    cmd: string,
+    retryCount: number,
+  ): Promise<void> => {
+    if (rateLimitPausePromise) {
+      return rateLimitPausePromise;
+    }
+    rateLimitPauseInfo.value = { tokenId, cmd, retryCount };
+    rateLimitPausePromise = new Promise<void>((resolve) => {
+      rateLimitPauseResolver = resolve;
+    });
+    wsLogger.warn(
+      `🚦 [限流暂停] Token ${tokenId} 在命令 ${cmd} 连续触发 ${retryCount} 次 400340，等待用户更换IP后继续...`,
+    );
+    return rateLimitPausePromise;
+  };
+
+  // 用户更换IP后，恢复所有被暂停的请求
+  const resumeAfterRateLimit = () => {
+    const resolver = rateLimitPauseResolver;
+    rateLimitPausePromise = null;
+    rateLimitPauseResolver = null;
+    rateLimitPauseInfo.value = null;
+    if (resolver) {
+      wsLogger.info("🚦 [限流恢复] 用户已更换IP，恢复所有被暂停的请求");
+      resolver();
+    }
+  };
+
   // 游戏数据存储
   const gameData = ref({
     roleInfo: null,
@@ -1121,6 +1165,11 @@ export const useTokenStore = defineStore("tokens", () => {
     let retryCount = 0;
 
     while (true) {
+      // 如果有暂停信号在等待（某个token触发了400340暂停），所有请求先挂起等用户换IP
+      if (rateLimitPausePromise) {
+        await rateLimitPausePromise;
+      }
+
       try {
         const result = await client.sendWithPromise(cmd, params, timeout);
 
@@ -1131,7 +1180,7 @@ export const useTokenStore = defineStore("tokens", () => {
 
         return result;
       } catch (error) {
-        // 400340 仅表示限流：以每秒1次的频率持续重试，直到成功或连接关闭
+        // 400340 仅表示限流：先自动重试若干次，超过阈值后触发全局暂停等用户换IP
         if (!is400340Error(error)) {
           // 特殊日志：fight_starttower 错误
           if (cmd === "fight_starttower") {
@@ -1144,12 +1193,22 @@ export const useTokenStore = defineStore("tokens", () => {
         }
 
         retryCount++;
-        wsLogger.warn(
-          `请求触发400340限流 [${tokenId}] ${cmd}，1秒后重试（第${retryCount}次）`,
-        );
-        await new Promise((resolve) =>
-          setTimeout(resolve, RATE_LIMIT_RETRY_DELAY_MS),
-        );
+
+        if (retryCount >= RATE_LIMIT_PAUSE_THRESHOLD) {
+          // 达到暂停阈值：触发全局暂停，等用户换IP后再恢复，恢复后重置计数
+          await requestRateLimitPause(tokenId, cmd, retryCount);
+          retryCount = 0;
+          wsLogger.info(
+            `限流暂停已解除 [${tokenId}] ${cmd}，从第1次重新计数重试`,
+          );
+        } else {
+          wsLogger.warn(
+            `请求触发400340限流 [${tokenId}] ${cmd}，1秒后重试（第${retryCount}/${RATE_LIMIT_PAUSE_THRESHOLD}次）`,
+          );
+          await new Promise((resolve) =>
+            setTimeout(resolve, RATE_LIMIT_RETRY_DELAY_MS),
+          );
+        }
       }
     }
   };
@@ -1842,6 +1901,10 @@ export const useTokenStore = defineStore("tokens", () => {
     getGroupTokenIds,
     getValidGroupTokenIds,
     cleanupInvalidTokens,
+
+    // 400340 限流暂停控制（UI层订阅 rateLimitPauseInfo 弹窗提示用户换IP）
+    rateLimitPauseInfo,
+    resumeAfterRateLimit,
 
     // 开发者工具
     devTools: {
