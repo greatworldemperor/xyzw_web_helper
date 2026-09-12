@@ -91,7 +91,13 @@
       <div v-if="tokenStore.hasTokens" class="tokens-section">
         <div class="section-header">
           <n-space align="center">
-            <h2>我的Token列表 ({{ tokenStore.gameTokens.length }}个)</h2>
+            <h2>
+              我的Token列表 ({{
+                isTokenFilterActive
+                  ? `${displayedTokens.length} / ${tokenStore.gameTokens.length}`
+                  : tokenStore.gameTokens.length
+              }}个)
+            </h2>
             <n-radio-group v-model:value="viewMode" size="small">
               <n-radio-button value="list">列表</n-radio-button>
               <n-radio-button value="card">卡片</n-radio-button>
@@ -123,25 +129,75 @@
                 最后使用 {{ getSortIcon("lastUsed") }}
               </n-button>
             </n-button-group>
+            <n-divider vertical style="height: 24px"></n-divider>
+            <n-select
+              v-model:value="mgFilterGroupId"
+              :options="groupFilterOptions"
+              size="small"
+              clearable
+              :consistent-menu-width="false"
+              style="width: 168px"
+              placeholder="按分组筛选"
+            />
           </n-space>
           <div class="header-actions">
-            <span class="multi-game-selection-count">
+            <span
+              class="multi-game-selection-count"
+              :title="
+                isTokenFilterActive
+                  ? `已选包含筛选之外的账号（当前筛选显示 ${displayedTokens.length} 个）`
+                  : ''
+              "
+            >
               {{ isOpeningMultiGame ? "正在准备" : "已选" }}
               {{ multiGameSelectedTokenIds.size }} 个
             </span>
             <n-button
               size="small"
               :disabled="isOpeningMultiGame"
+              :title="
+                isTokenFilterActive
+                  ? '只选中当前筛选显示的账号'
+                  : '选中全部账号'
+              "
               @click="selectAllMultiGameTokens"
             >
-              {{ allMultiGameTokensSelected ? "已全选" : "全选" }}
+              {{
+                allMultiGameTokensSelected
+                  ? "已全选"
+                  : isTokenFilterActive
+                    ? "全选筛选结果"
+                    : "全选"
+              }}
             </n-button>
             <n-button
               size="small"
               :disabled="multiGameSelectedTokenIds.size === 0 || isOpeningMultiGame"
+              title="清空全部已选（不受筛选影响）"
               @click="clearMultiGameTokenSelection"
             >
               清空
+            </n-button>
+            <n-dropdown
+              trigger="click"
+              :options="groupSelectOptions"
+              :disabled="isOpeningMultiGame"
+              @select="handleGroupSelect"
+            >
+              <n-button
+                size="small"
+                :type="hasGroupSelection ? 'primary' : 'default'"
+              >
+                <template #icon>
+                  <n-icon>
+                    <FolderOpen />
+                  </n-icon>
+                </template>
+                按分组选中
+              </n-button>
+            </n-dropdown>
+            <n-button size="small" @click="showGroupManageModal = true">
+              分组管理
             </n-button>
             <n-button
               type="warning"
@@ -201,9 +257,16 @@
           </div>
         </div>
 
+        <div
+          v-if="isTokenFilterActive && displayedTokens.length === 0"
+          class="token-filter-empty"
+        >
+          当前筛选下没有账号，切换筛选条件或点筛选框右侧的 × 清除筛选
+        </div>
+
         <div class="tokens-grid" v-if="viewMode === 'card'">
           <a-card
-            v-for="(token, index) in sortedTokens"
+            v-for="(token, index) in displayedTokens"
             :key="token.id"
             draggable="true"
             @dragstart="handleDragStart(index, $event)"
@@ -241,6 +304,31 @@
                   fallback-src="/icons/xiaoyugan.png"
                 />
                 {{ token.name }}
+                <!-- 独立分组标签（点击可整组选中/取消选中） -->
+                <n-tag
+                  v-for="group in getTokenMgGroups(token)"
+                  :key="group.id"
+                  size="small"
+                  :bordered="false"
+                  round
+                  class="mg-group-tag"
+                  :style="{
+                    backgroundColor: group.color + '22',
+                    color: group.color,
+                    fontSize: '11px',
+                  }"
+                  @click.stop="toggleMgGroupSelection(group.id)"
+                >
+                  {{ group.name }}
+                  <template #icon>
+                    <n-icon
+                      v-if="isMgGroupFullySelected(group)"
+                      :color="group.color"
+                    >
+                      <Checkmark />
+                    </n-icon>
+                  </template>
+                </n-tag>
                 <a-tag
                   :color="getServerTagColor(token.id)"
                   v-if="token.server"
@@ -416,7 +504,7 @@
         <!-- List View -->
         <div class="tokens-list" v-else>
           <n-card
-            v-for="(token, index) in sortedTokens"
+            v-for="(token, index) in displayedTokens"
             :key="token.id"
             draggable="true"
             @dragstart="handleDragStart(index, $event)"
@@ -476,6 +564,31 @@
                     <span style="font-weight: bold; font-size: 0.95em">{{
                       token.name
                     }}</span>
+                    <!-- 独立分组标签（点击可整组选中/取消选中） -->
+                    <n-tag
+                      v-for="group in getTokenMgGroups(token)"
+                      :key="group.id"
+                      size="small"
+                      :bordered="false"
+                      round
+                      class="mg-group-tag"
+                      :style="{
+                        backgroundColor: group.color + '22',
+                        color: group.color,
+                        fontSize: '11px',
+                      }"
+                      @click.stop="toggleMgGroupSelection(group.id)"
+                    >
+                      {{ group.name }}
+                      <template #icon>
+                        <n-icon
+                          v-if="isMgGroupFullySelected(group)"
+                          :color="group.color"
+                        >
+                          <Checkmark />
+                        </n-icon>
+                      </template>
+                    </n-tag>
                     <n-tag
                       size="small"
                       :type="getServerTagType(token.id)"
@@ -692,6 +805,156 @@
         </div>
       </template>
     </n-modal>
+
+    <!-- 分组管理弹窗（独立分组，和批量日常完全无关） -->
+    <n-modal
+      v-model:show="showGroupManageModal"
+      preset="card"
+      title="分组管理"
+      style="width: 90%; max-width: 820px"
+    >
+      <!-- 创建新分组 -->
+      <n-divider title-placement="left" style="margin: 0 0 14px 0">
+        创建新分组
+      </n-divider>
+      <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px">
+        <n-input
+          v-model:value="newGroupName"
+          placeholder="输入分组名称"
+          style="width: 180px"
+          size="small"
+          @keyup.enter="confirmCreateMgGroup"
+        />
+        <div style="display: flex; gap: 4px; align-items: center">
+          <span style="font-size: 12px; color: #94a3b8">颜色:</span>
+          <div style="display: flex; gap: 3px">
+            <div
+              v-for="color in groupColors"
+              :key="color"
+              :style="{
+                width: '18px',
+                height: '18px',
+                backgroundColor: color,
+                borderRadius: '4px',
+                border:
+                  newGroupColor === color
+                    ? '2px solid #0f172a'
+                    : '1px solid transparent',
+                cursor: 'pointer',
+              }"
+              @click="newGroupColor = color"
+            />
+          </div>
+        </div>
+        <n-button type="primary" size="small" @click="confirmCreateMgGroup">
+          创建
+        </n-button>
+      </div>
+      <!-- 快速勾选中的 token -->
+      <div
+        v-if="multiGameSelectedTokenIds.size > 0"
+        style="
+          font-size: 12px;
+          color: #64748b;
+          padding: 6px 10px;
+          background: #f1f5f9;
+          border-radius: 4px;
+          margin-bottom: 16px;
+        "
+      >
+        <n-checkbox
+          v-model:checked="newGroupIncludeSelected"
+        >
+          将当前已勾选的 {{ multiGameSelectedTokenIds.size }} 个账号加入新分组
+        </n-checkbox>
+      </div>
+
+      <!-- 分组列表 -->
+      <n-divider title-placement="left" style="margin: 0 0 12px 0">
+        分组列表（{{ mgGroups.length }} 个）
+      </n-divider>
+      <div
+        v-if="mgGroups.length === 0"
+        style="color: #94a3b8; font-size: 13px; text-align: center; padding: 20px"
+      >
+        暂无分组，使用上面的表单创建第一个分组吧
+      </div>
+      <div
+        v-else
+        style="display: flex; flex-direction: column; gap: 8px; max-height: 380px; overflow-y: auto"
+      >
+        <div
+          v-for="group in mgGroups"
+          :key="group.id"
+          class="mg-group-item"
+          :class="{ expanded: managingGroupId === group.id }"
+        >
+          <div class="mg-group-header">
+            <div class="mg-group-left">
+              <span
+                class="mg-group-color"
+                :style="{ backgroundColor: group.color }"
+              />
+              <span class="mg-group-name">{{ group.name }}</span>
+              <span class="mg-group-count">
+                {{ getValidMgGroupTokens(group.id).length }} 个账号
+              </span>
+            </div>
+            <div class="mg-group-actions">
+              <n-button
+                size="tiny"
+                :type="isMgGroupFullySelected(group) ? 'warning' : 'primary'"
+                @click="toggleMgGroupSelection(group.id)"
+              >
+                {{ isMgGroupFullySelected(group) ? "取消选中" : "选中该组" }}
+              </n-button>
+              <n-button
+                size="tiny"
+                @click="
+                  managingGroupId =
+                    managingGroupId === group.id ? null : group.id
+                "
+              >
+                {{ managingGroupId === group.id ? "收起" : "展开" }}
+              </n-button>
+              <n-button
+                size="tiny"
+                type="error"
+                @click="confirmDeleteMgGroup(group.id)"
+              >
+                删除
+              </n-button>
+            </div>
+          </div>
+          <!-- 展开：管理组成员 -->
+          <div v-if="managingGroupId === group.id" class="mg-group-detail">
+            <n-checkbox-group
+              :value="getValidMgGroupTokens(group.id).map((t) => t.id)"
+              @update:value="(val) => updateMgGroupTokens(group.id, val)"
+            >
+              <n-grid :cols="3" :x-gap="8" :y-gap="4">
+                <n-grid-item v-for="token in sortedTokens" :key="token.id">
+                  <n-checkbox :value="token.id">
+                    {{ token.name }}
+                  </n-checkbox>
+                </n-grid-item>
+              </n-grid>
+            </n-checkbox-group>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <div class="mg-modal-footer">
+          <span class="mg-modal-tip">
+            提示：点击分组行的「选中该组」，或在 Token 列表点击分组标签，即可整组勾选
+          </span>
+          <span class="mg-modal-tip">
+            当前已选 <b>{{ multiGameSelectedTokenIds.size }}</b> 个
+          </span>
+          <n-button @click="showGroupManageModal = false"> 关闭 </n-button>
+        </div>
+      </template>
+    </n-modal>
   </div>
 </template>
 
@@ -706,9 +969,11 @@ import MobileLoginForm from "./mobile.vue";
 import { useTokenStore, selectedTokenId } from "@/stores/tokenStore";
 import {
   Add,
+  Checkmark,
   Copy,
   Create,
   EllipsisHorizontal,
+  FolderOpen,
   Grid,
   List,
   Home,
@@ -723,6 +988,7 @@ import {
 import { NIcon, NAlert, useDialog, useMessage } from "naive-ui";
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
+import { useLocalStorage } from "@vueuse/core";
 import { transformToken, scheduleAuthUserRequest } from "@/utils/token";
 import { $emit } from "@/stores/events/index.ts";
 import useIndexedDB from "@/hooks/useIndexedDB";
@@ -772,6 +1038,325 @@ const viewMode = ref(localStorage.getItem("tokenViewMode") || "list");
 const dragIndex = ref(null);
 const multiGameSelectedTokenIds = ref(new Set());
 const isOpeningMultiGame = ref(false);
+
+// ===== 独立分组体系（和批量日常完全独立，单独 localStorage key）=====
+const GROUP_STORAGE_KEY = "multiGameTokenGroups";
+const groupColors = [
+  "#1677ff", // 蓝
+  "#52c41a", // 绿
+  "#faad14", // 橙
+  "#f5222d", // 红
+  "#722ed1", // 紫
+  "#13c2c2", // 青
+  "#eb2f96", // 粉
+  "#fa541c", // 深橙
+];
+const mgGroups = useLocalStorage(GROUP_STORAGE_KEY, []);
+
+// 稳定 token 身份键（和 tokenStore 保持一致的生成逻辑）
+function getStableKey(token) {
+  if (token.serverId && token.roleId) return `${token.serverId}:${token.roleId}`;
+  if (token.server && token.roleId) return `${token.server}:${token.roleId}`;
+  return null;
+}
+
+// 查询 token 属于哪些独立分组
+function getTokenMgGroups(token) {
+  const key = getStableKey(token);
+  if (!key) return [];
+  return mgGroups.value.filter((g) => (g.tokenKeys || []).includes(key));
+}
+
+// 查询分组包含哪些 token（有效 token，在 tokens 列表里能找到）
+function getValidMgGroupTokens(groupId) {
+  const group = mgGroups.value.find((g) => g.id === groupId);
+  if (!group) return [];
+  const keys = new Set(group.tokenKeys || []);
+  return tokenStore.gameTokens.filter((t) => {
+    const k = getStableKey(t);
+    return k && keys.has(k);
+  });
+}
+
+function createMgGroup(name, color) {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  const id = `mg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const group = { id, name: trimmed, color, tokenKeys: [] };
+  mgGroups.value.push(group);
+  return group;
+}
+
+function deleteMgGroup(groupId) {
+  const idx = mgGroups.value.findIndex((g) => g.id === groupId);
+  if (idx >= 0) mgGroups.value.splice(idx, 1);
+}
+
+function addTokenToMgGroup(groupId, token) {
+  const group = mgGroups.value.find((g) => g.id === groupId);
+  if (!group) return;
+  const key = getStableKey(token);
+  if (key && !(group.tokenKeys || []).includes(key)) {
+    group.tokenKeys = [...(group.tokenKeys || []), key];
+  }
+}
+
+function removeTokenFromMgGroup(groupId, token) {
+  const group = mgGroups.value.find((g) => g.id === groupId);
+  if (!group) return;
+  const key = getStableKey(token);
+  if (key) {
+    group.tokenKeys = (group.tokenKeys || []).filter((k) => k !== key);
+  }
+}
+
+function updateMgGroupTokens(groupId, tokenIds) {
+  const group = mgGroups.value.find((g) => g.id === groupId);
+  if (!group) return;
+  // 计算当前 key 集合
+  const newKeys = new Set();
+  for (const t of tokenIds) {
+    const token = tokenStore.gameTokens.find((x) => x.id === t);
+    if (token) {
+      const k = getStableKey(token);
+      if (k) newKeys.add(k);
+    }
+  }
+  group.tokenKeys = [...newKeys];
+}
+
+// 分组管理弹窗状态
+const showGroupManageModal = ref(false);
+const newGroupName = ref("");
+const newGroupColor = ref("#1677ff");
+const newGroupIncludeSelected = ref(false);
+const managingGroupId = ref(null);
+
+function confirmCreateMgGroup() {
+  const name = newGroupName.value.trim();
+  if (!name) {
+    message.warning("请输入分组名称");
+    return;
+  }
+  const group = createMgGroup(name, newGroupColor.value);
+  if (group && newGroupIncludeSelected.value && multiGameSelectedTokenIds.value.size > 0) {
+    for (const tokenId of multiGameSelectedTokenIds.value) {
+      const token = tokenStore.gameTokens.find((t) => t.id === tokenId);
+      if (token) addTokenToMgGroup(group.id, token);
+    }
+  }
+  newGroupName.value = "";
+  newGroupIncludeSelected.value = false;
+  message.success(`已创建分组「${name}」`);
+}
+
+function confirmDeleteMgGroup(groupId) {
+  const group = mgGroups.value.find((g) => g.id === groupId);
+  if (!group) return;
+  dialog.warning({
+    title: "确认删除分组",
+    content: `确定删除分组「${group.name}」吗？删除后 token 不会被删除，仅解除分组关联。`,
+    positiveText: "确认删除",
+    negativeText: "取消",
+    onPositiveClick: () => {
+      deleteMgGroup(groupId);
+      if (managingGroupId.value === groupId) managingGroupId.value = null;
+      // 正在按该分组筛选时，删除后回到「全部账号」
+      if (mgFilterGroupId.value === groupId) mgFilterGroupId.value = FILTER_ALL;
+      message.success("分组已删除");
+    },
+  });
+}
+
+// ===== 按分组筛选（只影响列表/卡片的显示，不影响分组管理弹窗）=====
+// "__all__" 或 null = 不筛选；"__ungrouped__" = 未归入任何分组的账号；其余为分组 id
+const mgFilterGroupId = ref("__all__");
+const FILTER_ALL = "__all__";
+const FILTER_UNGROUPED = "__ungrouped__";
+
+// 所有已被任何分组认领的稳定键
+const groupedTokenKeys = computed(() => {
+  const keys = new Set();
+  for (const group of mgGroups.value) {
+    for (const key of group.tokenKeys || []) keys.add(key);
+  }
+  return keys;
+});
+
+// 未归入任何分组的 token 数量
+const ungroupedTokenCount = computed(
+  () =>
+    tokenStore.gameTokens.filter((t) => {
+      const key = getStableKey(t);
+      return !key || !groupedTokenKeys.value.has(key);
+    }).length,
+);
+
+const isTokenFilterActive = computed(
+  () =>
+    mgFilterGroupId.value !== null &&
+    mgFilterGroupId.value !== undefined &&
+    mgFilterGroupId.value !== FILTER_ALL,
+);
+
+// 筛选命中的 token id 集合；null 表示不筛选
+const filteredTokenIds = computed(() => {
+  if (!isTokenFilterActive.value) return null;
+  if (mgFilterGroupId.value === FILTER_UNGROUPED) {
+    const ids = new Set();
+    for (const token of tokenStore.gameTokens) {
+      const key = getStableKey(token);
+      if (!key || !groupedTokenKeys.value.has(key)) ids.add(token.id);
+    }
+    return ids;
+  }
+  return new Set(getMgGroupTokenIds(mgFilterGroupId.value));
+});
+
+// 实际渲染的 token（排序后的结果再套一层筛选）
+const displayedTokens = computed(() => {
+  const ids = filteredTokenIds.value;
+  if (!ids) return sortedTokens.value;
+  return sortedTokens.value.filter((t) => ids.has(t.id));
+});
+
+const groupFilterOptions = computed(() => {
+  const options = [
+    { label: `全部账号（${tokenStore.gameTokens.length}）`, value: FILTER_ALL },
+  ];
+  for (const group of mgGroups.value) {
+    options.push({
+      label: `${group.name}（${getMgGroupTokenIds(group.id).length}）`,
+      value: group.id,
+    });
+  }
+  if (ungroupedTokenCount.value > 0) {
+    options.push({
+      label: `未分组（${ungroupedTokenCount.value}）`,
+      value: FILTER_UNGROUPED,
+    });
+  }
+  return options;
+});
+
+// ===== 按分组选中（把某个分组的全部账号加入/移出当前勾选）=====
+// 取分组内有效 token 的 id 列表
+function getMgGroupTokenIds(groupId) {
+  return getValidMgGroupTokens(groupId).map((t) => t.id);
+}
+
+// 该分组是否已被整组选中
+function isMgGroupFullySelected(group) {
+  if (!group) return false;
+  const ids = getMgGroupTokenIds(group.id);
+  if (ids.length === 0) return false;
+  for (const id of ids) {
+    if (!multiGameSelectedTokenIds.value.has(id)) return false;
+  }
+  return true;
+}
+
+// 是否存在任何"已整组选中"的分组（用于按钮高亮）
+const hasGroupSelection = computed(() =>
+  mgGroups.value.some((g) => isMgGroupFullySelected(g)),
+);
+
+// 整组选中 / 取消选中；force 可强制指定方向
+function toggleMgGroupSelection(groupId, force) {
+  if (isOpeningMultiGame.value) return;
+  const group = mgGroups.value.find((g) => g.id === groupId);
+  if (!group) return;
+  const ids = getMgGroupTokenIds(groupId);
+  if (ids.length === 0) {
+    message.warning(`分组「${group.name}」暂无可用账号`);
+    return;
+  }
+  const shouldSelect =
+    force === undefined ? !isMgGroupFullySelected(group) : force;
+  const next = new Set(multiGameSelectedTokenIds.value);
+  for (const id of ids) {
+    if (shouldSelect) next.add(id);
+    else next.delete(id);
+  }
+  multiGameSelectedTokenIds.value = next;
+  message.success(
+    shouldSelect
+      ? `已选中分组「${group.name}」的 ${ids.length} 个账号`
+      : `已取消选中分组「${group.name}」`,
+  );
+}
+
+// 按分组选中的下拉菜单
+const groupSelectOptions = computed(() => {
+  if (mgGroups.value.length === 0) {
+    return [{ key: "__manage__", label: "暂无分组，点击前往创建" }];
+  }
+  const options = mgGroups.value.map((group) => {
+    const ids = getMgGroupTokenIds(group.id);
+    const fully = isMgGroupFullySelected(group);
+    return {
+      key: group.id,
+      label: `${group.name}（${ids.length} 个账号）${fully ? " · 已选中" : ""}`,
+      icon: () =>
+        h("span", {
+          style: {
+            display: "inline-block",
+            width: "8px",
+            height: "8px",
+            borderRadius: "50%",
+            backgroundColor: group.color,
+          },
+        }),
+    };
+  });
+  options.push({ type: "divider", key: "__divider__" });
+  options.push({
+    key: "__select_all_groups__",
+    label: "选中所有分组账号",
+  });
+  if (hasGroupSelection.value) {
+    options.push({
+      key: "__clear_group_selection__",
+      label: "取消所有分组选中",
+    });
+  }
+  options.push({ key: "__manage__", label: "打开分组管理" });
+  return options;
+});
+
+function handleGroupSelect(key) {
+  if (key === "__manage__" || key === "__manage2__") {
+    showGroupManageModal.value = true;
+    return;
+  }
+  if (key === "__select_all_groups__") {
+    if (isOpeningMultiGame.value) return;
+    const next = new Set(multiGameSelectedTokenIds.value);
+    let added = 0;
+    for (const group of mgGroups.value) {
+      for (const id of getMgGroupTokenIds(group.id)) {
+        if (!next.has(id)) added += 1;
+        next.add(id);
+      }
+    }
+    multiGameSelectedTokenIds.value = next;
+    message.success(`已选中全部分组账号（新增 ${added} 个）`);
+    return;
+  }
+  if (key === "__clear_group_selection__") {
+    const next = new Set(multiGameSelectedTokenIds.value);
+    let removed = 0;
+    for (const group of mgGroups.value) {
+      for (const id of getMgGroupTokenIds(group.id)) {
+        if (next.delete(id)) removed += 1;
+      }
+    }
+    multiGameSelectedTokenIds.value = next;
+    message.success(`已取消 ${removed} 个分组账号的选中`);
+    return;
+  }
+  toggleMgGroupSelection(key);
+}
 
 // 备注编辑状态管理
 const editingRemark = ref(null); // 当前正在编辑备注的tokenId
@@ -841,10 +1426,13 @@ const selectedMultiGameTokens = computed(() =>
     multiGameSelectedTokenIds.value.has(token.id),
   ),
 );
+// 「已全选」以当前显示（筛选后）的列表为准
 const allMultiGameTokensSelected = computed(
   () =>
-    sortedTokens.value.length > 0 &&
-    selectedMultiGameTokens.value.length === sortedTokens.value.length,
+    displayedTokens.value.length > 0 &&
+    displayedTokens.value.every((token) =>
+      multiGameSelectedTokenIds.value.has(token.id),
+    ),
 );
 
 function setMultiGameTokenSelected(tokenId, checked) {
@@ -855,8 +1443,9 @@ function setMultiGameTokenSelected(tokenId, checked) {
   );
 }
 
+// 全选当前显示的 token（无筛选时即全部；有筛选时只选筛选结果）
 function selectAllMultiGameTokens() {
-  multiGameSelectedTokenIds.value = selectAllTokenIds(sortedTokens.value);
+  multiGameSelectedTokenIds.value = selectAllTokenIds(displayedTokens.value);
 }
 
 function clearMultiGameTokenSelection() {
@@ -910,14 +1499,26 @@ const handleDrop = (index, event) => {
   event.preventDefault();
   if (dragIndex.value === null || dragIndex.value === index) return;
 
-  // 使用当前显示的列表（sortedTokens）来进行重新排序
-  // 这样可以确保用户看到的顺序就是最终保存的顺序
+  // index 是「当前显示列表」（displayedTokens）里的下标，
+  // 但重排必须落到全量列表上，否则筛选状态下会把未显示的 token 丢掉
+  const fromId = displayedTokens.value[dragIndex.value]?.id;
+  const toId = displayedTokens.value[index]?.id;
+  if (!fromId || !toId) {
+    dragIndex.value = null;
+    return;
+  }
+
   const currentTokens = [...sortedTokens.value];
-  const draggedItem = currentTokens[dragIndex.value];
+  const fromIndex = currentTokens.findIndex((t) => t.id === fromId);
+  const toIndex = currentTokens.findIndex((t) => t.id === toId);
+  if (fromIndex < 0 || toIndex < 0) {
+    dragIndex.value = null;
+    return;
+  }
 
   // 移动元素
-  currentTokens.splice(dragIndex.value, 1);
-  currentTokens.splice(index, 0, draggedItem);
+  const [draggedItem] = currentTokens.splice(fromIndex, 1);
+  currentTokens.splice(toIndex, 0, draggedItem);
 
   // 更新 store
   tokenStore.gameTokens = currentTokens;
@@ -2626,5 +3227,122 @@ onUnmounted(() => {
 
 [data-theme="dark"] .token-card {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+/* ===== 独立分组管理弹窗 ===== */
+.mg-group-item {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  transition: box-shadow 0.2s;
+}
+
+.mg-group-item.expanded {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.mg-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.mg-group-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mg-group-color {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  flex: none;
+}
+
+.mg-group-name {
+  font-weight: 600;
+  color: #1e293b;
+  font-size: 14px;
+}
+
+.mg-group-count {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.mg-group-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* 可按分组选中的分组标签 */
+.mg-group-tag {
+  cursor: pointer;
+  user-select: none;
+  transition: filter 0.15s ease, transform 0.15s ease;
+}
+
+.mg-group-tag:hover {
+  filter: brightness(0.94);
+  transform: translateY(-1px);
+}
+
+.mg-group-tag:active {
+  transform: translateY(0);
+}
+
+.mg-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mg-modal-tip {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.mg-modal-footer .mg-modal-tip:first-child {
+  margin-right: auto;
+}
+
+/* 按分组筛选后的空状态 */
+.token-filter-empty {
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 13px;
+}
+
+[data-theme="dark"] .token-filter-empty {
+  background: #1e293b;
+  color: #cbd5e1;
+}
+
+.mg-group-detail {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #cbd5e1;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+[data-theme="dark"] .mg-group-item {
+  background: #1e293b;
+  border-color: #334155;
+}
+
+[data-theme="dark"] .mg-group-name {
+  color: #f1f5f9;
+}
+
+[data-theme="dark"] .mg-group-detail {
+  border-top-color: #475569;
 }
 </style>
