@@ -862,7 +862,8 @@
             </div>
           </div>
         </div>
-        <div class="modal-actions" style="margin-top: 20px; text-align: right">
+        <div class="modal-actions" style="margin-top: 20px; display: flex; justify-content: space-between">
+          <n-button type="warning" :on-click="clearSettings">清除设置</n-button>
           <n-button type="primary" @click="saveSettings">保存设置</n-button>
         </div>
       </div>
@@ -3755,7 +3756,7 @@ const showSettingsModal = ref(false);
 const currentSettingsTokenId = ref(null);
 const currentSettingsTokenName = ref("");
 const currentSettings = reactive({
-  towerFormation: 1,
+  towerFormation: "current",
   bossFormation: 1,
   bossTimes: 2,
   skinChallengeTargets: [...defaultSkinChallengeTargets],
@@ -3781,7 +3782,7 @@ const DEFAULT_TEMPLATE_ID = "__default__";
 const currentTemplateName = ref("");
 const currentTemplateId = ref(null); // 用于编辑现有模板
 const currentTemplate = reactive({
-  towerFormation: 1,
+  towerFormation: "current",
   bossFormation: 1,
   bossTimes: 2,
   skinChallengeTargets: [...defaultSkinChallengeTargets],
@@ -5762,7 +5763,7 @@ const loadSettings = (tokenId) => {
   try {
     const raw = localStorage.getItem(`daily-settings:${tokenId}`);
     const defaultSettings = {
-      towerFormation: 1,
+      towerFormation: "current",
       bossFormation: 1,
       bossTimes: 2,
       skinChallengeTargets: [...defaultSkinChallengeTargets],
@@ -5800,13 +5801,27 @@ const saveSettings = () => {
   }
 };
 
+// 清除当前账号的独立设置：删除 localStorage 条目，回到未设置状态
+const clearSettings = () => {
+  if (!currentSettingsTokenId.value) return;
+  const key = `daily-settings:${currentSettingsTokenId.value}`;
+  const existed = localStorage.getItem(key) !== null;
+  localStorage.removeItem(key);
+  if (existed) {
+    message.success(`已清除 ${currentSettingsTokenName.value} 的独立设置（恢复为未设置状态）`);
+  } else {
+    message.info(`${currentSettingsTokenName.value} 原本没有独立设置`);
+  }
+  showSettingsModal.value = false;
+};
+
 // Task Template Functions
 const openTaskTemplateModal = () => {
   // 加载模板列表
   loadTaskTemplates();
   // 重置当前模板
   Object.assign(currentTemplate, {
-    towerFormation: 1,
+    towerFormation: "current",
     bossFormation: 1,
     bossTimes: 2,
     skinChallengeTargets: [...defaultSkinChallengeTargets],
@@ -5957,7 +5972,7 @@ const resetTemplateForm = () => {
   currentTemplateId.value = null;
   currentTemplateName.value = "";
   Object.assign(currentTemplate, {
-    towerFormation: 1,
+    towerFormation: "current",
     bossFormation: 1,
     bossTimes: 2,
     skinChallengeTargets: [...defaultSkinChallengeTargets],

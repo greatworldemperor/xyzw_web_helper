@@ -124,7 +124,7 @@ export const taskColumns = [
 
 // 默认设置
 export const defaultSettings = {
-  towerFormation: 1,
+  towerFormation: "current",
   bossFormation: 1,
   bossTimes: 2,
   skinChallengeTargets: [...defaultSkinChallengeTargets],
@@ -160,7 +160,7 @@ export const defaultBatchSettings = {
 
 // 默认模板
 export const defaultTemplate = {
-  towerFormation: 1,
+  towerFormation: "current",
   bossFormation: 1,
   bossTimes: 2,
   skinChallengeTargets: [...defaultSkinChallengeTargets],

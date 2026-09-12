@@ -147,7 +147,7 @@ const legacyFlexibleTaskAliases = {
 };
 
 export const defaultFlexibleTemplateSettings = {
-  towerFormation: 1,
+  towerFormation: "current",
   bossFormation: 1,
   bossTimes: 2,
   skinChallengeTargets: [],
