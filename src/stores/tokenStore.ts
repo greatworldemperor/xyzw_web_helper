@@ -113,9 +113,39 @@ export const useTokenStore = defineStore("tokens", () => {
   const connectionLocks = ref<LockCtx>({}); // 连接操作锁，防止竞态条件
 
   // 400340 限流全局暂停控制器
-  // 当任意 token 连续触发 400340 超过 PAUSE_THRESHOLD 次时，所有 token 的
-  // sendMessageWithPromise 都会 await 这个 pause 信号，直到用户点击"已换IP，继续"
+  // 仅怪异塔 / 咸将塔相关命令触发"暂停+弹窗"，其他命令遇到 400340 继续自动无限重试
+  // 触发暂停后，所有命令都会 await 这个 pause 信号，直到用户点击"已换IP，继续"
   const RATE_LIMIT_PAUSE_THRESHOLD = 30; // 连续 30 次 400340（约 30 秒）后触发暂停
+
+  // 只有这些命令会触发暂停（IP 级限流，需要用户断网换 IP）
+  // 其他命令遇到 400340 一律自动无限重试
+  const PAUSE_TRIGGER_CMDS = new Set<string>([
+    // 怪异塔 evotower
+    "evotower_getinfo",
+    "evotower_claimreward",
+    "evotower_readyfight",
+    "evotower_fight",
+    "evotower_claimtask",
+    // 怪异塔 mergebox（开箱/合成，爬塔的道具来源）
+    "mergebox_getinfo",
+    "mergebox_openbox",
+    "mergebox_mergeitem",
+    "mergebox_automergeitem",
+    "mergebox_claimcostprogress",
+    "mergebox_claimmergeprogress",
+    "mergebox_claimfreeenergy",
+    // 咸将塔
+    "fight_starttower",
+    "tower_getinfo",
+    "tower_claimreward",
+    "towers_getinfo",
+    "towers_start",
+    "towers_fight",
+    // 爬塔前切阵容（presetteam 通用，但被两个爬塔功能独占调用）
+    "presetteam_getinfo",
+    "presetteam_saveteam",
+  ]);
+
   const rateLimitPauseInfo = ref<{
     tokenId: string;
     tokenName?: string;
@@ -1194,8 +1224,11 @@ export const useTokenStore = defineStore("tokens", () => {
 
         retryCount++;
 
-        if (retryCount >= RATE_LIMIT_PAUSE_THRESHOLD) {
-          // 达到暂停阈值：触发全局暂停，等用户换IP后再恢复，恢复后重置计数
+        const canTriggerPause = PAUSE_TRIGGER_CMDS.has(cmd);
+
+        if (canTriggerPause && retryCount >= RATE_LIMIT_PAUSE_THRESHOLD) {
+          // 只有白名单命令（怪异塔/咸将塔）达到阈值才触发暂停
+          // 其他命令继续自动无限重试（IP 级限流出现在非爬塔场景时很少见，暂停会无谓阻塞批量）
           await requestRateLimitPause(tokenId, cmd, retryCount);
           retryCount = 0;
           wsLogger.info(
@@ -1203,7 +1236,9 @@ export const useTokenStore = defineStore("tokens", () => {
           );
         } else {
           wsLogger.warn(
-            `请求触发400340限流 [${tokenId}] ${cmd}，1秒后重试（第${retryCount}/${RATE_LIMIT_PAUSE_THRESHOLD}次）`,
+            `请求触发400340限流 [${tokenId}] ${cmd}，1秒后重试（第${retryCount}次${
+              canTriggerPause ? `/${RATE_LIMIT_PAUSE_THRESHOLD}` : ""
+            }）`,
           );
           await new Promise((resolve) =>
             setTimeout(resolve, RATE_LIMIT_RETRY_DELAY_MS),
