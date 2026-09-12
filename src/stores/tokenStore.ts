@@ -175,13 +175,44 @@ export const useTokenStore = defineStore("tokens", () => {
   };
 
   // 用户更换IP后，恢复所有被暂停的请求
-  const resumeAfterRateLimit = () => {
+  // 注意：用户断网换IP后，所有 WebSocket 连接已失效。
+  // 必须先为已连接过的 token 重建 WebSocket，再 resolve 暂停 Promise，
+  // 否则 sendMessageWithPromise 会因 !connected 直接 reject，业务层判 token 失败，跳过它。
+  const resumeAfterRateLimit = async () => {
     const resolver = rateLimitPauseResolver;
     rateLimitPausePromise = null;
     rateLimitPauseResolver = null;
     rateLimitPauseInfo.value = null;
+
+    const existingTokenIds = Object.keys(wsConnections.value);
+    wsLogger.info(
+      `🚦 [限流恢复] 正在为 ${existingTokenIds.length} 个 token 重建 WebSocket 连接...`,
+    );
+
+    await Promise.all(
+      existingTokenIds.map(async (tokenId) => {
+        const gameToken = gameTokens.value.find((t) => t.id === tokenId);
+        if (!gameToken) return;
+        try {
+          await createWebSocketConnection(
+            tokenId,
+            gameToken.token,
+            gameToken.wsUrl || null,
+          );
+        } catch (e) {
+          wsLogger.error(
+            `[限流恢复] 重建连接失败 ${tokenId}:`,
+            e?.message || e,
+          );
+        }
+      }),
+    );
+
+    // 给连接建立、心跳同步留一点缓冲
+    await new Promise((r) => setTimeout(r, 3000));
+
     if (resolver) {
-      wsLogger.info("🚦 [限流恢复] 用户已更换IP，恢复所有被暂停的请求");
+      wsLogger.info("🚦 [限流恢复] WebSocket 重建完成，恢复执行");
       resolver();
     }
   };
