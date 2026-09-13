@@ -661,6 +661,17 @@
                 </n-button>
                 <n-button
                   size="small"
+                  @click="openBlackMarketModal"
+                  :disabled="
+                    isRunning ||
+                    selectedTokens.length === 0 ||
+                    blackMarketLoading
+                  "
+                >
+                  黑市周奖励
+                </n-button>
+                <n-button
+                  size="small"
                   @click="legion_storebuygoods"
                   :disabled="isRunning || selectedTokens.length === 0"
                 >
@@ -1603,6 +1614,97 @@
         </div>
 
         <div
+          v-if="flexibleTemplateTasks.includes('activityBuyBlackMarketWeek')"
+          class="flexible-conditional-settings"
+        >
+          <div class="flexible-conditional-settings__title">
+            黑市周奖励商品清单（默认勾选 2 个免费件 + 见面礼/惊喜礼/中级包/鱼竿包，可调整）
+          </div>
+          <div style="display: flex; gap: 12px; margin-bottom: 12px">
+            <n-button
+              size="small"
+              :loading="blackMarketEditorLoading"
+              @click="fetchBlackMarketEditorGoods"
+            >
+              拉取商品清单
+            </n-button>
+            <n-button size="small" @click="selectAllBlackMarketEditorGoods">
+              全选未购
+            </n-button>
+            <n-button size="small" @click="clearBlackMarketEditorSelection">
+              清空选择
+            </n-button>
+            <span
+              style="margin-left: auto; font-size: 12px; align-self: center"
+            >
+              已选 {{ flexibleTemplateSettings.blackMarketGoodsKeys.length }} 件
+            </span>
+          </div>
+          <n-alert
+            v-if="
+              blackMarketEditorGoods.length === 0 &&
+              flexibleTemplateSettings.blackMarketGoodsKeys.length > 0
+            "
+            type="info"
+            show-icon
+            style="margin-bottom: 12px"
+          >
+            已保存清单：{{
+              flexibleTemplateSettings.blackMarketGoodsTitles.join("、") ||
+              "(无名称快照)"
+            }}。拉取清单后可查看/调整勾选。
+          </n-alert>
+          <div
+            v-if="blackMarketEditorLoading"
+            style="text-align: center; padding: 12px; color: gray"
+          >
+            正在获取商品列表...
+          </div>
+          <n-checkbox-group
+            v-else-if="blackMarketEditorGoods.length > 0"
+            v-model:value="flexibleTemplateSettings.blackMarketGoodsKeys"
+          >
+            <div
+              v-for="group in blackMarketEditorGroups"
+              :key="group.activityId"
+              style="margin-bottom: 12px"
+            >
+              <div style="font-weight: bold; margin-bottom: 6px">
+                {{ group.label }}
+              </div>
+              <n-space :size="12" :wrap="true">
+                <n-checkbox
+                  v-for="goods in group.items"
+                  :key="goods.key"
+                  :value="goods.key"
+                  :disabled="goods.soldOut"
+                >
+                  {{ goods.title }}
+                  <n-tag
+                    size="small"
+                    :type="goods.price > 0 ? 'warning' : 'success'"
+                  >
+                    {{ goods.price > 0 ? `${goods.price} 金砖` : "免费" }}
+                  </n-tag>
+                  <span
+                    v-if="goods.soldOut"
+                    style="color: gray; font-size: 12px"
+                  >
+                    （已购满）
+                  </span>
+                </n-checkbox>
+              </n-space>
+            </div>
+          </n-checkbox-group>
+          <div
+            v-else
+            style="color: gray; font-size: 12px"
+          >
+            尚未拉取商品清单。请先在账号列表勾选至少一个账号，再点击「拉取商品清单」（商品定义全服一致，以第一个账号查询）。
+          </div>
+        </div>
+
+        <div
           v-if="flexibleTemplateTasks.includes('batchFootballBet')"
           class="flexible-conditional-settings"
         >
@@ -2102,6 +2204,98 @@
           <n-button type="primary" @click="saveDreamBuyConfig"
             >保存配置</n-button
           >
+        </div>
+      </div>
+    </n-modal>
+
+    <!-- BlackMarket Goods Select Modal -->
+    <n-modal
+      v-model:show="showBlackMarketModal"
+      preset="card"
+      title="黑市周奖励 - 选择购买商品"
+      style="width: 90%; max-width: 640px"
+    >
+      <div class="settings-content">
+        <n-alert type="info" show-icon style="margin-bottom: 12px">
+          商品清单来自账号「{{ blackMarketPreviewToken }}」，执行时每个账号会自动跳过自己已购的商品。金砖不足时先领罐子，仍不足会从最贵的勾选商品开始放弃。
+        </n-alert>
+
+        <div
+          v-if="blackMarketLoading"
+          style="text-align: center; padding: 24px; color: gray"
+        >
+          正在获取商品列表...
+        </div>
+
+        <template v-else>
+          <div style="display: flex; gap: 12px; margin-bottom: 12px">
+            <n-button size="small" @click="selectAllBlackMarketGoods">
+              全选未购商品
+            </n-button>
+            <n-button size="small" @click="clearBlackMarketSelection">
+              清空选择
+            </n-button>
+            <span
+              style="margin-left: auto; font-size: 12px; align-self: center"
+            >
+              已选 {{ blackMarketSelectedKeys.length }} 件
+            </span>
+          </div>
+
+          <div
+            v-for="group in blackMarketGoodsGroups"
+            :key="group.activityId"
+            style="margin-bottom: 16px"
+          >
+            <div style="font-weight: bold; margin-bottom: 8px">
+              {{ group.label }}
+            </div>
+            <div
+              v-for="goods in group.items"
+              :key="goods.key"
+              style="display: flex; align-items: center; margin-bottom: 6px"
+            >
+              <n-checkbox
+                :checked="blackMarketSelectedKeys.includes(goods.key)"
+                :disabled="goods.soldOut"
+                @update:checked="
+                  (checked) => toggleBlackMarketGoods(goods.key, checked)
+                "
+              >
+                {{ goods.title }}
+                <n-tag
+                  size="small"
+                  :type="goods.price > 0 ? 'warning' : 'success'"
+                  style="margin-left: 4px"
+                >
+                  {{ goods.price > 0 ? `${goods.price} 金砖` : "免费" }}
+                </n-tag>
+                <span
+                  v-if="goods.soldOut"
+                  style="color: gray; font-size: 12px; margin-left: 4px"
+                >
+                  （已购满）
+                </span>
+              </n-checkbox>
+            </div>
+          </div>
+        </template>
+
+        <div class="modal-actions" style="margin-top: 20px; text-align: right">
+          <n-button
+            @click="showBlackMarketModal = false"
+            style="margin-right: 12px"
+            >取消</n-button
+          >
+          <n-button
+            type="primary"
+            :disabled="
+              blackMarketLoading || blackMarketSelectedKeys.length === 0
+            "
+            @click="confirmBlackMarketPurchase"
+          >
+            开始执行（{{ blackMarketSelectedKeys.length }} 件）
+          </n-button>
         </div>
       </div>
     </n-modal>
@@ -3368,6 +3562,7 @@ import {
   createTasksFootball,
   createTasksApex,
   createTasksCampChallengeStrategy,
+  resolveDefaultBlackMarketKeys,
 } from "@/utils/batch";
 
 import { merchantConfig, goldItemsConfig } from "@/utils/dreamConstants";
@@ -3967,6 +4162,16 @@ const saveFlexibleTemplate = () => {
     !flexibleTemplateSettings.warGuessLegionId
   ) {
     message.error("请填写月赛助威俱乐部ID");
+    return;
+  }
+  if (
+    flexibleTemplateTasks.value.includes("activityBuyBlackMarketWeek") &&
+    !(
+      Array.isArray(flexibleTemplateSettings.blackMarketGoodsKeys) &&
+      flexibleTemplateSettings.blackMarketGoodsKeys.length > 0
+    )
+  ) {
+    message.error("请在模板参数中勾选黑市周商品清单（不会默认全买）");
     return;
   }
 
@@ -7034,9 +7239,165 @@ const {
   legionStoreBuySkinCoins,
   activityBuyRecruitWeekReward,
   activityClaimBoxWeekFreeRewards,
+  activityBuyBlackMarketWeek,
+  fetchBlackMarketGoods,
   store_purchase,
   collection_claimfreereward,
 } = tasksStore;
+
+// 黑市周商品选择弹窗
+const showBlackMarketModal = ref(false);
+const blackMarketLoading = ref(false);
+const blackMarketPreviewToken = ref("");
+const blackMarketGoods = ref([]);
+const blackMarketSelectedKeys = ref([]);
+
+const blackMarketGoodsGroups = computed(() => {
+  const labelMap = { 9: "江湖黑市", 5: "金砖回馈商店" };
+  const groups = [];
+  for (const activityId of [9, 5]) {
+    const items = blackMarketGoods.value.filter(
+      (g) => g.activityId === activityId,
+    );
+    if (items.length > 0) {
+      groups.push({
+        activityId,
+        label: labelMap[activityId] || `活动 ${activityId}`,
+        items,
+      });
+    }
+  }
+  return groups;
+});
+
+const openBlackMarketModal = async () => {
+  if (selectedTokens.value.length === 0) {
+    message.warning("请先选择账号");
+    return;
+  }
+  showBlackMarketModal.value = true;
+  blackMarketLoading.value = true;
+  blackMarketGoods.value = [];
+  blackMarketSelectedKeys.value = [];
+  try {
+    const { previewTokenName, goods } = await fetchBlackMarketGoods();
+    blackMarketPreviewToken.value = previewTokenName;
+    blackMarketGoods.value = goods;
+    // 默认勾选 = 免费件 + master 常买组合（见面礼/惊喜礼/中级包/顶级鱼竿包）
+    blackMarketSelectedKeys.value = resolveDefaultBlackMarketKeys(goods);
+  } catch (error) {
+    message.error(`获取商品列表失败: ${error?.message || String(error)}`);
+    showBlackMarketModal.value = false;
+  } finally {
+    blackMarketLoading.value = false;
+  }
+};
+
+const toggleBlackMarketGoods = (key, checked) => {
+  if (checked) {
+    if (!blackMarketSelectedKeys.value.includes(key)) {
+      blackMarketSelectedKeys.value.push(key);
+    }
+  } else {
+    blackMarketSelectedKeys.value = blackMarketSelectedKeys.value.filter(
+      (k) => k !== key,
+    );
+  }
+};
+
+const selectAllBlackMarketGoods = () => {
+  blackMarketSelectedKeys.value = blackMarketGoods.value
+    .filter((g) => !g.soldOut)
+    .map((g) => g.key);
+};
+
+const clearBlackMarketSelection = () => {
+  blackMarketSelectedKeys.value = [];
+};
+
+const confirmBlackMarketPurchase = () => {
+  if (blackMarketSelectedKeys.value.length === 0) {
+    message.warning("请至少勾选一件商品");
+    return;
+  }
+  showBlackMarketModal.value = false;
+  activityBuyBlackMarketWeek([...blackMarketSelectedKeys.value]);
+};
+
+// 自由模板：黑市周商品清单编辑
+const blackMarketEditorGoods = ref([]);
+const blackMarketEditorLoading = ref(false);
+
+const blackMarketEditorGroups = computed(() => {
+  const labelMap = { 9: "江湖黑市", 5: "金砖回馈商店" };
+  const groups = [];
+  for (const activityId of [9, 5]) {
+    const items = blackMarketEditorGoods.value.filter(
+      (g) => g.activityId === activityId,
+    );
+    if (items.length > 0) {
+      groups.push({
+        activityId,
+        label: labelMap[activityId] || `活动 ${activityId}`,
+        items,
+      });
+    }
+  }
+  return groups;
+});
+
+const fetchBlackMarketEditorGoods = async () => {
+  if (selectedTokens.value.length === 0) {
+    message.warning("请先在账号列表勾选至少一个账号（用于拉取商品清单）");
+    return;
+  }
+  blackMarketEditorLoading.value = true;
+  try {
+    const { goods } = await fetchBlackMarketGoods();
+    blackMarketEditorGoods.value = goods;
+    // 清单为空时填入默认组合（免费件 + 常买 4 件付费）；已有勾选不覆盖
+    if (
+      !(
+        Array.isArray(flexibleTemplateSettings.blackMarketGoodsKeys) &&
+        flexibleTemplateSettings.blackMarketGoodsKeys.length > 0
+      )
+    ) {
+      flexibleTemplateSettings.blackMarketGoodsKeys =
+        resolveDefaultBlackMarketKeys(goods);
+    }
+    message.success(
+      `已拉取 ${goods.length} 件商品，默认勾选免费件与常买组合，请确认后保存`,
+    );
+  } catch (error) {
+    message.error(`获取商品列表失败: ${error?.message || String(error)}`);
+  } finally {
+    blackMarketEditorLoading.value = false;
+  }
+};
+
+const selectAllBlackMarketEditorGoods = () => {
+  flexibleTemplateSettings.blackMarketGoodsKeys = blackMarketEditorGoods.value
+    .filter((g) => !g.soldOut)
+    .map((g) => g.key);
+};
+
+const clearBlackMarketEditorSelection = () => {
+  flexibleTemplateSettings.blackMarketGoodsKeys = [];
+};
+
+// 勾选变化时同步商品名快照（供不拉取数据时展示已保存的清单）
+watch(
+  () => flexibleTemplateSettings.blackMarketGoodsKeys,
+  (keys) => {
+    const map = new Map(
+      blackMarketEditorGoods.value.map((g) => [g.key, g.title]),
+    );
+    flexibleTemplateSettings.blackMarketGoodsTitles = (keys || []).map(
+      (k) => map.get(k) || k,
+    );
+  },
+  { deep: true },
+);
 
 const tasksLegacy = createTasksLegacy(createTaskDeps());
 const { batchLegacyClaim, batchLegacyGiftSendEnhanced } = tasksLegacy;
@@ -7098,6 +7459,15 @@ const getFlexibleTaskUnavailableReason = (taskId, settings) => {
   if (taskId === "batchWarGuessCheer" && !isWarGuessActivityOpen.value) {
     return warGuessActivityTip.value;
   }
+  if (
+    taskId === "activityBuyBlackMarketWeek" &&
+    !(
+      Array.isArray(settings.blackMarketGoodsKeys) &&
+      settings.blackMarketGoodsKeys.length > 0
+    )
+  ) {
+    return "未配置黑市周商品清单（编辑模板时勾选商品），不默认全买";
+  }
   return "";
 };
 
@@ -7119,6 +7489,15 @@ const getFlexibleTemplateValidationError = (template) => {
     !template.settings.warGuessLegionId
   ) {
     return "自由模板缺少月赛助威俱乐部ID";
+  }
+  if (
+    template.selectedTasks.includes("activityBuyBlackMarketWeek") &&
+    !(
+      Array.isArray(template.settings.blackMarketGoodsKeys) &&
+      template.settings.blackMarketGoodsKeys.length > 0
+    )
+  ) {
+    return "自由模板缺少黑市周商品清单（编辑模板时勾选要购买的商品）";
   }
   return "";
 };
@@ -7260,6 +7639,9 @@ const runFlexibleBatchTask = async (
         template.settings.warGuessLegionId,
         template.settings.warGuessCoin,
       );
+    } else if (task.handler === "activityBuyBlackMarketWeek") {
+      // 自由模板：按模板里勾选的商品清单购买（无清单的任务已在入口被跳过）
+      await handler([...(template.settings.blackMarketGoodsKeys || [])]);
     } else if (task.scheduledArgument) {
       await handler(true);
     } else {

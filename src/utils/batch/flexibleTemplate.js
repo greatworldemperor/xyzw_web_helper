@@ -85,6 +85,7 @@ export const flexibleTaskGroups = [
     tasks: [
       batchTask("activityBuyRecruitWeekReward", "招募周一次性奖励"),
       batchTask("activityClaimBoxWeekFreeRewards", "宝箱周免费奖励"),
+      batchTask("activityBuyBlackMarketWeek", "黑市周奖励"),
       batchTask("batchOpenBox", "批量开箱", { scheduledArgument: true }),
       batchTask("batchSmartOpenBox", "智能开箱"),
       batchTask("batchOpenBoxByPoints", "批量按积分开箱", {
@@ -163,6 +164,8 @@ export const defaultFlexibleTemplateSettings = {
   legacyGiftQuantity: 10,
   warGuessLegionId: null,
   warGuessCoin: 20,
+  blackMarketGoodsKeys: [],
+  blackMarketGoodsTitles: [],
 };
 
 const normalizeEnum = (value, allowedValues, fallback) => {
@@ -181,6 +184,23 @@ const normalizeOptionalId = (value) => {
   const numericValue = Number(value);
   if (!Number.isSafeInteger(numericValue) || numericValue <= 0) return null;
   return numericValue;
+};
+
+// 黑市周商品勾选：key 形如 "9:3"（activityId:goodsIndex），title 为展示用快照
+const normalizeBlackMarketKeys = (value) => {
+  if (!Array.isArray(value)) return [];
+  return [
+    ...new Set(
+      value.filter(
+        (item) => typeof item === "string" && /^\d+:\d+$/.test(item),
+      ),
+    ),
+  ];
+};
+
+const normalizeBlackMarketTitles = (value) => {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item ?? "")).slice(0, 64);
 };
 
 // 阵容字段：允许"current"（维持当前，不切换阵容）
@@ -271,6 +291,12 @@ export const normalizeFlexibleTemplateSettings = (settings) => {
       1,
       20,
       defaults.warGuessCoin,
+    ),
+    blackMarketGoodsKeys: normalizeBlackMarketKeys(
+      source.blackMarketGoodsKeys,
+    ),
+    blackMarketGoodsTitles: normalizeBlackMarketTitles(
+      source.blackMarketGoodsTitles,
     ),
   };
 };
