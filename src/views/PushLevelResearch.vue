@@ -70,6 +70,24 @@
           <span class="field-hint">记录 MD5 输入字符串</span>
         </div>
         <div class="field switch-field">
+          <span class="field-label">平台伪装</span>
+          <n-switch v-model:value="spoofEnabled" @update:value="persistSpoof" />
+          <span class="field-hint">{{
+            spoofEnabled ? `h5web → ${spoofTarget}，重载运行时生效` : "关闭（原始 h5web 口径）"
+          }}</span>
+        </div>
+        <div v-if="spoofEnabled" class="field switch-field">
+          <span class="field-label">伪装目标</span>
+          <n-select
+            v-model:value="spoofTarget"
+            :options="spoofTargetOptions"
+            size="small"
+            style="width: 140px"
+            @update:value="persistSpoof"
+          />
+          <span class="field-hint">覆写 WS 上报 platformExt</span>
+        </div>
+        <div class="field switch-field">
           <span class="field-label">自动滚动</span>
           <n-switch v-model:value="autoScroll" />
         </div>
@@ -206,6 +224,37 @@ const uploadedBinName = ref("");
 const accountActionStatus = ref("未开始");
 const accountActionType = ref("default");
 let logSequence = 0;
+
+const SPOOF_LS_KEY = "xyzwPlatformSpoof";
+const spoofEnabled = ref(false);
+const spoofTarget = ref("mix");
+const spoofTargetOptions = [
+  { label: "mix（推荐）", value: "mix" },
+  { label: "h5", value: "h5" },
+];
+(function initSpoofConfig() {
+  try {
+    const raw = localStorage.getItem(SPOOF_LS_KEY);
+    if (!raw) return;
+    const cfg = JSON.parse(raw);
+    if (!cfg || typeof cfg !== "object") return;
+    spoofEnabled.value = cfg.enabled === true;
+    if (typeof cfg.platform === "string" && cfg.platform) spoofTarget.value = cfg.platform;
+  } catch (error) {}
+})();
+function persistSpoof() {
+  try {
+    localStorage.setItem(
+      SPOOF_LS_KEY,
+      JSON.stringify({ enabled: spoofEnabled.value, platform: spoofTarget.value, gameVersion: "" })
+    );
+  } catch (error) {}
+  if (spoofEnabled.value) {
+    message.info(`平台伪装已保存（${spoofTarget.value}）：点击「重载运行时」后生效`);
+  } else {
+    message.info("平台伪装已关闭：重载运行时后恢复 h5web 口径");
+  }
+}
 
 const bridge = new PushLevelResearchBridge((event, payload) => {
   appendLog({
