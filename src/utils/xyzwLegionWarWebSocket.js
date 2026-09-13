@@ -90,25 +90,34 @@
    }
  }
  
- /** 预注册游戏命令 */
- export function registerDefaultCommands(reg) {
-   const registry = reg.registerHeartbeat()
-     //盐场-获取战场信息
-     .register("war_getbattlefieldinfo")
-     .register("war_enterbattlefield")
-   
-   return registry
- }
- 
+/** 预注册游戏命令 */
+export function registerDefaultCommands(reg) {
+  const registry = reg.registerHeartbeat()
+    //盐场-获取战场信息
+    .register("war_getbattlefieldinfo")
+    .register("war_enterbattlefield")
+    //盐场-选阵容（布阵）：只提交出战阵容，不改变角色位置
+    .register("war_teamsetbattleteam")
+    //盐场-登场：提交阵容并让角色从 watching(-1,-1) 落到地图上
+    .register("war_setbattleteam")
+    //盐场-邀请组队：targetCodeId 为「战场内 codeId」，取自 roleMap[roleId].cId
+    .register("war_invitejointeam")
+
+  return registry
+}
+
  /**
   * XYZW WebSocket 盐场客户端
   */
  export class XyzwLegionWarWebSocketClient {
-   constructor({ url, utils,hint, heartbeatMs = 5000 }) {
-     this.url = url
-     this.utils = utils || g_utils
-     this.enc = this.utils?.getEnc ? this.utils.getEnc("auto") : undefined
- 
+  constructor({ url, utils,hint, heartbeatMs = 5000 }) {
+    this.url = url
+    this.utils = utils || g_utils
+    // 注意：getEnc("auto") 在注册表里不存在，会回落到 passthrough，
+    // 而 passthrough.encrypt 的实现就是 getEnc("x").encrypt —— 即抓包中的 "px" 方案。
+    // 所以这里的编码结果是正确的（已与抓包逐字节比对验证），不要按"未注册即明文"去理解它。
+    this.enc = this.utils?.getEnc ? this.utils.getEnc("auto") : undefined
+
      this.socket = null
      this.ack = 0
      this.seq = 0

@@ -96,6 +96,12 @@
             </n-icon>
             <span>实时盐场</span>
           </router-link>
+          <router-link to="/admin/salt-field-auto" class="nav-item" active-class="active">
+            <n-icon>
+              <Flash />
+            </n-icon>
+            <span>自动盐场</span>
+          </router-link>
         </div>
 
         <div class="nav-user">
@@ -175,6 +181,16 @@
             <Layers />
           </n-icon>
           <span>批量日常</span>
+        </router-link>
+        <router-link
+          to="/admin/salt-field-auto"
+          class="drawer-item"
+          @click="isMobileMenuOpen = false"
+        >
+          <n-icon>
+            <Flash />
+          </n-icon>
+          <span>自动盐场</span>
         </router-link>
         <router-link
           to="/admin/PushingLevels"
@@ -260,6 +276,7 @@ import {
   ArrowUpCircle,
   Search,
   ShieldCheckmark,
+  Flash,
 } from "@vicons/ionicons5";
 
 import { useRouter } from 'vue-router'

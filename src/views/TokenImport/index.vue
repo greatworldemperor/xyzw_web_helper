@@ -199,6 +199,24 @@
             <n-button size="small" @click="showGroupManageModal = true">
               分组管理
             </n-button>
+            <n-dropdown
+              trigger="click"
+              :options="saltFieldMenuOptions"
+              @select="handleSaltFieldMenu"
+            >
+              <n-button
+                size="small"
+                :type="saltFieldLeaderCount > 0 ? 'primary' : 'default'"
+                title="选中的角色会成为自动盐场里的队长；所属俱乐部会自动推导"
+              >
+                <template #icon>
+                  <n-icon>
+                    <Flash />
+                  </n-icon>
+                </template>
+                盐场队长（{{ saltFieldLeaderCount }}）
+              </n-button>
+            </n-dropdown>
             <n-button
               type="warning"
               :disabled="
@@ -984,6 +1002,7 @@ import {
   SyncCircle,
   TrashBin,
   GameController,
+  Flash,
 } from "@vicons/ionicons5";
 import { NIcon, NAlert, useDialog, useMessage } from "naive-ui";
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from "vue";
@@ -999,6 +1018,10 @@ import {
   toggleTokenSelection,
 } from "@/utils/gameSelection";
 import lz4 from "lz4js";
+import {
+  getLeaderTokenIds,
+  setLeaderTokenIds as setSaltFieldLeaderTokenIds,
+} from "@/utils/saltFieldConfig";
 const { getArrayBuffer, storeArrayBuffer, deleteArrayBuffer, clearAll } =
   useIndexedDB();
 // 接收路由参数
@@ -1450,6 +1473,58 @@ function selectAllMultiGameTokens() {
 
 function clearMultiGameTokenSelection() {
   multiGameSelectedTokenIds.value = new Set();
+}
+
+/* ---------------- 自动盐场：把选中的角色设为队长 ---------------- */
+// 只有「队长」需要在这里选；俱乐部信息在自动盐场页同步后自动推导出来。
+const saltFieldLeaderIds = ref(getLeaderTokenIds());
+const saltFieldLeaderCount = computed(() => saltFieldLeaderIds.value.length);
+const saltFieldSelectedLeaderCount = computed(
+  () =>
+    [...multiGameSelectedTokenIds.value].filter((id) =>
+      saltFieldLeaderIds.value.includes(String(id)),
+    ).length,
+);
+
+const saltFieldMenuOptions = computed(() => [
+  {
+    key: "set",
+    label: `设为盐场队长（+${multiGameSelectedTokenIds.value.size}）`,
+    disabled: multiGameSelectedTokenIds.value.size === 0 || isOpeningMultiGame.value,
+  },
+  {
+    key: "unset",
+    label: `取消选中项的队长（-${saltFieldSelectedLeaderCount.value}）`,
+    disabled: saltFieldSelectedLeaderCount.value === 0,
+  },
+  {
+    key: "clear",
+    label: `清空全部队长（${saltFieldLeaderCount.value}）`,
+    disabled: saltFieldLeaderCount.value === 0,
+  },
+  { key: "divider", type: "divider" },
+  { key: "open", label: "打开自动盐场" },
+]);
+
+function handleSaltFieldMenu(key) {
+  const current = getLeaderTokenIds();
+  if (key === "set") {
+    const next = [...new Set([...current, ...[...multiGameSelectedTokenIds.value].map(String)])];
+    setSaltFieldLeaderTokenIds(next);
+    message.success(`已设为盐场队长，共 ${next.length} 个角色`);
+  } else if (key === "unset") {
+    const drop = new Set([...multiGameSelectedTokenIds.value].map(String));
+    const next = current.filter((id) => !drop.has(id));
+    setSaltFieldLeaderTokenIds(next);
+    message.success(`已取消，剩余 ${next.length} 个队长`);
+  } else if (key === "clear") {
+    setSaltFieldLeaderTokenIds([]);
+    message.success("已清空全部盐场队长");
+  } else if (key === "open") {
+    router.push("/admin/salt-field-auto");
+    return;
+  }
+  saltFieldLeaderIds.value = getLeaderTokenIds();
 }
 
 watch(

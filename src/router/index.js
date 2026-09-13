@@ -124,6 +124,15 @@ const my_routes = [
         }
       },
       {
+        path: 'salt-field-auto',
+        name: 'SaltFieldAuto',
+        component: () => import('@/views/SaltFieldAuto.vue'),
+        meta: {
+          title: '自动盐场',
+          requiresToken: true
+        }
+      },
+      {
         path: 'PushingLevels',
         name: 'PushingLevels',
         component: () => import('@/views/PushingLevels.vue'),
