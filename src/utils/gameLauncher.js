@@ -1,6 +1,19 @@
 import lz4 from "lz4js";
 
 export const MULTI_GAME_ACTIVE_LAUNCH_KEY = "multi-game_active_launch_v1";
+export const MULTI_GAME_PLATFORM_SPOOF_KEY = "xyzwMultiGamePlatformSpoof";
+export const MULTI_GAME_TOKEN_GROUPS_KEY = "multiGameTokenGroups";
+export const MULTI_GAME_SYNC_GROUPS_KEY = "multiGameSyncGroups";
+
+export function getMultiGameTokenKey(token) {
+  if (token?.serverId && token?.roleId) {
+    return `${token.serverId}:${token.roleId}`;
+  }
+  if (token?.server && token?.roleId) {
+    return `${token.server}:${token.roleId}`;
+  }
+  return null;
+}
 
 const SCOPE_PATTERN = /^mg-[a-f0-9]{32}$/;
 const FAILURE_REASONS = new Set([
@@ -108,6 +121,7 @@ function isSession(value) {
       typeof value.tokenId === "string" &&
       value.tokenId.length > 0 &&
       typeof value.name === "string" &&
+      (value.tokenKey == null || typeof value.tokenKey === "string") &&
       SCOPE_PATTERN.test(value.scopeId) &&
       Number.isInteger(value.order) &&
       value.order >= 0,
@@ -284,6 +298,13 @@ export async function prepareMultiGameLaunch({
   now = () => Date.now(),
 }) {
   clearMultiGameLaunch({ localStorage, sessionStorage });
+  let platformSpoofConfig = null;
+  try {
+    const rawConfig = localStorage.getItem(MULTI_GAME_PLATFORM_SPOOF_KEY);
+    platformSpoofConfig = typeof rawConfig === "string" ? rawConfig : null;
+  } catch {
+    platformSpoofConfig = null;
+  }
   const launchId = `launch-${uuidHex(randomUUID)}`;
   const prepared = await Promise.all(
     tokens.map(async (token) => {
@@ -361,7 +382,19 @@ export async function prepareMultiGameLaunch({
         ]),
       ],
     );
-    sessions.push({ tokenId: result.token.id, name, scopeId, order });
+    if (platformSpoofConfig !== null) {
+      localEntries.push([
+        `${prefix}${MULTI_GAME_PLATFORM_SPOOF_KEY}`,
+        platformSpoofConfig,
+      ]);
+    }
+    sessions.push({
+      tokenId: result.token.id,
+      tokenKey: getMultiGameTokenKey(result.token),
+      name,
+      scopeId,
+      order,
+    });
   }
 
   const launch = {

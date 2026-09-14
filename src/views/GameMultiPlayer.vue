@@ -17,32 +17,80 @@
 
       <!-- 同步操作控制区 -->
       <div class="sync-controls" role="group" aria-label="同步操作">
-        <span class="sync-label">同步操作</span>
-        <label class="sync-toggle">
-          <input
-            type="checkbox"
-            :checked="syncEnabled"
-            @change="toggleSync"
-          />
-          <span
-            class="sync-toggle-indicator"
-            :class="{ 'is-on': syncEnabled }"
-          ></span>
-        </label>
-        <span v-if="syncEnabled" class="sync-status-on">● 已启用</span>
-        <span v-else class="sync-status-off">○ 已禁用</span>
-        <div v-if="syncEnabled" class="sync-group-badges">
-          <button
-            v-for="g in 6"
-            :key="g - 1"
-            type="button"
-            class="sync-group-badge"
-            :style="getGroupBadgeStyle(g - 1)"
-            :title="`第 ${g} 组 ${groupMemberCount(g - 1)} 个窗口`"
+        <span class="sync-label">同步分组</span>
+        <div v-if="syncGroups.length" class="sync-group-options">
+          <label
+            v-for="group in syncGroups"
+            :key="group.id"
+            class="sync-group-option"
+            :title="`${group.name}（${group.scopeIds.length} 个窗口）`"
           >
-            {{ groupMemberCount(g - 1) }}
-          </button>
+            <span
+              class="sync-group-dot"
+              :style="{ backgroundColor: group.color }"
+            ></span>
+            <span class="sync-group-name">{{ group.name }}</span>
+            <span class="sync-group-count">{{ group.scopeIds.length }}</span>
+            <input
+              class="sync-group-checkbox"
+              type="checkbox"
+              :checked="isGroupSyncEnabled(group.id)"
+              :disabled="group.scopeIds.length < 2"
+              @change="toggleSyncGroup(group.id, $event.target.checked)"
+            />
+          </label>
         </div>
+        <span v-if="!syncGroups.length" class="sync-status-off">
+          当前窗口没有匹配分组
+        </span>
+        <span v-else-if="hasSyncEnabled" class="sync-status-on">
+          ● 已启用
+        </span>
+        <span v-else class="sync-status-off">○ 未启用</span>
+      </div>
+
+      <div
+        v-if="frames.length"
+        class="platform-spoof-controls"
+        role="group"
+        aria-label="批量运行时平台伪装"
+      >
+        <span class="platform-spoof-label">平台伪装</span>
+        <button
+          class="platform-spoof-button"
+          :class="{ 'is-enabled': multiGameSpoofEnabled }"
+          type="button"
+          :aria-pressed="multiGameSpoofEnabled"
+          @click="toggleMultiGameSpoof"
+        >
+          {{ multiGameSpoofEnabled ? "已开启" : "已关闭" }}
+        </button>
+        <select
+          v-model="multiGameSpoofTarget"
+          class="platform-spoof-select"
+          aria-label="批量运行时伪装目标"
+          :disabled="!multiGameSpoofEnabled"
+          @change="persistMultiGameSpoof"
+        >
+          <option
+            v-for="option in multiGameSpoofTargetOptions"
+            :key="option.value"
+            :value="option.value"
+          >
+            {{ option.label }}
+          </option>
+        </select>
+        <button
+          class="platform-spoof-reload"
+          type="button"
+          :disabled="!frames.length"
+          @click="reloadAllFrames"
+        >
+          重载全部窗口
+        </button>
+        <span class="platform-spoof-hint">
+          {{ multiGameSpoofEnabled ? `h5web → ${multiGameSpoofTarget}，重载后生效` : "关闭（批量独立配置，重载后恢复 h5web）" }}
+        </span>
       </div>
 
       <div class="automation-actions" role="group" aria-label="自动盐场批量操作">
@@ -130,73 +178,20 @@
             :aria-label="`选择 ${frame.name}`"
             @change="toggleFrameSelection(frame.scopeId)"
           />
-          <!-- 分组选择器 + 主窗口切换 -->
-          <n-popover
-            :width="220"
-            trigger="click"
-            placement="bottom-start"
-          >
-            <template #trigger>
-              <button
-                class="frame-group-indicator"
-                :class="{ 'is-master': isMasterOf(frame.scopeId) }"
-                type="button"
-                :title="getFrameGroupTitle(frame.scopeId)"
-                :style="getGroupBadgeStyle(frameGroups[frame.scopeId] ?? -1, true)"
-              >
-                <span v-if="isMasterOf(frame.scopeId)" class="master-star">★</span>
-                {{ frameGroups[frame.scopeId] == null || frameGroups[frame.scopeId] < 0 ? "—" : frameGroups[frame.scopeId] + 1 }}
-              </button>
-            </template>
-            <div class="group-popover">
-              <div class="group-popover-title">分配分组</div>
-              <button
-                class="group-option-btn"
-                :class="{ active: (frameGroups[frame.scopeId] ?? -1) === -1 }"
-                type="button"
-                @click="setFrameGroup(frame.scopeId, -1)"
-              >
-                — 不分组（不参与同步）
-              </button>
-              <button
-                v-for="g in 6"
-                :key="g - 1"
-                class="group-option-btn"
-                :class="{
-                  active: frameGroups[frame.scopeId] === g - 1,
-                  'is-master-row': frameGroups[frame.scopeId] === g - 1 && isMasterOf(frame.scopeId),
-                }"
-                :style="getGroupBadgeStyle(g - 1)"
-                type="button"
-                @click="setFrameGroup(frame.scopeId, g - 1)"
-              >
-                <span class="group-name">第 {{ g }} 组</span>
-                <span
-                  v-if="frameGroups[frame.scopeId] === g - 1 && isMasterOf(frame.scopeId)"
-                  class="master-badge"
-                >
-                  ★ 主
-                </span>
-                <span
-                  v-else-if="groupMasters[g - 1] && frameGroups[groupMasters[g - 1]] === g - 1"
-                  class="master-badge-muted"
-                >
-                  {{ frames.find((f) => f.scopeId === groupMasters[g - 1])?.name?.slice(0, 4) || "" }}
-                </span>
-              </button>
-              <!-- 设为主窗口按钮：仅当已分组且不是当前主窗口时显示 -->
-              <template v-if="frameGroups[frame.scopeId] >= 0 && !isMasterOf(frame.scopeId)">
-                <div class="group-popover-sep"></div>
-                <button
-                  class="group-option-btn group-option-primary"
-                  type="button"
-                  @click="makeMaster(frame.scopeId)"
-                >
-                  ★ 设为该组主窗口
-                </button>
-              </template>
-            </div>
-          </n-popover>
+          <div class="frame-group-tags" :title="getFrameGroupTitle(frame.scopeId)">
+            <span
+              v-for="group in getFrameGroups(frame.scopeId)"
+              :key="group.id"
+              class="frame-group-tag"
+              :style="{
+                borderColor: group.color,
+                color: group.color,
+                backgroundColor: `${group.color}22`,
+              }"
+            >
+              {{ group.name }}
+            </span>
+          </div>
           <span class="account-name" :title="frame.name">{{ frame.name }}</span>
           <span
             class="frame-status"
@@ -373,12 +368,21 @@ import {
   buildMultiGameFrameSrc,
   closeMultiGameSession,
   moveMultiGameSession,
+  MULTI_GAME_PLATFORM_SPOOF_KEY,
+  MULTI_GAME_SYNC_GROUPS_KEY,
+  MULTI_GAME_TOKEN_GROUPS_KEY,
   readActiveMultiGameLaunch,
   resolveMultiGameFrameMessage,
 } from "@/utils/gameLauncher";
 
 const router = useRouter();
 const FRAME_LOAD_TIMEOUT_MS = 45_000;
+const multiGameSpoofEnabled = ref(false);
+const multiGameSpoofTarget = ref("mix");
+const multiGameSpoofTargetOptions = [
+  { label: "mix（推荐）", value: "mix" },
+  { label: "h5", value: "h5" },
+];
 const launch = ref(readLaunchSafely());
 const gameStrip = ref(null);
 const movingFrame = ref(false);
@@ -422,176 +426,173 @@ const frameStates = reactive(
 // ========== 同步操作相关状态 ==========
 const SYNC_CMD_CHANNEL = "multi-game-sync";
 const SYNC_VERSION = 1;
-const MAX_GROUPS = 6;
-const GROUP_COLORS = [
-  "#ef4444", // 红
-  "#f97316", // 橙
-  "#eab308", // 黄
-  "#22c55e", // 绿
-  "#3b82f6", // 蓝
-  "#a855f7", // 紫
-];
-const syncEnabled = ref(false);
 const syncThrottleMs = 16; // ~60fps
-// 每个 scopeId 对应一个组号 (-1 表示未分组)
-const frameGroups = reactive(
-  Object.fromEntries(frames.value.map((f, i) => [f.scopeId, i % MAX_GROUPS])),
+const tokenGroups = ref([]);
+const syncGroupEnabled = ref({});
+
+function readJsonStorage(key, fallback) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return fallback;
+    const value = JSON.parse(raw);
+    return value ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function loadTokenGroups() {
+  const groups = readJsonStorage(MULTI_GAME_TOKEN_GROUPS_KEY, []);
+  tokenGroups.value = Array.isArray(groups)
+    ? groups
+        .filter((group) => group && group.id != null)
+        .map((group) => ({
+          id: String(group.id),
+          name: String(group.name || "未命名分组"),
+          color: String(group.color || "#64748b"),
+          tokenKeys: Array.isArray(group.tokenKeys)
+            ? group.tokenKeys.map(String)
+            : [],
+        }))
+    : [];
+}
+
+function loadSyncGroupSettings() {
+  const settings = readJsonStorage(MULTI_GAME_SYNC_GROUPS_KEY, {});
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    syncGroupEnabled.value = {};
+    return;
+  }
+  syncGroupEnabled.value = Object.fromEntries(
+    Object.entries(settings)
+      .filter(([, enabled]) => enabled === true)
+      .map(([groupId]) => [String(groupId), true]),
+  );
+}
+
+function persistSyncGroupSettings() {
+  try {
+    window.localStorage.setItem(
+      MULTI_GAME_SYNC_GROUPS_KEY,
+      JSON.stringify(syncGroupEnabled.value),
+    );
+  } catch (error) {
+    console.error("Unable to persist MultiGame sync groups:", error);
+  }
+}
+
+loadTokenGroups();
+loadSyncGroupSettings();
+
+function initMultiGameSpoof() {
+  try {
+    const raw = window.localStorage.getItem(MULTI_GAME_PLATFORM_SPOOF_KEY);
+    const config = raw ? JSON.parse(raw) : null;
+    if (!config || typeof config !== "object") return;
+    multiGameSpoofEnabled.value = config.enabled === true;
+    if (config.platform === "mix" || config.platform === "h5") {
+      multiGameSpoofTarget.value = config.platform;
+    }
+  } catch {}
+}
+
+function persistMultiGameSpoof() {
+  const serialized = JSON.stringify({
+    enabled: multiGameSpoofEnabled.value,
+    platform: multiGameSpoofTarget.value,
+    gameVersion: "",
+  });
+  try {
+    window.localStorage.setItem(MULTI_GAME_PLATFORM_SPOOF_KEY, serialized);
+    for (const session of launch.value?.sessions || []) {
+      window.localStorage.setItem(
+        `multi-game:${session.scopeId}:${MULTI_GAME_PLATFORM_SPOOF_KEY}`,
+        serialized,
+      );
+    }
+  } catch (error) {
+    console.error("Unable to persist MultiGame platform spoof config:", error);
+  }
+}
+
+function toggleMultiGameSpoof() {
+  multiGameSpoofEnabled.value = !multiGameSpoofEnabled.value;
+  persistMultiGameSpoof();
+}
+
+initMultiGameSpoof();
+
+const syncGroups = computed(() =>
+  tokenGroups.value
+    .map((group) => ({
+      ...group,
+      scopeIds: frames.value
+        .filter((frame) => group.tokenKeys.includes(String(frame.tokenKey)))
+        .map((frame) => frame.scopeId),
+    }))
+    .filter((group) => group.scopeIds.length > 0),
 );
-// 每组的主窗口 scopeId —— 权威源，只以实际分组作为键
-const groupMasters = reactive({});
 
-/**
- * 获取某组的所有成员 scopeId（不包含 -1 未分组）
- */
-function getGroupMembers(groupIndex) {
-  if (groupIndex == null || groupIndex < 0) return [];
-  return Object.entries(frameGroups)
-    .filter(([, g]) => g === groupIndex)
-    .map(([scopeId]) => scopeId);
-}
-
-/**
- * 确保某组有主窗口；没有就选第一个成员
- * 权威源：groupMasters[groupIndex]，与 UI 筛选态无关
- */
-function ensureGroupMaster(groupIndex) {
-  if (groupIndex == null || groupIndex < 0) return null;
-  const current = groupMasters[groupIndex];
-  // 现任仍在该组且未被移除，则保持
-  if (current != null && frameGroups[current] === groupIndex) {
-    return current;
-  }
-  // 否则从当前成员中选一个
-  const members = getGroupMembers(groupIndex);
-  if (members.length > 0) {
-    groupMasters[groupIndex] = members[0];
-    return members[0];
-  }
-  // 该组无人 —— 清理
-  delete groupMasters[groupIndex];
-  return null;
-}
-
-/**
- * 把某组的主窗口换成指定 scopeId（必须已在该组）
- */
-function setGroupMaster(groupIndex, scopeId) {
-  if (groupIndex == null || groupIndex < 0) return false;
-  if (scopeId == null) {
-    delete groupMasters[groupIndex];
-    return true;
-  }
-  if (frameGroups[scopeId] !== groupIndex) return false;
-  groupMasters[groupIndex] = scopeId;
-  return true;
-}
-
-/**
- * 当某窗口的分组发生变更时，更新两组的主窗口状态
- */
-function onFrameGroupChanged(scopeId, oldGroup, newGroup) {
-  // 旧组：如果离开的是主窗口，重选
-  if (oldGroup != null && oldGroup >= 0) {
-    if (groupMasters[oldGroup] === scopeId) {
-      delete groupMasters[oldGroup];
-      ensureGroupMaster(oldGroup);
-    }
-  }
-  // 新组：确保有主窗口（新成员自动当选如果之前没主）
-  if (newGroup != null && newGroup >= 0) {
-    ensureGroupMaster(newGroup);
-  }
-}
-
-/**
- * 当某窗口被移除（关闭）时清理分组和主窗口
- */
-function onFrameRemoved(scopeId) {
-  const g = frameGroups[scopeId];
-  if (g != null && g >= 0) {
-    if (groupMasters[g] === scopeId) {
-      delete groupMasters[g];
-      ensureGroupMaster(g);
-    }
-    delete frameGroups[scopeId];
-  }
-}
-
-/**
- * 判断某窗口是否为其所在组的主窗口
- */
-function isMasterOf(scopeId) {
-  const g = frameGroups[scopeId];
-  if (g == null || g < 0) return false;
-  return groupMasters[g] === scopeId;
-}
-
-function groupMemberCount(groupIndex) {
-  if (groupIndex < 0) return 0;
-  return Object.values(frameGroups).filter((g) => g === groupIndex).length;
-}
-
-function getGroupBadgeStyle(groupIndex, compact = false) {
-  if (groupIndex == null || groupIndex < 0) {
-    return compact
-      ? {
-          background: "#1e293b",
-          borderColor: "#475569",
-          color: "#94a3b8",
-        }
-      : {};
-  }
-  const color = GROUP_COLORS[groupIndex % GROUP_COLORS.length];
-  return {
-    background: `${color}22`,
-    borderColor: color,
-    color,
-  };
+function getFrameGroups(scopeId) {
+  const frame = frames.value.find((item) => item.scopeId === scopeId);
+  const tokenKey = frame?.tokenKey;
+  if (!tokenKey) return [];
+  return tokenGroups.value.filter((group) =>
+    group.tokenKeys.includes(String(tokenKey)),
+  );
 }
 
 function getFrameGroupTitle(scopeId) {
-  const g = frameGroups[scopeId];
-  if (g == null || g < 0) return "未分组 - 点击分配到组";
-  const master = groupMasters[g];
-  if (master === scopeId) return `第 ${g + 1} 组 · 主窗口 - 点击切换`;
-  return `第 ${g + 1} 组 - 点击设置为主窗口`;
+  const groups = getFrameGroups(scopeId);
+  return groups.length
+    ? groups.map((group) => group.name).join("、")
+    : "未加入 Token 管理分组，不参与同步";
 }
 
-function setFrameGroup(scopeId, groupIndex) {
-  const old = frameGroups[scopeId];
-  if (old === groupIndex) return;
-  frameGroups[scopeId] = groupIndex;
-  onFrameGroupChanged(scopeId, old, groupIndex);
+function isGroupSyncEnabled(groupId) {
+  return syncGroupEnabled.value[String(groupId)] === true;
 }
 
-/**
- * 把窗口切换为所在组的主窗口
- */
-function makeMaster(scopeId) {
-  const g = frameGroups[scopeId];
-  if (g == null || g < 0) return;
-  setGroupMaster(g, scopeId);
-}
-
-function toggleSync(event) {
-  syncEnabled.value = event.target.checked;
+function toggleSyncGroup(groupId, enabled) {
+  const next = { ...syncGroupEnabled.value };
+  if (enabled) next[String(groupId)] = true;
+  else delete next[String(groupId)];
+  syncGroupEnabled.value = next;
+  persistSyncGroupSettings();
   broadcastSyncConfig();
 }
+
+function isFrameSyncEnabled(scopeId) {
+  return syncGroups.value.some(
+    (group) =>
+      group.scopeIds.length > 1 &&
+      group.scopeIds.includes(scopeId) &&
+      isGroupSyncEnabled(group.id),
+  );
+}
+
+const hasSyncEnabled = computed(() =>
+  syncGroups.value.some(
+    (group) => group.scopeIds.length > 1 && isGroupSyncEnabled(group.id),
+  ),
+);
 
 /**
  * 向所有 iframe 广播同步配置
  */
 function broadcastSyncConfig() {
-  const message = {
-    channel: SYNC_CMD_CHANNEL,
-    version: SYNC_VERSION,
-    type: "config",
-    enabled: syncEnabled.value,
-    throttleMs: syncThrottleMs,
-  };
   for (const [scopeId, element] of frameElements) {
     if (!isFrameReady(scopeId)) continue;
-    element.contentWindow?.postMessage(message, window.location.origin);
+    element.contentWindow?.postMessage(
+      {
+        channel: SYNC_CMD_CHANNEL,
+        version: SYNC_VERSION,
+        type: "config",
+        enabled: isFrameSyncEnabled(scopeId),
+        throttleMs: syncThrottleMs,
+      },
+      window.location.origin,
+    );
   }
 }
 
@@ -606,7 +607,7 @@ function sendSyncConfigTo(scopeId) {
       channel: SYNC_CMD_CHANNEL,
       version: SYNC_VERSION,
       type: "config",
-      enabled: syncEnabled.value,
+      enabled: isFrameSyncEnabled(scopeId),
       throttleMs: syncThrottleMs,
     },
     window.location.origin,
@@ -614,26 +615,25 @@ function sendSyncConfigTo(scopeId) {
 }
 
 /**
- * 处理来自 iframe 的用户事件：仅主窗口的事件向同组从窗口转发
- * 从窗口事件静默丢弃（不向任何方向同步）
+ * 处理来自 iframe 的用户事件：按 Token 管理中的已启用分组转发，并去重重叠分组。
  */
 function handleUserEventFromFrame(scopeId, eventData) {
-  if (!syncEnabled.value) return;
+  const sourceGroups = syncGroups.value.filter(
+    (group) =>
+      group.scopeIds.length > 1 &&
+      group.scopeIds.includes(scopeId) &&
+      isGroupSyncEnabled(group.id),
+  );
+  if (!sourceGroups.length) return;
 
-  const group = frameGroups[scopeId];
-  if (group == null || group < 0) return; // 未分组不参与同步
-
-  // 只有主窗口的事件才向外转发 —— 单向同步核心
-  if (groupMasters[group] !== scopeId) return;
-
-  const targetScopeIds = frames.value
-    .filter(
-      (f) =>
-        f.scopeId !== scopeId &&
-        frameGroups[f.scopeId] === group &&
-        isFrameReady(f.scopeId),
-    )
-    .map((f) => f.scopeId);
+  const targetScopeIds = new Set();
+  for (const group of sourceGroups) {
+    for (const targetScopeId of group.scopeIds) {
+      if (targetScopeId !== scopeId && isFrameReady(targetScopeId)) {
+        targetScopeIds.add(targetScopeId);
+      }
+    }
+  }
 
   for (const targetId of targetScopeIds) {
     const element = frameElements.get(targetId);
@@ -650,7 +650,7 @@ function handleUserEventFromFrame(scopeId, eventData) {
     );
   }
   // 兜底：同步转发可能引发 iframe 内部的跨文档滚动，锁定宿主网格位置
-  if (targetScopeIds.length > 0) lockStripScroll();
+  if (targetScopeIds.size > 0) lockStripScroll();
 }
 
 // ========== 同步操作相关状态结束 ==========
@@ -858,6 +858,10 @@ function reloadFrame(scopeId) {
   armFrameTimeout(scopeId);
 }
 
+function reloadAllFrames() {
+  for (const frame of frames.value) reloadFrame(frame.scopeId);
+}
+
 function canMoveFrame(scopeId, direction) {
   const sessions = launch.value?.sessions || [];
   const index = sessions.findIndex((session) => session.scopeId === scopeId);
@@ -882,7 +886,7 @@ const STRIP_SCROLL_LOCK_MS = 1800;
 let stripScrollLock = null;
 
 function lockStripScroll() {
-  if (!syncEnabled.value) return;
+  if (!hasSyncEnabled.value) return;
   const strip = gameStrip.value;
   if (!strip) return;
   const now = performance.now();
@@ -1027,8 +1031,6 @@ function closeFrame(frame) {
     clearControlPending(frame.scopeId);
     frameElements.delete(frame.scopeId);
     delete frameStates[frame.scopeId];
-    // 清理分组 + 主窗口选举
-    onFrameRemoved(frame.scopeId);
     const nextSelection = new Set(selectedScopes.value);
     nextSelection.delete(frame.scopeId);
     selectedScopes.value = nextSelection;
@@ -1095,17 +1097,18 @@ function handleMessage(event) {
     frameStates[result.scopeId].status = result.status;
     if (result.status === "ready") {
       refreshAutomationStatus(result.scopeId);
-      // 新 iframe 就绪后，发送当前同步配置
-      if (syncEnabled.value) {
-        sendSyncConfigTo(result.scopeId);
-      }
-      // 确保分组状态已初始化 + 自动选举主窗口
-      if (!(result.scopeId in frameGroups)) {
-        setFrameGroup(result.scopeId, 0);
-      } else {
-        ensureGroupMaster(frameGroups[result.scopeId]);
-      }
+      sendSyncConfigTo(result.scopeId);
     }
+  }
+}
+
+function handleStorageChange(event) {
+  if (event.key === MULTI_GAME_TOKEN_GROUPS_KEY) {
+    loadTokenGroups();
+    broadcastSyncConfig();
+  } else if (event.key === MULTI_GAME_SYNC_GROUPS_KEY) {
+    loadSyncGroupSettings();
+    broadcastSyncConfig();
   }
 }
 
@@ -1113,17 +1116,19 @@ function goToTokens() {
   router.push("/tokens");
 }
 
-onBeforeMount(() => window.addEventListener("message", handleMessage));
+onBeforeMount(() => {
+  window.addEventListener("message", handleMessage);
+  window.addEventListener("storage", handleStorageChange);
+});
 onMounted(() => {
   frames.value.forEach((frame) => armFrameTimeout(frame.scopeId));
-  // 初始主窗口选举：遍历所有已分组成员，每组选第一个
-  for (let g = 0; g < MAX_GROUPS; g++) ensureGroupMaster(g);
   statusPollTimer = window.setInterval(() => {
     if (!controlBusy.value) refreshAutomationStatus();
   }, 5000);
 });
 onUnmounted(() => {
   window.removeEventListener("message", handleMessage);
+  window.removeEventListener("storage", handleStorageChange);
   stopStripScrollAnimation();
   releaseStripScrollLock();
   for (const scopeId of frameTimeouts.keys()) clearFrameTimeout(scopeId);
@@ -1275,9 +1280,123 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
-.sync-group-badges {
+.sync-group-options {
   display: flex;
-  gap: 3px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.sync-group-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 22px;
+  padding: 2px 6px;
+  border: 1px solid #334155;
+  border-radius: 5px;
+  color: #cbd5e1;
+  background: #172033;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.sync-group-option:has(.sync-group-checkbox:checked) {
+  border-color: #2563eb;
+  background: #1d4ed833;
+}
+
+.sync-group-option:has(.sync-group-checkbox:disabled) {
+  color: #64748b;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.sync-group-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.sync-group-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sync-group-count {
+  color: #94a3b8;
+  font-size: 10px;
+}
+
+.sync-group-checkbox {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: #2563eb;
+}
+
+.platform-spoof-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 4px 10px;
+  border: 1px solid #3b4a63;
+  border-radius: 8px;
+  background: #0f1622;
+}
+
+.platform-spoof-label {
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.platform-spoof-button,
+.platform-spoof-reload {
+  padding: 4px 8px;
+  border: 1px solid #475569;
+  border-radius: 5px;
+  color: #cbd5e1;
+  background: #1e293b;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.platform-spoof-button:hover,
+.platform-spoof-reload:hover:not(:disabled) {
+  background: #334155;
+}
+
+.platform-spoof-button.is-enabled {
+  border-color: #16a34a;
+  color: #bbf7d0;
+  background: #14532d;
+}
+
+.platform-spoof-select {
+  min-width: 104px;
+  padding: 3px 5px;
+  border: 1px solid #475569;
+  border-radius: 5px;
+  color: #e2e8f0;
+  background: #1e293b;
+  font-size: 12px;
+}
+
+.platform-spoof-select:disabled,
+.platform-spoof-reload:disabled {
+  color: #64748b;
+  background: #111827;
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.platform-spoof-hint {
+  color: #94a3b8;
+  font-size: 11px;
 }
 
 .sync-group-badge {
@@ -1291,131 +1410,24 @@ onUnmounted(() => {
   cursor: help;
 }
 
-.frame-group-indicator {
+.frame-group-tags {
   flex: none;
-  min-width: 30px;
-  height: 22px;
-  padding: 0 5px;
-  border: 1px solid #475569;
-  border-radius: 4px;
-  color: #cbd5e1;
-  font-size: 12px;
-  font-weight: 700;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  cursor: pointer;
-  transition: transform 0.1s, box-shadow 0.15s;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-}
-
-.frame-group-indicator:hover {
-  transform: scale(1.08);
-}
-
-.frame-group-indicator.is-master {
-  box-shadow: 0 0 0 1px #eab308, 0 0 8px #eab30880;
-  background: #713f12 !important;
-  color: #fde68a !important;
-}
-
-.master-star {
-  font-size: 10px;
-  color: #fbbf24;
-}
-
-.group-popover {
-  display: flex;
-  flex-direction: column;
   gap: 4px;
-}
-
-.group-popover-title {
-  padding-bottom: 4px;
-  margin-bottom: 4px;
-  border-bottom: 1px solid #374151;
-  color: #94a3b8;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.group-option-btn {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  padding: 6px 10px;
-  border: 1px solid #374151;
-  border-radius: 5px;
-  background: #0f1622;
-  color: #cbd5e1;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.group-option-btn:hover {
-  background: #1e293b;
-  border-color: #2563eb;
-}
-
-.group-option-btn.active {
-  border-color: #2563eb;
-  background: #1d4ed8;
-  color: #dbeafe;
-  font-weight: 600;
-}
-
-.group-option-btn.is-master-row {
-  border-color: #eab308 !important;
-  background: #713f12 !important;
-  color: #fde68a !important;
-}
-
-.group-option-btn.group-option-primary {
-  border-color: #2563eb;
-  background: #1d4ed8;
-  color: #dbeafe;
-  font-weight: 600;
-}
-
-.group-option-btn.group-option-primary:hover {
-  background: #1e40af !important;
-}
-
-.group-option-btn .group-name {
-  flex: 1;
-}
-
-.master-badge {
-  flex: none;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: #eab308;
-  color: #1c1917;
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.master-badge-muted {
-  flex: none;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: #374151;
-  color: #9ca3af;
-  font-size: 10px;
-  font-weight: 500;
-  max-width: 60px;
+  min-width: 0;
   overflow: hidden;
+}
+
+.frame-group-tag {
+  max-width: 88px;
+  padding: 2px 5px;
+  border: 1px solid;
+  border-radius: 4px;
+  overflow: hidden;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.group-popover-sep {
-  height: 1px;
-  margin: 4px 0;
-  background: #374151;
 }
 
 .automation-actions {

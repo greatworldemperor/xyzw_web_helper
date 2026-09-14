@@ -18,6 +18,7 @@ const expectedRuntimeFiles = [
   "patch.decrypted_readable.js",
   "src/settings.da7ef.js",
   "game-defines.a175e.js",
+  "platform-spoof.js?v=20260914.2",
   "main.2a00e.js",
   "cocos2d-js-min.a5841.js",
   "xh.js",
@@ -27,6 +28,7 @@ const expectedRuntimeFiles = [
 const expectedAutomationFiles = [
   "salt-field-auto.js?v=20260911.1",
   "multi-game-control-bridge.js?v=20260911.1",
+  "multi-game-sync-bridge.js?v=20260913.1",
 ];
 
 function executeBootstrap(boot) {

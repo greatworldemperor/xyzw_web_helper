@@ -14,8 +14,10 @@
  *   游戏逻辑对 platformExt 的引用发生在运行时（模块初始化晚于本脚本），因此全局覆写可以覆盖
  *   登录后所有 WS 请求体（role_getroleinfo 等）。
  *
- * 开关（localStorage，宿主页与游戏 iframe 同源共享）：
- *   localStorage["xyzwPlatformSpoof"] = {"enabled":true,"platform":"mix","gameVersion":""}
+ * 开关：普通运行时使用 localStorage["xyzwPlatformSpoof"]，批量运行时使用
+ * localStorage["xyzwMultiGamePlatformSpoof"]。批量运行时的存储桥会为每个账号提供
+ * 独立空间，因此两套配置互不读取、互不影响：
+ *   {"enabled":true,"platform":"mix","gameVersion":""}
  *   - enabled=false 或缺省键 → 完全不干预（原始 h5web 口径）。
  *   - platform：覆写 gt.PLATFORM。可选值参考：'mix'（官方主流口径，369/436 且项目 WS 已验证）、
  *     'h5'（官方 H5 口径，58 人有击杀记录）。
@@ -33,7 +35,12 @@
 (function () {
   "use strict";
 
-  var LS_KEY = "xyzwPlatformSpoof";
+  var isMultiGameRuntime = /(?:^|\/)multi-game\.html$/i.test(
+    String(window.location && window.location.pathname || "")
+  );
+  var LS_KEY = isMultiGameRuntime
+    ? "xyzwMultiGamePlatformSpoof"
+    : "xyzwPlatformSpoof";
   var DEFAULTS = { enabled: false, platform: "mix", gameVersion: "" };
 
   function readConfig() {

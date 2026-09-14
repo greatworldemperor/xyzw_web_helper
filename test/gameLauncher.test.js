@@ -62,6 +62,19 @@ test("createCompatibleRandomUUID falls back to getRandomValues on HTTP", () => {
   );
 });
 
+test("getMultiGameTokenKey matches Token Management stable identity keys", () => {
+  assert.equal(typeof launcher.getMultiGameTokenKey, "function");
+  assert.equal(
+    launcher.getMultiGameTokenKey({ serverId: 12, roleId: 34 }),
+    "12:34",
+  );
+  assert.equal(
+    launcher.getMultiGameTokenKey({ server: "S1", roleId: 34 }),
+    "S1:34",
+  );
+  assert.equal(launcher.getMultiGameTokenKey({ id: "legacy" }), null);
+});
+
 test("buildMultiGameFrameSrc encodes scope and account without exposing token data", () => {
   assert.equal(typeof launcher.buildMultiGameFrameSrc, "function");
   assert.equal(
@@ -157,9 +170,9 @@ test("prepareMultiGameLaunch seeds isolated accounts in display order and record
 
   const result = await launcher.prepareMultiGameLaunch({
     tokens: [
-      { id: "a", name: "账号 A" },
+      { id: "a", name: "账号 A", serverId: 12, roleId: 34 },
       { id: "missing", name: "缺失账号" },
-      { id: "b", name: "账号 B" },
+      { id: "b", name: "账号 B", server: "S2", roleId: 56 },
     ],
     getArrayBuffer: async (id) => buffers.get(id) ?? null,
     localStorage: local,
@@ -169,19 +182,22 @@ test("prepareMultiGameLaunch seeds isolated accounts in display order and record
   });
 
   assert.deepEqual(
-    result.launch.sessions.map(({ tokenId, scopeId, order }) => ({
+    result.launch.sessions.map(({ tokenId, tokenKey, scopeId, order }) => ({
       tokenId,
+      tokenKey,
       scopeId,
       order,
     })),
     [
       {
         tokenId: "a",
+        tokenKey: "12:34",
         scopeId: "mg-11111111111111111111111111111111",
         order: 0,
       },
       {
         tokenId: "b",
+        tokenKey: "S2:56",
         scopeId: "mg-22222222222222222222222222222222",
         order: 1,
       },
@@ -223,6 +239,41 @@ test("prepareMultiGameLaunch seeds isolated accounts in display order and record
     JSON.parse(session.getItem("multi-game_active_launch_v1")),
     result.launch,
   );
+});
+
+test("prepareMultiGameLaunch copies only the independent batch spoof config", async () => {
+  const local = new MemoryStorage();
+  const session = new MemoryStorage();
+  const batchConfig = JSON.stringify({
+    enabled: true,
+    platform: "mix",
+    gameVersion: "",
+  });
+  local.setItem("xyzwMultiGamePlatformSpoof", batchConfig);
+  local.setItem(
+    "xyzwPlatformSpoof",
+    JSON.stringify({ enabled: true, platform: "h5", gameVersion: "" }),
+  );
+
+  await launcher.prepareMultiGameLaunch({
+    tokens: [{ id: "a", name: "账号 A" }],
+    getArrayBuffer: async () =>
+      Uint8Array.from([112, 108, 1, 2, 3]).buffer,
+    localStorage: local,
+    sessionStorage: session,
+    randomUUID: (() => {
+      const uuids = [
+        "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "11111111-1111-1111-1111-111111111111",
+      ];
+      return () => uuids.shift();
+    })(),
+    now: () => 1,
+  });
+
+  const prefix = "multi-game:mg-11111111111111111111111111111111:";
+  assert.equal(local.getItem(`${prefix}xyzwMultiGamePlatformSpoof`), batchConfig);
+  assert.equal(local.getItem(`${prefix}xyzwPlatformSpoof`), null);
 });
 
 test("prepareMultiGameLaunch isolates a BIN read error from other accounts", async () => {

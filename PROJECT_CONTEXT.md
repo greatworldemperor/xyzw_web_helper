@@ -111,6 +111,8 @@ H5 方法
 
 游戏 iframe 的上号器 `sh1.js` 由研究桥 v19 动态注入：`research=push-level` 被动模式不加载（避免旧上号器探测污染研究日志）；普通运行时与 `headless-test=1` iframe 加载（headless iframe 带 `bin_id=<tokenId>` 时 sh1 自动登录进主城）。`diagnose_require.js` 诊断脚本随 `index.html` 静态加载。
 
+平台伪装配置按运行时入口隔离：推关研究/普通单开运行时使用 `localStorage["xyzwPlatformSpoof"]`；批量运行时使用独立的 `localStorage["xyzwMultiGamePlatformSpoof"]`，并由 `gameLauncher` 在启动时写入每个 `multi-game:<scope>:` 账号空间。批量页可独立切换目标并重载全部窗口，研究页开关不会影响批量窗口。
+
 消息通常包含以下字段：
 
 ```js
@@ -550,11 +552,12 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 
 - [x] 多账号 runtime 基础能力已存在：通过 [src/views/GameMultiPlayer.vue](src/views/GameMultiPlayer.vue) 和 `multi-game-storage-bridge.js` 隔离多个 iframe 的账号存储，并支持单窗口重载、关闭和排序移动。
 - [x] 多开页面已改为响应式网格布局，在桌面端多列排列、移动端单列滚动，避免只能横向铺开浏览。
+- [x] 批量运行时分组改为直接读取 Token 管理的 `multiGameTokenGroups`（按稳定 `serverId:roleId` 匹配）；账号可属于多个分组，批量页展示对应标签，并通过独立的 `multiGameSyncGroups` 为每个分组单独启用/关闭同步。
 - [x] 已接入第一版自动盐场控制面：父页面可选择账号并批量启动/暂停，单窗口可查询状态、布阵、寻盐田、攻击当前目标和加速；控制请求通过同源、来源校验和白名单动作桥接到 iframe 内的 `__SALT_FIELD_AUTO__`。
 - [ ] 目前账号窗口仍需继续优化尺寸预设、窗口高度和大量账号时的扫描效率，并在桌面端和移动端做真实浏览器验收。
 - [ ] 允许调整单个账号窗口大小，并让所有账号窗口同步使用该尺寸。
 - [ ] 调整窗口尺寸后重启每个窗口中的游戏内容，使游戏 runtime 重新适应新的 viewport/窗口大小。
-- [ ] 支持预设账号分组，并提供一键批量切换分组；同时保留单个账号独立切换能力。
+- [x] 批量页不再维护独立的手动分组/主窗口状态；分组归属统一由 Token 管理维护，组内同步按每个分组的独立开关生效。
 - [ ] 完善多账号自动盐场调度：按活动开放状态、角色状态和连接生命周期协调批量运行，明确停止、失败、重试和释放行为；当前第一版控制面尚未替代活动实测。
 - [ ] 为后续扩展预留统一的多账号功能调度入口，便于增加其他批量 runtime 功能而不重复实现窗口、分组和生命周期管理。
 

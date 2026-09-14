@@ -104,13 +104,15 @@ H5 环境对照（同一晚 20:00:35，本项目 push-level-research 页面，`h
 - `game-defines.a175e.js` 第 4 行 `gt.PLATFORM = 'h5web'`（第 13 行 `gt.GAME_VERSION = '1.89.8-wx'`）是全入口唯一来源；游戏逻辑包（CDN 加载）在运行时读该全局拼装 WS 请求体。
 - 账号 bin（如 wechat.bin）解码后 `platformExt: "mix"` —— **authuser 登录请求本就上报 mix**，而战场仍标记 `hortor-h5web` ⇒ 服务端 loginPlatform 取自 **WS 请求体上报的 platformExt**，覆写该全局即命中要害。
 
-**实现**（3 处）：
+**实现**（5 处）：
 1. `public/game/platform-spoof.js`（新增）：在 game-defines 之后、main/cocos/CDN 之前执行，按 localStorage 配置覆写 `window.PLATFORM`（可选 `GAME_VERSION`）；默认关闭，完全无副作用。暴露 `window.__xyzwPlatformSpoof = {KEY, read, write, clear, applied}`。
-2. `public/game/index.html` + `public/game/multi-game.html`：脚本链在 `game-defines.a175e.js` 之后插入 `platform-spoof.js?v=20260914.1`（研究页与多开页共用，localStorage 同源共享——研究页开关对全部游戏 iframe 生效）。
+2. `public/game/index.html` + `public/game/multi-game.html`：脚本链在 `game-defines.a175e.js` 之后插入 `platform-spoof.js?v=20260914.2`；普通运行时读取 `xyzwPlatformSpoof`，批量运行时读取独立的 `xyzwMultiGamePlatformSpoof`。
 3. `src/views/PushLevelResearch.vue`：控制卡新增「平台伪装」开关 + 「伪装目标」选择（mix 推荐 / h5），落盘 localStorage 并提示"重载运行时后生效"。
+4. `src/views/GameMultiPlayer.vue`：批量运行时新增独立「平台伪装」开关、目标选择和「重载全部窗口」按钮；配置修改后写入每个账号的隔离存储。
+5. `src/utils/gameLauncher.js`：批量启动时将批量伪装配置种入每个 `multi-game:<scope>:` 账号空间，不读取研究页配置。
 
 **验证步骤**（下次战斗窗口，周日 20:00 蟠桃 / 盐场开战）：
-1. 研究页开启「平台伪装」（目标 mix）→ 重载运行时 → 载入并登录，开 WSS 抓包；
+1. 研究页开启「平台伪装」（目标 mix）→ 重载运行时 → 载入并登录，开 WSS 抓包；批量页需单独开启批量窗口内的开关，两者互不影响；
 2. **立即验证伪装生效**：抓到的 `role_getroleinfo` 等请求体 `platformExt` 应为 `"mix"` 而非 `"h5web"`（research bridge 的 jsonl 里有 decoded body，直接可查；不生效则说明还有别的上报通道，回退本节重新归因）；
 3. 等开战执行布阵（`payload_setbattleteam`）或盐场 `war_startbattle`：**不再返回 3000070 ⇒ 证实 h5web 口径是触发原因**，且项目 H5 环境从此可用于战斗动作抓包（解决 §7 的补抓困境）；若仍 3000070 ⇒ 平台假设排除，转向 clientVersion 或其它指纹（此时可经 `__xyzwPlatformSpoof.write({gameVersion:"2.21.2-fa918e1997301834-wx"})` 做第二变量实验）。
 
