@@ -125,7 +125,7 @@ siege.attackMap[260909].aSuccessCnt = 3
 | `club_gettargetteam` | `Club_GetTargetTeamResp` | 获取目标角色和战斗队伍 | 已确认 |
 | `hero_calcpowerbyteam` | `Hero_CalcPowerByTeamResp` | 攻击前计算己方队伍战力 | 已确认 |
 | `club_attack` | `Club_AttackResp` | 普通敌人攻击 | 已确认 |
-| `club_attackmonster` | `Club_AttackMonsterResp` | 宠物攻击 | 本批未出现，待验证 |
+| `club_attackmonster` | `Club_AttackMonsterResp` | 宠物攻击 | 已确认（`camp_data.jsonl`） |
 | `club_taskclaim` | `Club_TaskClaimResp` | 领取营地任务进度奖励 | 已确认 |
 | `club_draw` | `Club_DrawResp` | 消耗种火石抽奖 | 已确认 |
 
@@ -246,6 +246,54 @@ body.siege.attackMap[YYMMDD].aSuccessCnt
 不要使用 `club.members.<slot>.challengeCnt`、`failCnt` 或 `score` 推导当前角色的每日攻击次数：新日志中 39 号角色当天已完成 3 次攻击，但成员记录仍为 `challengeCnt=0`、`failCnt=0`、`score=26`。这些成员字段与个人每日攻击计数不是同一语义；自动规划只读取 `siege.attackMap[YYMMDD]`。
 
 日志还确认批量账号切换前的 Token 主动刷新和 WSS 初始化均成功；后续 `[连接诊断]` 的连接超时应与营地计数缺失分开排查。当前尚未把 `battleData` 中的某个字段单独认定为所有场景通用的胜负判定；`battleData` 常见顶层键包括 `id`、`mode`、`randomSeed`、`version`、`maxRound`、`leftTeam`、`rightTeam` 和 `result`，胜利判定仍需覆盖宠物攻击后再最终确认。
+
+### 4.3.1 `club_attackmonster`
+
+`camp_data.jsonl`（2026-09-08 10:15:34）首次抓到宠物攻击，整份抓包的 13 个可复现 SEND 帧经 `verify_roundtrip.mjs --dir send` **全部逐字节精确复现（13/13，0 失败）**。
+
+真实 UI 的宠物攻击链路：
+
+```text
+club_getinfo
+  -> hero_calcpowerbyteam({ battleTeam, lordWeaponId, petUId })
+  -> club_attackmonster({ useItem, teamSetParams })
+```
+
+请求体**不含 `nodeId` / `targetId`**：宠物是全 club 共享目标，不是某个十格位置节点。
+
+```js
+{
+  useItem: false,
+  teamSetParams: {
+    lordWeaponId: 3,
+    petUId: "",
+    battleTeam: { 0: 116, 1: 102, 2: 112, 3: 107, 4: 106 }
+  }
+}
+```
+
+要点：
+
+- `teamSetParams` **只有三个字段**（`lordWeaponId` / `petUId` / `battleTeam`）。`battleTeam` 的键按抓包是**字符串**（tag 5），`hero_calcpowerbyteam` 与 `club_attack` 用的是同一份对象；客户端实现里不要额外塞入本地辅助字段（例如阵型编号），否则报文体与真实客户端不一致。
+- `hero_calcpowerbyteam` 的请求体与 `teamSetParams` **完全同构**（`battleTeam` / `lordWeaponId` / `petUId`），响应为 `body.power`。
+
+响应结构（`Club_AttackMonsterResp`）：
+
+```text
+body.role.diamond / freeDiamond / items.<itemId>.quantity
+body.reward[]                                 本次奖励
+body.club.{weekScore,dayScore,members}
+body.siege.score
+body.siege.attackMap[YYMMDD].{attackCnt,aSuccessCnt}
+body.battleData.leftTeam.*   己方
+body.battleData.rightTeam.*  宠物
+body.battleData.result.isWin                 显式胜负标记
+body.battleData.result.sponsor.ext.curHP     己方剩余血量
+body.battleData.result.accept.ext.curHP      宠物剩余血量（0=击败）
+body.addScore                                本次得分
+```
+
+本次观测：宠物攻击前 `attackCnt=1`，攻击后变为 `attackCnt=2`、`aSuccessCnt=1`，证实**普通攻击与宠物攻击共享 `attackMap` 的每日计数与成功额度**。胜负判定可直接读 `battleData.result.isWin`（比只依赖 `accept.ext.curHP === 0` 更直接，二者本次一致）。
 
 ### 4.4 `club_taskclaim`
 
@@ -410,7 +458,7 @@ club_getinfo
 
 ## 7. 仍待验证
 
-1. `club_attackmonster` 的完整请求体、响应体，以及它是否完全复用 `attackCnt/aSuccessCnt`。
+1. ~~`club_attackmonster` 的完整请求体、响应体，以及它是否完全复用 `attackCnt/aSuccessCnt`。~~ 已由 `camp_data.jsonl` 确认，见 4.3.1；仍待验证的是宠物被击败后再次攻击的服务端错误码，以及宠物是否有独立的剩余血量/次数上限。
 2. `hero_calcpowerbyteam` 的更多错误响应语义；请求字段和攻击前调用顺序已由真实抓包确认。
 3. `battleData.result.accept.ext.curHP === 0` 是否同时适用于普通攻击和宠物攻击的胜利判断。
 4. 每日 10 次和每日 3 次限制触发时的服务端错误码、`code` 和 `hint`。
@@ -486,7 +534,7 @@ club_getinfo
 
 - [src/utils/batch/tasksCampChallengeStrategy.js](../src/utils/batch/tasksCampChallengeStrategy.js)：当前对 `club_getinfo` 的 `attackMap` 为空，或今日记录字段不完整的 club 安全跳过自动战斗；存在历史日期但缺少今日日期时按今日零次处理。
 - [src/views/BatchDailyTasks.vue](../src/views/BatchDailyTasks.vue)：批量账号切换前刷新 Token 的通用连接逻辑已接入；若连接超时或初始化失败，恢复流程会复用刚刷新 Token，不会立即重复刷新。
-- `club_attackmonster` 尚未接入虚拟规划，当前按钮的智能模式只执行普通攻击计划；宠物攻击需要真实抓包后加入共享成功容量。
+- `club_attackmonster` 仍未接入虚拟规划（智能模式只执行普通攻击计划）。作为替代，已按「与智能规划并列」的方式上线**简化版**：遍历选中角色 → `club_attackmonster` 最多 3 次 → 按 `taskClaimedMap` 过滤后领奖。入口是同一个「营地挑战」按钮下拉里的 `简版：宠物3次+领奖`。
 - 任务奖励领取仍需读取 `taskClaimedMap` 后过滤已领取配置，`club_draw` 仍需根据服务端种火石状态决定次数。
 - 需要一次真实低战力单 club 验收，再验证多 club 选中角色的隔离、攻击后重规划和失败释放。
 

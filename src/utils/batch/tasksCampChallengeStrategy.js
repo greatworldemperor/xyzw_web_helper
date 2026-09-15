@@ -11,6 +11,18 @@ import {
   selectBestCampGroup,
 } from "./campChallengePlanner.js";
 
+/** 简化版固定对宠物发起 3 次挑战（与智能规划并列的另一条路径）。 */
+const CAMP_SIMPLE_PET_ATTEMPTS = 3;
+
+/**
+ * 领奖顺序：confId=1 是累计战斗 3 次奖励，其余为三组的普通/困难/炼狱全清奖励。
+ * 抓包确认第一组 5/6/7、第二组 8/9/10、第三组 11/12/13。
+ */
+const CAMP_REWARD_CLAIM_ORDER = [
+  1,
+  ...[1, 2, 3].flatMap((groupId) => getCampRewardConfIds(groupId)),
+];
+
 const getRoleData = (roleInfo) => roleInfo?.role || roleInfo?.roleInfo || {};
 
 const getRolePower = (roleInfo) => {
@@ -46,11 +58,13 @@ const buildTeamSetParams = (presetTeamResult, roleInfo, batchSettings) => {
     throw new Error(`无法获取阵容${formationId}数据`);
   }
 
+  // 抓包确认（local-data/camp_data/camp_data.jsonl，13/13 逐字节复现）：
+  // hero_calcpowerbyteam 与 club_attack/club_attackmonster 的 teamSetParams
+  // 只含 lordWeaponId / petUId / battleTeam 三个字段，不能带上本地辅助字段。
   return {
     lordWeaponId: Number(role.lordWeaponId || 0),
     petUId: "",
     battleTeam,
-    formationId,
   };
 };
 
@@ -784,8 +798,203 @@ export function createTasksCampChallengeStrategy(deps) {
     }
   };
 
+  /**
+   * 按 club_getinfo 的 taskClaimedMap 过滤后逐个领取营地奖励。
+   * 需要调用方已在该连接上完成 legion_getinfo / saltroad_getwartype / club_getinfo。
+   */
+  const claimCampRewards = async (tokenId, tokenName, clubInfo, { quiet = false } = {}) => {
+    const claimedMap = clubInfo?.siege?.taskClaimedMap || {};
+    let claimed = 0;
+
+    for (const confId of CAMP_REWARD_CLAIM_ORDER) {
+      if (shouldStop.value) break;
+      if (Object.prototype.hasOwnProperty.call(claimedMap, String(confId))) {
+        continue;
+      }
+      try {
+        await tokenStore.sendMessageWithPromise(
+          tokenId,
+          "club_taskclaim",
+          { confId },
+          8000,
+        );
+        claimed += 1;
+        log(`${tokenName} 领取营地奖励 confId=${confId}`, "success");
+      } catch (error) {
+        log(
+          `${tokenName} 营地奖励 confId=${confId} 未领取: ${error?.message || "未满足条件"}`,
+          quiet ? "info" : "warning",
+        );
+      }
+    }
+
+    return claimed;
+  };
+
+  /**
+   * 营地理性宠物挑战的简化版（与智能规划并列，不做虚拟评估）。
+   *
+   * 抓包依据（local-data/camp_data/camp_data.jsonl，Club_AttackMonsterResp）：
+   *   · 请求：club_attackmonster({ useItem:false, teamSetParams })，
+   *     无 nodeId/targetId —— 宠物是全 club 共享目标；
+   *   · 前置：hero_calcpowerbyteam 计算己方战力（真实 UI 每个动作前都会调用）；
+   *   · 响应：siege.attackMap[YYMMDD]{attackCnt,aSuccessCnt} 与普通攻击共享额度，
+   *     battleData.result.isWin 判定胜负，reward 为本次奖励。
+   */
   const batchCampChallengePet = async () => {
-    message?.warning("宠物挑战尚未接入 club 级虚拟规划，当前未执行");
+    const tokenIds = [...selectedTokens.value];
+    if (tokenIds.length === 0) return;
+
+    isRunning.value = true;
+    shouldStop.value = false;
+    tokenIds.forEach((tokenId) => {
+      tokenStatus.value[tokenId] = "waiting";
+    });
+
+    let totalAttacks = 0;
+    let totalWins = 0;
+    let totalClaims = 0;
+    let failedTokens = 0;
+
+    try {
+      for (const tokenId of tokenIds) {
+        if (shouldStop.value) break;
+        const token = tokens.value.find((item) => item.id === tokenId);
+        if (!token) continue;
+
+        tokenStatus.value[tokenId] = "running";
+        currentRunningTokenId.value = tokenId;
+
+        try {
+          const result = await withTokenConnection(tokenId, async () => {
+            const send = (command, params = {}, timeout = 10000) =>
+              tokenStore.sendMessageWithPromise(tokenId, command, params, timeout);
+            // 上下文类命令失败不应中断整个角色：记录后继续。
+            const trySend = async (command, params = {}, timeout = 10000) => {
+              try {
+                return await send(command, params, timeout);
+              } catch (error) {
+                log(
+                  `${token.name} ${command} 失败（已忽略）: ${error?.message || error}`,
+                  "warning",
+                );
+                return null;
+              }
+            };
+            const commandDelayMs = Math.max(
+              500,
+              Number(batchSettings?.commandDelay ?? 500),
+            );
+
+            await trySend("legion_getinfo", {}, 10000);
+            await trySend("saltroad_getwartype", { date: getSaltRoadDate() }, 10000);
+            const clubInfo = await trySend("club_getinfo", {}, 15000);
+
+            const stats = getCampAttackStats(clubInfo?.siege);
+            const plannedAttacks = stats.known
+              ? Math.min(
+                  CAMP_SIMPLE_PET_ATTEMPTS,
+                  Math.max(0, CAMP_MAX_ATTACKS - stats.attackCnt),
+                  Math.max(0, CAMP_MAX_SUCCESS - stats.aSuccessCnt),
+                )
+              : CAMP_SIMPLE_PET_ATTEMPTS;
+
+            log(
+              `${token.name} [club ${getClubId(clubInfo) ?? "-"}] 简版宠物挑战：` +
+                `今日已攻击 ${stats.attackCnt}${stats.known ? "" : "(未知)"} / ` +
+                `已成功 ${stats.aSuccessCnt}，计划攻击 ${plannedAttacks} 次`,
+              "info",
+            );
+
+            const summary = { attacks: 0, wins: 0, claims: 0 };
+
+            // 阶段一：攻击宠物。失败不阻塞领奖。
+            if (plannedAttacks === 0) {
+              log(
+                `${token.name} 今日营地次数/成功额度已用完，跳过攻击，仅尝试领奖`,
+                "warning",
+              );
+            } else {
+              try {
+                const roleInfo = await send("role_getroleinfo", {}, 15000);
+                const presetTeam = await send("presetteam_getinfo", {}, 8000);
+                const teamSetParams = buildTeamSetParams(
+                  presetTeam,
+                  roleInfo,
+                  batchSettings,
+                );
+
+                for (let attempt = 0; attempt < plannedAttacks; attempt += 1) {
+                  if (shouldStop.value) break;
+                  await trySend("hero_calcpowerbyteam", teamSetParams, 8000);
+                  const response = await send(
+                    "club_attackmonster",
+                    { useItem: false, teamSetParams },
+                    15000,
+                  );
+                  const won = isCampWin(response);
+                  summary.attacks += 1;
+                  if (won) summary.wins += 1;
+
+                  const nextStats = getCampAttackStats(response?.siege);
+                  log(
+                    `${token.name} 营地宠物第 ${attempt + 1}/${plannedAttacks} 次` +
+                      `${won ? "成功" : "失败"}` +
+                      (nextStats.known
+                        ? `（今日 ${nextStats.attackCnt} 次 / ${nextStats.aSuccessCnt} 胜）`
+                        : ""),
+                    won ? "success" : "warning",
+                  );
+
+                  if (attempt + 1 < plannedAttacks) {
+                    await new Promise((resolve) =>
+                      setTimeout(resolve, commandDelayMs),
+                    );
+                  }
+                }
+              } catch (error) {
+                log(
+                  `${token.name} 营地宠物攻击中止: ${error?.message || error}，继续尝试领取奖励`,
+                  "warning",
+                );
+              }
+            }
+
+            // 阶段二：领奖。重取 club 状态，按 taskClaimedMap 过滤后逐个尝试。
+            summary.claims = await claimCampRewards(
+              tokenId,
+              token.name,
+              await trySend("club_getinfo", {}, 15000),
+              { quiet: true },
+            );
+
+            return summary;
+          });
+
+          totalAttacks += result.attacks;
+          totalWins += result.wins;
+          totalClaims += result.claims;
+          tokenStatus.value[tokenId] = "completed";
+        } catch (error) {
+          failedTokens += 1;
+          tokenStatus.value[tokenId] = "failed";
+          log(
+            `${token.name} 简版营地挑战失败: ${error?.message || "未知错误"}`,
+            "error",
+          );
+        }
+      }
+
+      log(
+        `简版营地挑战结束：攻击 ${totalAttacks} 次 / 成功 ${totalWins} 次 / 领奖 ${totalClaims} 项` +
+          (failedTokens > 0 ? `，失败角色 ${failedTokens} 个` : ""),
+        "info",
+      );
+      message?.success("简版营地挑战（攻击宠物+领奖）结束");
+    } finally {
+      isRunning.value = false;
+      currentRunningTokenId.value = null;
+    }
   };
 
   const batchCampClaimTasks = async () => {
@@ -800,20 +1009,21 @@ export function createTasksCampChallengeStrategy(deps) {
         const token = tokens.value.find((item) => item.id === tokenId);
         if (!token) continue;
         await withTokenConnection(tokenId, async () => {
-          for (const confId of [1, ...Array.from({ length: 9 }, (_, index) => index + 5)]) {
-            if (shouldStop.value) break;
-            try {
-              await tokenStore.sendMessageWithPromise(
-                tokenId,
-                "club_taskclaim",
-                { confId },
-                8000,
-              );
-              log(`${token.name} 尝试领取营地奖励 ${confId}`, "success");
-            } catch (error) {
-              log(`${token.name} 跳过营地奖励 ${confId}: ${error.message || "未满足条件"}`, "warning");
-            }
-          }
+          // 与真实 UI 一致：先建立营地上下文，再按 taskClaimedMap 过滤已领取项。
+          await tokenStore.sendMessageWithPromise(tokenId, "legion_getinfo", {}, 10000);
+          await tokenStore.sendMessageWithPromise(
+            tokenId,
+            "saltroad_getwartype",
+            { date: getSaltRoadDate() },
+            10000,
+          );
+          const clubInfo = await tokenStore.sendMessageWithPromise(
+            tokenId,
+            "club_getinfo",
+            {},
+            15000,
+          );
+          await claimCampRewards(tokenId, token.name, clubInfo);
         });
       }
       message?.success("营地任务奖励领取完成");
@@ -830,4 +1040,4 @@ export function createTasksCampChallengeStrategy(deps) {
   };
 }
 
-export { CAMP_MAX_ATTACKS, CAMP_MAX_SUCCESS };
+export { CAMP_MAX_ATTACKS, CAMP_MAX_SUCCESS, CAMP_SIMPLE_PET_ATTEMPTS };

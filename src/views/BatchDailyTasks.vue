@@ -3875,6 +3875,7 @@ const shouldStop = ref(false);
 const campChallengeMode = ref("strategy");
 const campChallengeModeOptions = [
   { label: "智能规划战斗", value: "strategy" },
+  { label: "简版：宠物3次+领奖", value: "simple" },
   { label: "只领取营地奖励", value: "claim" },
 ];
 const campChallengeModeLabel = computed(
@@ -3896,6 +3897,9 @@ const onCampChallengeModeChange = async (value) => {
   campChallengeMode.value = value;
   if (value === "claim") {
     await batchCampClaimTasks();
+  } else if (value === "simple") {
+    // 简版与智能规划并列：不做虚拟评估，直接攻击宠物 3 次后领奖。
+    await batchCampChallengePet();
   } else {
     await batchCampChallenge();
   }
