@@ -17,12 +17,18 @@
  * 开关：普通运行时使用 localStorage["xyzwPlatformSpoof"]，批量运行时使用
  * localStorage["xyzwMultiGamePlatformSpoof"]。批量运行时的存储桥会为每个账号提供
  * 独立空间，因此两套配置互不读取、互不影响：
- *   {"enabled":true,"platform":"mix","gameVersion":""}
+ *   {"enabled":true,"platform":"h5","gameVersion":""}
  *   - enabled=false 或缺省键 → 完全不干预（原始 h5web 口径）。
- *   - platform：覆写 gt.PLATFORM。可选值参考：'mix'（官方主流口径，369/436 且项目 WS 已验证）、
- *     'h5'（官方 H5 口径，58 人有击杀记录）。
- *   - gameVersion：可选，覆写 gt.GAME_VERSION（默认留空保持 1.89.8-wx，先单变量验证平台假设；
- *     如需同时伪装版本可设 "2.21.2-fa918e1997301834-wx"，即项目 WS 已验证的口径）。
+ *   - platform：覆写 gt.PLATFORM。⚠️ 实测结论（2026-09-16，source/4.js 源码 + wechat.bin
+ *     实测 authuser）：**网页环境下可登录的值只有 h5 / h5web**。
+ *     · "mix" 不是 _platformExtMapping 的 key（是 wx/ios/android/bytedance 的映射输出）
+ *       → 查表 undefined → getter 抛 TypeError → 崩溃；
+ *     · "wx"（及 ios/android/qq/bytedance）会让 PlatformManager 走对应 App SDK 登录分支
+ *       （isWeChat = ("wx"===PLATFORM) → PlatformWX），网页环境没有这些 SDK 桥 → 登录卡死；
+ *     · 服务端对 mix 口径没有任何拦截（用 platformExt:"mix" 的真实 bin 直连 authuser
+ *       实测成功返回 roleToken）——所以「想上 mix 口径」本来就不该走游戏客户端伪装，
+ *       而是走项目轻量 WS 客户端（注册口径本来就是 mix）。
+ *   - gameVersion：可选，覆写 gt.GAME_VERSION（默认留空保持 1.89.8-wx）。
  *
  * 验证方法：
  *   1. 研究页开启开关 → 重载运行时 → 载入并登录，抓 WSS；
@@ -41,7 +47,21 @@
   var LS_KEY = isMultiGameRuntime
     ? "xyzwMultiGamePlatformSpoof"
     : "xyzwPlatformSpoof";
-  var DEFAULTS = { enabled: false, platform: "mix", gameVersion: "" };
+  var DEFAULTS = { enabled: false, platform: "h5", gameVersion: "" };
+
+  /**
+   * 2026-09-16 实测（source/4.js + wechat.bin 直连 authuser 成功）：
+   * 网页环境可登录的 PLATFORM 只有 h5 / h5web。"mix" 不是映射表 key（崩溃）；
+   * "wx" 等会切到 App SDK 登录分支（网页无 SDK 桥，卡死）。mix 口径走项目轻量 WS。
+   */
+  var PLATFORM_KEYS = ["h5", "h5web"];
+  var PLATFORM_EXT_HINT = { h5: "h5", h5web: "h5web" };
+
+  function normalizePlatform(value) {
+    var v = String(value || "").trim();
+    if (!v) return "";
+    return PLATFORM_KEYS.indexOf(v) >= 0 ? v : "";
+  }
 
   function readConfig() {
     try {
@@ -49,9 +69,16 @@
       if (!raw) return null;
       var cfg = JSON.parse(raw);
       if (!cfg || typeof cfg !== "object" || cfg.enabled !== true) return null;
+      var platform = normalizePlatform(cfg.platform);
+      if (cfg.platform && !platform) {
+        console.warn(
+          "[platform-spoof] 配置的 platform=" + cfg.platform + " 在网页环境不可登录" +
+          "（可用：" + PLATFORM_KEYS.join("/") + "；mix 是 wx 渠道的输出值、wx 会切 App SDK 分支），已忽略覆写"
+        );
+      }
       return {
         enabled: true,
-        platform: typeof cfg.platform === "string" && cfg.platform ? cfg.platform : DEFAULTS.platform,
+        platform: platform || DEFAULTS.platform,
         gameVersion: typeof cfg.gameVersion === "string" ? cfg.gameVersion : "",
       };
     } catch (error) {
@@ -66,7 +93,15 @@
       if (current && typeof current === "object") Object.assign(next, current);
     } catch (error) {}
     Object.assign(next, patch || {});
-    if (typeof next.platform !== "string" || !next.platform) next.platform = DEFAULTS.platform;
+    var normalized = normalizePlatform(next.platform);
+    if (normalized) {
+      next.platform = normalized;
+    } else {
+      console.warn(
+        "[platform-spoof] 写入的 platform=" + next.platform + " 在网页环境不可登录，回退默认 " + DEFAULTS.platform
+      );
+      next.platform = DEFAULTS.platform;
+    }
     if (typeof next.gameVersion !== "string") next.gameVersion = "";
     next.enabled = next.enabled === true;
     try {
@@ -92,7 +127,11 @@
       applied.active = true;
       applied.platform = String(window.PLATFORM);
       applied.gameVersion = String(window.GAME_VERSION);
-      console.log("[platform-spoof] 生效:", JSON.stringify(applied));
+      applied.extHint = PLATFORM_EXT_HINT[applied.platform] || "?";
+      console.log(
+        "[platform-spoof] 生效:", JSON.stringify(applied),
+        "→ 预期上报 platformExt:" + applied.extHint
+      );
     } catch (error) {
       console.warn("[platform-spoof] 覆写失败:", error && error.message);
     }

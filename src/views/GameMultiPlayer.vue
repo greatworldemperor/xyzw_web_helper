@@ -485,10 +485,12 @@ import {
 const router = useRouter();
 const FRAME_LOAD_TIMEOUT_MS = 45_000;
 const multiGameSpoofEnabled = ref(false);
-const multiGameSpoofTarget = ref("mix");
+// 2026-09-16 实测：网页环境可登录的 PLATFORM 只有 h5/h5web。
+// "mix" 不是映射表 key（getter 崩溃）；"wx" 等切 App SDK 登录分支（网页无 SDK 桥，卡死）。
+const multiGameSpoofTarget = ref("h5");
 const multiGameSpoofTargetOptions = [
-  { label: "mix（推荐）", value: "mix" },
-  { label: "h5", value: "h5" },
+  { label: "h5（推荐）", value: "h5" },
+  { label: "h5web（原始）", value: "h5web" },
 ];
 const launch = ref(readLaunchSafely());
 const gameStrip = ref(null);
@@ -622,9 +624,8 @@ function initMultiGameSpoof() {
     const config = raw ? JSON.parse(raw) : null;
     if (!config || typeof config !== "object") return;
     multiGameSpoofEnabled.value = config.enabled === true;
-    if (config.platform === "mix" || config.platform === "h5") {
-      multiGameSpoofTarget.value = config.platform;
-    }
+    // 旧配置兼容：mix/wx 等历史值在网页环境不可登录，统一归一为 h5
+    multiGameSpoofTarget.value = config.platform === "h5web" ? "h5web" : "h5";
   } catch {}
 }
 

@@ -85,7 +85,7 @@
             style="width: 140px"
             @update:value="persistSpoof"
           />
-          <span class="field-hint">覆写 WS 上报 platformExt</span>
+          <span class="field-hint">覆写 WS 上报 platformExt（mix 口径选 wx；mix 本身不是合法值）</span>
         </div>
         <div class="field switch-field">
           <span class="field-label">自动滚动</span>
@@ -227,10 +227,13 @@ let logSequence = 0;
 
 const SPOOF_LS_KEY = "xyzwPlatformSpoof";
 const spoofEnabled = ref(false);
-const spoofTarget = ref("mix");
+// 2026-09-16 实测：网页环境可登录的 PLATFORM 只有 h5/h5web。
+// "mix" 不是映射表 key（getter 崩溃）；"wx" 等会切 App SDK 登录分支（网页无 SDK 桥，卡死）。
+// mix 口径验证走项目轻量 WS 客户端（注册口径本来就是 mix），不走游戏伪装。
+const spoofTarget = ref("h5");
 const spoofTargetOptions = [
-  { label: "mix（推荐）", value: "mix" },
-  { label: "h5", value: "h5" },
+  { label: "h5（推荐）", value: "h5" },
+  { label: "h5web（原始）", value: "h5web" },
 ];
 (function initSpoofConfig() {
   try {
@@ -239,7 +242,8 @@ const spoofTargetOptions = [
     const cfg = JSON.parse(raw);
     if (!cfg || typeof cfg !== "object") return;
     spoofEnabled.value = cfg.enabled === true;
-    if (typeof cfg.platform === "string" && cfg.platform) spoofTarget.value = cfg.platform;
+    // 旧配置兼容：历史版本存过 mix / wx，均不可登录，归一为 h5
+    spoofTarget.value = cfg.platform === "h5web" ? "h5web" : "h5";
   } catch (error) {}
 })();
 function persistSpoof() {

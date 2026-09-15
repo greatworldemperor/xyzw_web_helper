@@ -18,7 +18,7 @@ const expectedRuntimeFiles = [
   "patch.decrypted_readable.js",
   "src/settings.da7ef.js",
   "game-defines.a175e.js",
-  "platform-spoof.js?v=20260914.2",
+  "platform-spoof.js?v=20260916.2",
   "main.2a00e.js",
   "cocos2d-js-min.a5841.js",
   "xh.js",
