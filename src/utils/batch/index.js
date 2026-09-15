@@ -31,4 +31,5 @@ export { createTasksFootball } from './tasksFootball.js';
 export { createTasksApex } from './tasksApex.js';
 export { createTasksCampChallengeStrategy } from './tasksCampChallengeStrategy.js';
 export { createTasksSaltField, battlefieldQueue } from './tasksSaltField.js';
+export { createTasksXianMaster } from './tasksXianMaster.js';
 export * from './campChallengePlanner.js';

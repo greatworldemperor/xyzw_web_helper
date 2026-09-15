@@ -362,6 +362,7 @@ wss://xxz-xyzw.hortorgames.com/agent?p=<encoded-token>&e=x&lang=chinese
 - `attemptTokenRefresh()` 从 URL 或 IndexedDB 中的 BIN/WX 数据获取新 Token，并在成功后更新本地存储；失败通过 `token:refresh:failed` 事件通知界面。
 - [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue) 的批处理连接失败后，先等待旧连接关闭，再刷新 Token 并使用最新 Token 重连；批处理连接关闭 Store 的握手超时和握手失败自动刷新，避免后台刷新与批量刷新争用。刷新接口遇到限流时每隔 1 秒重试，直到成功；不可重试的刷新错误才停止账号并保留失败原因。
 - 批量任务中的 `role_getroleinfo` 统一通过 [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue) 的恢复入口请求；请求失败时关闭旧 WSS、刷新 Token、使用最新 Token 重建连接并重试角色信息，恢复耗尽后将异常交回当前账号任务，避免继续使用过期数据。
+- 2026-09-15 新增批量“检测咸主”：复用上述 `role_getroleinfo`，以 `body.role.bossId > 0` 判定当前账号是否有咸主；[src/utils/batch/tasksXianMaster.js](src/utils/batch/tasksXianMaster.js) 默认按完整 `gameTokens` 列表的 `roleId` 忽略已添加的咸主，也支持包含已添加角色的全量检测。该功能只读，不发送抓人或其他状态变更命令；检测结束后在批量页打开不可误触关闭的明细弹窗，支持复制角色与咸主 ID 结果。
 - [src/layout/DefaultLayout.vue](src/layout/DefaultLayout.vue) 和 [src/views/TokenImport/index.vue](src/views/TokenImport/index.vue) 监听刷新失败事件，并使用 Naive UI 对话框提示用户。
 
 ### 任务层

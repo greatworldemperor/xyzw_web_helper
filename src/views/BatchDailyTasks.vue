@@ -362,6 +362,19 @@
                 >
                   一键俱乐部签到
                 </n-button>
+                <n-popselect
+                  :value="xianMasterDetectionMode"
+                  :options="xianMasterDetectionOptions"
+                  trigger="click"
+                  @update:value="onXianMasterDetectionModeChange"
+                >
+                  <n-button
+                    size="small"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    咸主检测
+                  </n-button>
+                </n-popselect>
                 <n-button
                   size="small"
                   @click="batchStudy"
@@ -916,6 +929,56 @@
           选中错误账号
         </n-button>
         <n-button type="primary" @click="showBatchResultModal = false">
+          关闭
+        </n-button>
+      </div>
+    </n-modal>
+
+    <!-- Xian Master Detection Result Modal -->
+    <n-modal
+      v-model:show="showXianMasterResultModal"
+      preset="card"
+      title="咸主检测结果"
+      :mask-closable="false"
+      :close-on-esc="false"
+      style="width: 92%; max-width: 620px"
+    >
+      <div class="xian-master-result-content">
+        <div class="xian-master-result-summary">
+          <span>发现咸主 {{ xianMasterResult.detected }} 个</span>
+          <span>忽略 {{ xianMasterResult.ignored }} 个</span>
+          <span>无咸主 {{ xianMasterResult.withoutBoss }} 个</span>
+          <span>失败 {{ xianMasterResult.failed }} 个</span>
+        </div>
+        <div
+          v-if="xianMasterResult.detectedRoles.length > 0"
+          class="xian-master-result-list"
+        >
+          <div class="xian-master-result-title">有咸主的角色</div>
+          <div
+            v-for="item in xianMasterResult.detectedRoles"
+            :key="`${item.tokenId}-${item.bossId}`"
+            class="xian-master-result-row"
+          >
+            <div class="xian-master-result-role">
+              {{ item.roleName || item.tokenName }}
+              <span>角色 ID：{{ item.roleId || "未知" }}</span>
+            </div>
+            <div class="xian-master-result-boss">
+              咸主：{{ item.bossName || `角色 ID ${item.bossId}` }}
+            </div>
+          </div>
+        </div>
+        <n-empty v-else description="没有检测到需要展示的咸主角色" />
+      </div>
+      <div class="modal-actions" style="margin-top: 20px; text-align: right">
+        <n-button @click="copyXianMasterResult" style="margin-right: 8px">
+          <template #icon>
+            <n-icon><Copy /></n-icon>
+          </template>
+          复制结果
+        </n-button>
+        <n-button type="primary" @click="showXianMasterResultModal = false">
           关闭
         </n-button>
       </div>
@@ -3498,7 +3561,7 @@ import {
 } from "@/utils/helperTaskRunner";
 import { preloadQuestions } from "@/utils/studyQuestionsFromJSON.js";
 import { useMessage } from "naive-ui";
-import { Settings } from "@vicons/ionicons5";
+import { Copy, Settings } from "@vicons/ionicons5";
 import { DEFAULT_WEIRD_TOWER_MAX_CLIMB } from "@/utils/towerClimbLimit.js";
 import { compareTokensByServerAndRole } from "@/utils/tokenSort.js";
 import {
@@ -3562,6 +3625,7 @@ import {
   createTasksFootball,
   createTasksApex,
   createTasksCampChallengeStrategy,
+  createTasksXianMaster,
   resolveDefaultBlackMarketKeys,
 } from "@/utils/batch";
 
@@ -3819,6 +3883,15 @@ const campChallengeModeLabel = computed(
       (option) => option.value === campChallengeMode.value,
     )?.label || "智能规划战斗",
 );
+const xianMasterDetectionMode = ref("excludeExisting");
+const xianMasterDetectionOptions = [
+  { label: "忽略已添加角色的咸主", value: "excludeExisting" },
+  { label: "包含已添加角色，检测全部咸主", value: "includeExisting" },
+];
+const onXianMasterDetectionModeChange = (value) => {
+  xianMasterDetectionMode.value = value;
+  return detectXianMasters(value === "includeExisting");
+};
 const onCampChallengeModeChange = async (value) => {
   campChallengeMode.value = value;
   if (value === "claim") {
@@ -4432,10 +4505,18 @@ const helperModalTitle = computed(() => {
 // Batch Settings State
 const showBatchSettingsModal = ref(false);
 const showBatchResultModal = ref(false);
+const showXianMasterResultModal = ref(false);
 const batchResult = reactive({
   completedCount: 0,
   totalCount: 0,
   failedTokenIds: [],
+});
+const xianMasterResult = reactive({
+  detected: 0,
+  detectedRoles: [],
+  ignored: 0,
+  withoutBoss: 0,
+  failed: 0,
 });
 const failedBatchTokens = computed(() =>
   batchResult.failedTokenIds.map((tokenId) => {
@@ -4562,6 +4643,7 @@ const taskGroupDefinitions = [
       "resetBottles",
       "batchlingguanzi",
       "batchclubsign",
+      "detectXianMasters",
       "batchStudy",
       "batcharenafight",
       "store_purchase",
@@ -6702,6 +6784,32 @@ const copyLogs = () => {
     });
 };
 
+const getXianMasterResultText = () => {
+  const lines = [
+    `咸主检测结果：发现 ${xianMasterResult.detected} 个，忽略 ${xianMasterResult.ignored} 个，无咸主 ${xianMasterResult.withoutBoss} 个，失败 ${xianMasterResult.failed} 个`,
+  ];
+  if (xianMasterResult.detectedRoles.length === 0) {
+    lines.push("没有检测到需要展示的咸主角色");
+  } else {
+    lines.push("有咸主的角色：");
+    xianMasterResult.detectedRoles.forEach((item) => {
+      lines.push(
+        `${item.roleName || item.tokenName}（角色ID: ${item.roleId || "未知"}） -> 咸主ID: ${item.bossId}${item.bossName ? `（${item.bossName}）` : ""}`,
+      );
+    });
+  }
+  return lines.join("\n");
+};
+
+const copyXianMasterResult = async () => {
+  try {
+    await navigator.clipboard.writeText(getXianMasterResultText());
+    message.success("咸主检测结果已复制到剪贴板");
+  } catch (error) {
+    message.error(`复制咸主检测结果失败: ${error?.message || "未知错误"}`);
+  }
+};
+
 const clearLogs = () => {
   logs.value = [];
   message.success("日志已清空");
@@ -7155,6 +7263,8 @@ const createTaskDeps = () => ({
   currentRunningTokenId,
   batchResult,
   showBatchResultModal,
+  xianMasterResult,
+  showXianMasterResultModal,
   // 延迟配置
   delayConfig: {
     command: batchSettings.commandDelay,
@@ -7196,6 +7306,9 @@ const {
   batchclubsign,
   batchWarGuessCheer,
 } = tasksHangUp;
+
+const tasksXianMaster = createTasksXianMaster(createTaskDeps());
+const { detectXianMasters } = tasksXianMaster;
 
 const tasksBottle = createTasksBottle(createTaskDeps());
 const { resetBottles, batchlingguanzi } = tasksBottle;
@@ -8579,6 +8692,63 @@ const stopBatch = () => {
   margin-top: 18px;
   color: #18a058;
   font-size: 14px;
+}
+
+.xian-master-result-content {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.xian-master-result-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding: 10px 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  background: var(--action-color-hover, #f5f5f5);
+  border-radius: 6px;
+}
+
+.xian-master-result-list {
+  margin-top: 16px;
+}
+
+.xian-master-result-title {
+  margin-bottom: 8px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.xian-master-result-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.xian-master-result-role {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.xian-master-result-role span {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.xian-master-result-boss {
+  flex-shrink: 0;
+  color: #d03050;
+  font-size: 13px;
 }
 
 /* Settings Modal Styles */
