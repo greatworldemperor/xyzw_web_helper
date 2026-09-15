@@ -5475,7 +5475,7 @@ const startScheduler = () => {
 const handleTokenRefreshWaiting = (data) => {
   addLog({
     time: new Date().toLocaleTimeString(),
-    message: `Token刷新限流等待中，预计等待 ${data.waitSeconds} 秒（队列: ${data.queueSize}）`,
+    message: `认证刷新限流器已实际进入等待，预计还需 ${data.waitSeconds} 秒（队列: ${data.queueSize}）；当前批次不启动其他角色`,
     type: "warning",
   });
 };
@@ -6863,7 +6863,8 @@ const refreshTokenUntilSuccess = async (
       type: "warning",
     });
 
-    const result = await tokenStore.attemptTokenRefreshWithResult(
+    const refreshStartedAt = Date.now();
+    const refreshPromise = tokenStore.attemptTokenRefreshWithResult(
       tokenId,
       false,
       {
@@ -6871,8 +6872,36 @@ const refreshTokenUntilSuccess = async (
         notifyFailure: true,
       },
     );
+    const waitingLogTimer = setInterval(() => {
+      addLog({
+        time: new Date().toLocaleTimeString(),
+        message: `${reason}（第${refreshAttempt}次）仍未返回刷新结果，已等待 ${Math.floor((Date.now() - refreshStartedAt) / 1000)} 秒；当前批次继续保持连接槽位，等待 IP 限流/刷新流程完成`,
+        type: "warning",
+      });
+    }, 10000);
 
-    if (result.success) {
+    let result;
+    try {
+      result = await refreshPromise;
+    } catch (error) {
+      clearInterval(waitingLogTimer);
+      addLog({
+        time: new Date().toLocaleTimeString(),
+        message: `${reason}（第${refreshAttempt}次）刷新调用异常，耗时 ${Date.now() - refreshStartedAt}ms：${getErrorDetails(error)}`,
+        type: "error",
+      });
+      throw error;
+    }
+    clearInterval(waitingLogTimer);
+
+    const elapsedMs = Date.now() - refreshStartedAt;
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `${reason}（第${refreshAttempt}次）刷新调用已返回，耗时 ${elapsedMs}ms，success=${Boolean(result?.success)}，retryable=${Boolean(result?.retryable)}，reason=${result?.reason || "无"}`,
+      type: result?.success ? "success" : result?.retryable ? "warning" : "error",
+    });
+
+    if (result?.success) {
       recentBatchTokenRefreshAt.set(tokenId, Date.now());
       addLog({
         time: new Date().toLocaleTimeString(),
@@ -6882,13 +6911,13 @@ const refreshTokenUntilSuccess = async (
       return true;
     }
 
-    if (!result.retryable) {
-      throw new Error(`Token自动刷新失败，无法建立连接: ${result.reason}`);
+    if (!result?.retryable) {
+      throw new Error(`Token自动刷新失败，无法建立连接: ${result?.reason || "未知错误"}`);
     }
 
     addLog({
       time: new Date().toLocaleTimeString(),
-      message: `Token刷新遇到限流: ${result.reason}，1秒后重试刷新（第${refreshAttempt}次）`,
+      message: `服务器返回可重试限流，保留当前批次槽位，1秒后重试刷新：${result.reason || "未知原因"}`,
       type: "warning",
     });
     await new Promise((resolve) => setTimeout(resolve, 1000));
