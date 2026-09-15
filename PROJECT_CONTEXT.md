@@ -488,17 +488,19 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 - [x] 营地策略执行器已在 [src/views/BatchDailyTasks.vue](src/views/BatchDailyTasks.vue) 导入、实例化并加入自由模板 handler；现有按钮的模式回调已接通。
 - [x] `CommandRegistry` 已注册 `club_getinfo`、`club_gettargetteam`、`hero_calcpowerbyteam`、`club_attack`、`club_attackmonster`、`club_taskclaim` 和 `club_draw` 请求命令；响应映射继续保留。
 - [ ] 普通挑战当前把“最多 3 次”实现为最多 3 次尝试，而不是最多 3 次成功；失败仍会消耗每日 10 次发起额度，但不应消耗 3 次成功额度。
-- [ ] 宠物挑战当前固定执行 3 轮，没有与普通玩家挑战共享成功计数，也没有在达到每日 10 次发起上限时停止。
-- [ ] 领奖流程当前无条件尝试 `confId` 1、2、3、4；实际三组全清奖励已确认为第一组 `5/6/7`、第二组 `8/9/10`、第三组 `11/12/13`，需要按区域进度和 `taskClaimedMap` 改为只领取对应的已确认配置。
+- [x] 已上线与智能规划**并列**的营地简化版（`batchCampChallengePet`，UI 选项「简版：宠物3次+领奖」）：遍历选中角色 → `club_attackmonster` 最多 3 次 → 按 `taskClaimedMap` 过滤后领奖。攻击次数按 `siege.attackMap[YYMMDD]` 的共享 `attackCnt/aSuccessCnt` 收敛；额度用尽只领奖；单角色失败不影响其他角色。
+- [x] 领奖流程已改为读取 `club_getinfo.siege.taskClaimedMap` 过滤已领取项，并按已确认的 `confId` 顺序尝试：`1` + 第一组 `5/6/7` + 第二组 `8/9/10` + 第三组 `11/12/13`；「只领取营地奖励」模式与简化版共用同一实现。
+- [x] `teamSetParams` 已按抓包收敛为 `lordWeaponId/petUId/battleTeam` 三个字段，不再向服务端发送本地辅助字段（阵型编号）。
 - [x] “营地挑战”按钮已接入逐 `club` 的独立规划执行器；复选角色先按 `club.legionId` 聚合，每个 club 单独获取状态、评估三组并执行最高可达组，不能沿用跨角色/跨 club 的统一目标池。
 
 ### 协议待验证
 
-- [x] 新日志已确认 `club_getinfo`、`club_gettargetteam`、`club_attack`、`club_taskclaim` 和 `club_draw` 的请求命令名及对应响应命令；本批日志未包含 `club_attackmonster`。
+- [x] 新日志已确认 `club_getinfo`、`club_gettargetteam`、`club_attack`、`club_taskclaim` 和 `club_draw` 的请求命令名及对应响应命令。
+- [x] `camp_data.jsonl` 已抓到 `club_attackmonster`：请求仅为 `{ useItem:false, teamSetParams }`（无 `nodeId`/`targetId`），响应含 `siege.attackMap`、`battleData.result.isWin`、`reward`、`addScore`；该抓包 13/13 帧逐字节精确复现。
 - [ ] 获取至少一组成功的 `club_getinfo`、普通挑战、宠物挑战和领奖报文，记录解码后的 `cmd`、请求 `body`、响应 `body`、`resp`、`code` 和 `hint`。
 - [x] 已确认攻击响应中的每日计数路径为 `siege.attackMap[YYMMDD].attackCnt`（总发起次数）和 `siege.attackMap[YYMMDD].aSuccessCnt`（成功次数）；普通玩家和宠物共享这两个计数。
 - [x] 新日志已确认 `club_attack` 请求包含数值型 `nodeId`、`targetId`、`challengeCnt`、`failCnt`，布尔型 `targetIsMirror`、`useItem`，以及 `teamSetParams.lordWeaponId`、`petUId`、`battleTeam`；四次请求中 `challengeCnt=0`、`failCnt=0`，未观察到 `battleVersion`，是否存在其他场景仍待验证。
-- [ ] 确认 `battleData.result.accept.ext.curHP === 0` 是否是普通玩家和宠物挑战的可靠胜利判定。
+- [x] 宠物挑战响应中 `battleData.result.isWin` 是显式胜负标记（本次与 `accept.ext.curHP === 0` 一致），实现优先读 `isWin`、回退读 `curHP`。
 - [ ] 确认每日 10 次限制、3 次成功限制和服务端错误码，避免仅依赖客户端本地计数。
 - [ ] 在更多账号上验证三组 `confId` 映射的稳定性，并确认不同全清状态下 `club_draw` 次数与种火石数量的对应关系。
 - [x] 已根据批量调试日志修正每日计数判定：历史 attackMap 存在但缺少今日键时按零次处理；仅 attackMap 为空或今日计数不完整时安全跳过。日志显示主动刷新 Token、WSS 建连和初始化均成功，连接超时应单独排查。
@@ -554,12 +556,13 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 
 - [x] 多账号 runtime 基础能力已存在：通过 [src/views/GameMultiPlayer.vue](src/views/GameMultiPlayer.vue) 和 `multi-game-storage-bridge.js` 隔离多个 iframe 的账号存储，并支持单窗口重载、关闭和排序移动。
 - [x] 多开页面已改为响应式网格布局，在桌面端多列排列、移动端单列滚动，避免只能横向铺开浏览。
-- [x] 批量运行时分组改为直接读取 Token 管理的 `multiGameTokenGroups`（按稳定 `serverId:roleId` 匹配）；账号可属于多个分组，批量页展示对应标签，并通过独立的 `multiGameSyncGroups` 为每个分组单独启用/关闭同步。
+- [x] 批量运行时分组直接读取 Token 管理的 `multiGameTokenGroups`（按稳定 `serverId:roleId` 匹配）；账号可属于多个分组，批量页展示对应标签。分组顺序由批量页自己维护（`multiGameSyncGroupOrder`，可拖动/左右移动调整），不影响 Token 管理页的列表。
+- [x] 批量运行时同步拆成「不同步（默认）/ 分组同步 / 全局同步」三种模式（`multiGameSyncMode`）：分组同步时每组只有组长能驱动本组其他窗口，全局同步时所有窗口跟随第一个分组的组长；组长默认取组内窗口顺序第一个，可手动指定或点窗口上的分组标签切换（`multiGameSyncMasters`）。父子页面用 send / receive 两个方向分别下发角色，从窗口不再上报自己的输入。
 - [x] 已接入第一版自动盐场控制面：父页面可选择账号并批量启动/暂停，单窗口可查询状态、布阵、寻盐田、攻击当前目标和加速；控制请求通过同源、来源校验和白名单动作桥接到 iframe 内的 `__SALT_FIELD_AUTO__`。
 - [ ] 目前账号窗口仍需继续优化尺寸预设、窗口高度和大量账号时的扫描效率，并在桌面端和移动端做真实浏览器验收。
 - [ ] 允许调整单个账号窗口大小，并让所有账号窗口同步使用该尺寸。
 - [ ] 调整窗口尺寸后重启每个窗口中的游戏内容，使游戏 runtime 重新适应新的 viewport/窗口大小。
-- [x] 批量页不再维护独立的手动分组/主窗口状态；分组归属统一由 Token 管理维护，组内同步按每个分组的独立开关生效。
+- [x] 批量页只维护「分组顺序 + 各组组长 + 同步模式」这三项本地状态；分组归属仍统一由 Token 管理维护，避免同一份数据两处编辑。
 - [ ] 完善多账号自动盐场调度：按活动开放状态、角色状态和连接生命周期协调批量运行，明确停止、失败、重试和释放行为；当前第一版控制面尚未替代活动实测。
 - [ ] 为后续扩展预留统一的多账号功能调度入口，便于增加其他批量 runtime 功能而不重复实现窗口、分组和生命周期管理。
 
