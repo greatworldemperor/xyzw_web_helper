@@ -303,6 +303,24 @@ export class LegionWarSession {
 
   /* ------------------------------ 查询辅助 ------------------------------ */
 
+  /**
+   * 拉一次战场全量快照（war_getbattlefieldinfo）。
+   *
+   * 等待模式轮询用：war_* 增量帧只在「有变化」时广播，若指定的队员一直没动静，
+   * 我们需要主动拉快照来观测「外部造成的可组队状态变化」（例如被别人拉走 → teaming、
+   * 自己登场 → idle），以及补上可能漏掉的增量帧。
+   * 响应 cmd 含 war_getbattlefieldinfo 子串（与 legionWarStore 的匹配方式一致）。
+   * 超时返回 { ok: false }（不抛错，调用方按需降级——状态表里已有的数据仍然可用）。
+   */
+  async refreshBattlefieldInfo(timeoutMs = 8000) {
+    this.client.send("war_getbattlefieldinfo", { battlefieldId: this.battlefieldId });
+    const msg = await this.waitForFrame(
+      (m) => /getbattlefieldinfo/i.test(m?.cmd || "") && m?.rawData !== undefined,
+      timeoutMs,
+    );
+    return { ok: !!msg, frame: msg };
+  }
+
   cidOfRoleId(roleId) {
     return roleIdToCid(this.state, roleId);
   }

@@ -82,6 +82,7 @@
               <div v-for="team in group.teams" :key="team.id" class="team-row">
                 <span class="team-row__dot" :class="statusClass(team)"></span>
                 <span class="team-row__name">{{ team.name }}</span>
+                <n-tag v-if="team.mode === 'wait'" size="tiny" type="info">等待</n-tag>
                 <span class="chip chip--leader" :title="`roleId ${leaderRoleId(team)}`">
                   队长 cId {{ liveCid(team) ?? "—" }} · {{ leaderName(team) }}
                 </span>
@@ -89,8 +90,8 @@
                   v-for="rid in team.memberRoleIds"
                   :key="rid"
                   class="chip"
-                  :class="{ 'chip--bad': liveCidOfRole(team, rid) == null && hasLive(team) }"
-                  :title="`roleId ${rid}`"
+                  :class="{ 'chip--bad': liveCidOfRole(team, rid) == null && hasLiveRoleMap(team) }"
+                  :title="`roleId ${rid}（cId 每场重分配，执行时自动获取）`"
                 >
                   {{ roleNameOf(team, rid) }} · cId {{ liveCidOfRole(team, rid) ?? "?" }}
                   <i class="chip__x" @click.stop="removeMember(team, rid)">×</i>
@@ -200,10 +201,18 @@
           <n-switch v-model:value="editingTeam.enabled" size="small" @update:value="persistTeams" />
         </div>
         <div class="editor__row">
+          <label>执行模式</label>
+          <n-radio-group v-model:value="editingTeam.mode" size="small" @update:value="persistTeams">
+            <n-radio value="immediate">立即</n-radio>
+            <n-radio value="wait">等待</n-radio>
+          </n-radio-group>
+          <span class="editor__hint">{{ modeHint(editingTeam.mode) }}</span>
+        </div>
+        <div class="editor__row">
           <label>机动</label>
           <div>
             <n-switch v-model:value="editingTeam.mobile" size="small" @update:value="persistTeams" />
-            <span class="editor__hint">开启后，队伍不满 5 人时将按候选顺序在本俱乐部内补齐</span>
+            <span class="editor__hint">仅立即模式生效：不满 5 人时按候选顺序补齐，无人可补不强制满员</span>
           </div>
         </div>
         <div class="editor__row editor__row--block">
@@ -215,18 +224,29 @@
           </div>
         </div>
         <div class="editor__row editor__row--block">
-          <label>队员（按 roleId 指定，最多 4 人）</label>
+          <label>队员（本俱乐部成员，最多 4 人）</label>
+          <div class="editor__toolbar">
+            <n-button size="small" :loading="editorLoading" @click="loadEditorMembers">
+              {{ editorMembersLoaded ? "刷新俱乐部成员" : "加载俱乐部成员" }}
+            </n-button>
+            <n-checkbox v-model:checked="memberTokenOnly" size="small">只看 token 列表角色</n-checkbox>
+            <n-tag v-if="editorMembersLoaded" size="tiny">候选 {{ editorMemberOptions.length }} 人</n-tag>
+          </div>
           <n-select
-            v-model:value="editingTeam.memberRoleIds"
+            :value="editingTeam.memberRoleIds"
             multiple
             filterable
             size="small"
-            :options="memberOptions(editingTeam)"
-            placeholder="从已导入的角色里选；也可手动输入 roleId"
-            @update:value="persistTeams"
+            :options="editorMemberOptions"
+            :placeholder="editorMembersLoaded ? '从本俱乐部成员中选择（最多 4 人）' : '尚未加载俱乐部成员 —— 点击上方按钮获取'"
+            @update:value="onMemberSelectChange"
           />
           <div class="editor__hint">
-            不在同一俱乐部的角色会在执行时被跳过并报错。队友好坏不需要登录，只需 roleId。
+            {{
+              editorMembersLoaded
+                ? "成员 = 本俱乐部名册（legion_getinfo，开战前后都可用）；执行时用本场 roleMap 换算 cId。已选但不在本场的人：立即模式放弃、等待模式一直等。"
+                : "队员来自本俱乐部名册 —— 点上方按钮加载（仅主连接，开战前也能用）。"
+            }}
           </div>
         </div>
         <div class="editor__row editor__row--block">
@@ -393,6 +413,8 @@ const liveCidOfRole = (team, roleId) => {
   const entry = live.roleMap[String(roleId)];
   return entry ? Number(entry.cId) : null;
 };
+/** 是否已有本场 roleMap（战场探测后才有）——名册模式下 cId 显示 "?" 但不算异常 */
+const hasLiveRoleMap = (team) => !!liveByTeam.value[team.id]?.roleMap;
 const roleNameOf = (team, roleId) => {
   const live = liveByTeam.value[team.id];
   const fromLive = live?.roleNames?.[String(roleId)];
@@ -418,15 +440,87 @@ const formatPower = (p) => {
   return String(n);
 };
 
-const memberOptions = (team) => {
-  const own = new Set([Number(leaderRoleId(team))]);
-  return (tokenStore.gameTokens || [])
-    .map((t) => ({
-      label: `${t.name}（roleId ${t.roleId ?? "?"}）`,
-      value: Number(t.roleId || 0),
-      disabled: !t.roleId || own.has(Number(t.roleId)),
-    }))
-    .filter((o) => o.value);
+/* -------- 编辑弹窗：执行模式说明 + 队员选项（本俱乐部成员，探测加载后才有） -------- */
+const modeHint = (mode) =>
+  mode === "wait"
+    ? "等待：持续刷新可组队清单，指定队员「出现」（未登场且未被其它队伍组走）一个就组一个，全部组上再登场；一直等，忽略机动"
+    : "立即：拉一次可组队清单，缺席队员直接放弃；机动=按优先级从候选池补人（不强制满 5）";
+
+const editorLoading = ref(false);
+const memberTokenOnly = ref(false);
+
+const editorLive = computed(() => (editingTeam.value ? liveByTeam.value[editingTeam.value.id] : null));
+const editorMembersLoaded = computed(() => !!editorLive.value?.roster);
+
+const editorMemberOptions = computed(() => {
+  const t = editingTeam.value;
+  if (!t) return [];
+  const list = editorLive.value?.roster || [];
+  const leaderRole = Number(leaderRoleId(t) || 0);
+  const tokenRoleIds = new Set(
+    (tokenStore.gameTokens || []).map((x) => Number(x.roleId)).filter(Boolean),
+  );
+  let rows = list.filter((c) => Number(c.roleId) !== leaderRole);
+  if (memberTokenOnly.value) rows = rows.filter((c) => tokenRoleIds.has(Number(c.roleId)));
+  return rows.map((c) => ({
+    label: `${c.name || c.roleId}（roleId ${c.roleId} · ${cfg.isOfflineByFlag(c.online) ? "离线" : "在线"}${
+      tokenRoleIds.has(Number(c.roleId)) ? " · token" : ""
+    }）`,
+    value: Number(c.roleId),
+    disabled: false,
+  }));
+});
+
+/** 队员选择上限：1 队长 + 最多 4 队员 = 5 人（master 2026-09-16 强调，超选自动截断） */
+const onMemberSelectChange = (val) => {
+  if (!editingTeam.value) return;
+  let next = Array.isArray(val) ? val : [];
+  if (next.length > 4) {
+    next = next.slice(0, 4);
+    message.warning("队员最多 4 人（含队长共 5 人），超出部分已忽略");
+  }
+  editingTeam.value.memberRoleIds = next;
+  persistTeams();
+};
+
+/**
+ * 编辑弹窗里加载/刷新本俱乐部成员 —— 走常规名册方式（legion_getinfo，仅主连接）。
+ * master 定稿：提前编队发生在开战之前，进不了战场，所以这里绝不能走战场探测。
+ * cId 在执行时用本场 roleMap 现算。
+ */
+const loadEditorMembers = async () => {
+  const t = editingTeam.value;
+  if (!t || editorLoading.value) return;
+  editorLoading.value = true;
+  try {
+    const r = await tasks.loadSaltFieldRoster(t);
+    const roleNames = {};
+    for (const m of r.roster) roleNames[String(m.roleId)] = m.name;
+    liveByTeam.value = {
+      ...liveByTeam.value,
+      [t.id]: {
+        ...(liveByTeam.value[t.id] || {}),
+        legionId: r.legionId,
+        legionName: r.legionName,
+        roster: r.roster,
+        roleNames,
+      },
+    };
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `[${t.name}] 已加载俱乐部名册：${r.legionName || r.legionId} 共 ${r.roster.length} 人`,
+      type: "success",
+    });
+  } catch (e) {
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `[${t.name}] 加载俱乐部成员失败: ${e?.message || e}`,
+      type: "error",
+    });
+    message?.error?.(`加载失败: ${e?.message || e}`);
+  } finally {
+    editorLoading.value = false;
+  }
 };
 
 /* ------------------------------ 配置写回 ------------------------------ */
@@ -453,6 +547,14 @@ const toggleClubEnabled = (group, value) => {
 
 const openEditor = (team) => {
   editingTeam.value = teams.value.find((t) => t.id === team.id) || team;
+  if (!editingTeam.value.mode) editingTeam.value.mode = "immediate"; // 旧数据兼容
+  // 超编历史数据打开即归一：1 队长 + 最多 4 队员
+  if ((editingTeam.value.memberRoleIds || []).length > 4) {
+    editingTeam.value.memberRoleIds = editingTeam.value.memberRoleIds.slice(0, 4);
+    message.warning("该队伍此前配置超过 4 名队员，已截断为前 4 个");
+    persistTeams();
+  }
+  memberTokenOnly.value = false;
   manualRoleId.value = "";
   showEditor.value = true;
 };
@@ -610,10 +712,25 @@ const batchMobileFill = async () => {
 
       // 顺序分配，先到先得
       for (const team of targets) {
+        // 优先用战场探测过的候选池（有实时 cId）；没有就走名册池（开战前可用，不依赖战场）
         let pool = liveByTeam.value[team.id]?.pool;
-        if (!pool) {
+        let roster = liveByTeam.value[team.id]?.roster;
+        if (!pool && !roster) {
           try {
-            pool = await probeTeam(team);
+            const r = await tasks.loadSaltFieldRoster(team);
+            roster = r.roster;
+            const roleNames = {};
+            for (const m of roster) roleNames[String(m.roleId)] = m.name;
+            liveByTeam.value = {
+              ...liveByTeam.value,
+              [team.id]: {
+                ...(liveByTeam.value[team.id] || {}),
+                legionId: r.legionId,
+                legionName: r.legionName,
+                roster,
+                roleNames,
+              },
+            };
           } catch (e) {
             addLog({ time: new Date().toLocaleTimeString(), message: `[${team.name}] 取候选池失败: ${e?.message || e}`, type: "error" });
             continue;
@@ -622,8 +739,20 @@ const batchMobileFill = async () => {
         const target = teams.value.find((x) => x.id === team.id);
         const leaderRole = Number(leaderRoleId(target));
         const specified = (target.memberRoleIds || []).map(Number).filter((r) => r !== leaderRole);
+        let availableList;
+        let poolLabel = "";
+        if (pool) {
+          availableList = pool.available.filter((c) => !occupied.has(Number(c.roleId)));
+        } else {
+          const rp = cfg.buildRosterCandidatePool({
+            roster,
+            excludeRoleIds: [leaderRole, ...specified, ...occupied],
+          });
+          availableList = rp.available;
+          poolLabel = "（名册池，cId 执行时换算）";
+        }
         const picked = cfg.pickMobileFill({
-          candidatePoolAvailable: pool.available.filter((c) => !occupied.has(Number(c.roleId))),
+          candidatePoolAvailable: availableList,
           team: { leaderRoleId: leaderRole, memberRoleIds: specified },
           occupiedRoleIds: [...occupied],
         });
@@ -633,7 +762,7 @@ const batchMobileFill = async () => {
           filledCount += picked.length;
           addLog({
             time: new Date().toLocaleTimeString(),
-            message: `[${g.legionId} / ${target.name}] 机动补齐 ${picked.map((p) => `${p.cId} ${p.name}(${p.isOffline ? "离线" : "在线"})`).join("、")}`,
+            message: `[${g.legionId} / ${target.name}] 机动补齐${poolLabel} ${picked.map((p) => `${p.cId != null ? "cId " + p.cId : "roleId " + p.roleId} ${p.name}(${p.isOffline ? "离线" : "在线"})`).join("、")}`,
             type: "success",
           });
         } else {
@@ -920,6 +1049,12 @@ onMounted(() => {
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
+}
+.editor__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 .editor__row--block label {
   flex: none;

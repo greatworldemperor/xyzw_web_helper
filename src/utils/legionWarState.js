@@ -176,6 +176,35 @@ export function getActivityWindow(state, nowSec = Math.floor(Date.now() / 1000))
   };
 }
 
+/**
+ * 队员「出现」（可被邀请）判定 —— 等待模式的核心条件。
+ *
+ * master 定义的游戏规则（2026-09-16）：一个角色「不出现在可组队目标中」当且仅当：
+ *   ① 他已登场；② 他虽未登场，但已被其它角色组队（入队后、队伍尚未登场）。
+ * 两种情况对应战场状态就是 `roles[cId].state !== "watching"`
+ *   · watching  = 在战场、未登场、未入队 —— 可组队（离线号也是 watching，可邀请）
+ *   · teaming   = 已入队、队伍未登场 —— 不可组队
+ *   · idle 等   = 已登场 —— 不可组队
+ *
+ * @param {object} state  战场状态
+ * @param {number} cid    目标队员的战场 codeId
+ * @param {number} myCid  自己（队长）的 codeId
+ * @returns {{ready: boolean, reason: string}}
+ *   ready=true 表示「已出现」，可以邀请；
+ *   reason: "" | "in_my_team"（已在我队里）| "not_in_field"（战场状态表中还没有此人）| 其它 state 字符串
+ */
+export function getInviteReadiness(state, cid, myCid) {
+  const c = Number(cid);
+  if (!Number.isFinite(c)) return { ready: false, reason: "bad_cid" };
+  if (getTeamMemberCids(state, myCid).includes(c)) {
+    return { ready: false, reason: "in_my_team" };
+  }
+  const role = getRole(state, c);
+  if (!role) return { ready: false, reason: "not_in_field" };
+  if (role.state === "watching") return { ready: true, reason: "" };
+  return { ready: false, reason: String(role.state || "unknown") };
+}
+
 /** 由业务侧放置的补充信息（例如 legion_getinfo 拿到的本俱乐部名册） */
 export function summarizeSnapshot(state) {
   return {

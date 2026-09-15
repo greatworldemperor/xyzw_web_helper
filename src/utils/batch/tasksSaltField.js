@@ -10,6 +10,7 @@
  * 连接排队、超时重连、日志、停止开关，不重复造轮子。
  */
 import { LegionWarSession, buildLegionWarUrl } from "@/utils/legionWarSession";
+import { getInviteReadiness } from "@/utils/legionWarState";
 import * as cfg from "@/utils/saltFieldConfig";
 
 /** 战场连接槽位（与批量主连接的 maxActive 分开限流） */
@@ -187,6 +188,55 @@ export function createTasksSaltField(deps) {
     return { ok, failed, teams };
   };
 
+  /* -------------------- ①½ 只读名册（不依赖战场，开战前后都可用） -------------------- */
+
+  /**
+   * 用「常规方式」拉本俱乐部成员名单：主连接 legion_getinfo（无参数，返回调用者自己的俱乐部）。
+   *
+   * master 2026-09-16 定稿：提前编队发生在开战之前，此时进不了战场
+   * （legion_getbattlefield / war_enterbattlefield 都不可用），所以编辑弹窗的
+   * 「加载俱乐部成员」绝不能走战场探测（probeSaltFieldTeam）。
+   * cId 不在这里取 —— 执行时用本场 roleMap 现算（抓包证实开战时按名册全量分配）。
+   */
+  const loadSaltFieldRoster = async (team) => {
+    const t = tag(team);
+    const tokenId = team.leaderTokenId;
+    const token = findToken(tokenId);
+    if (!token) throw new Error(`找不到队长 token: ${tokenId}`);
+
+    try {
+      await ensureConnection(tokenId);
+      const role = await loadRoleInfo(tokenStore, tokenId);
+      if (!role) throw new Error("role_getroleinfo 未返回角色");
+
+      const legion = await loadOwnLegion(tokenStore, tokenId);
+      if (!legion) throw new Error("legion_getinfo 未返回俱乐部信息");
+
+      const legionId = Number(legion.id || role.legionId || 0);
+      const legionName = legion.name || "";
+      const roster = rosterToArray(legion.members);
+
+      cfg.setRoleCacheEntry(tokenId, {
+        roleId: Number(role.roleId || 0),
+        roleName: role.name || token.name,
+        legionId,
+        legionName,
+        serverId: Number(role.serverId || 0),
+        serverName: role.serverName || "",
+      });
+
+      log(`${t} 名册加载完成：${legionName || legionId} 共 ${roster.length} 人（仅主连接，未进战场）`, "info");
+      return { tokenId, roleId: Number(role.roleId || 0), legionId, legionName, roster };
+    } finally {
+      try {
+        tokenStore.closeWebSocketConnection(tokenId);
+      } catch {
+        /* ignore */
+      }
+      releaseConnectionSlot?.();
+    }
+  };
+
   /* -------------------- ② 探测：连接 + 进战场 + 建候选池（不改状态） -------------------- */
 
   /**
@@ -318,15 +368,25 @@ export function createTasksSaltField(deps) {
 
   /**
    * 一支队伍的完整流程：进战场 → 选阵容 → 组队 → 登场 → 校验。
+   *
+   * 执行模式（team.mode，master 2026-09-16 定稿）：
+   *   · immediate 立即：拉一次可组队清单；指定队员不在清单的直接放弃；
+   *     开机动则按优先级从候选池补人（不强制补满 5 人），不开机动不补人；组完即登场。
+   *   · wait 等待：持续刷新可组队清单，指定队员「出现」（未登场且未被任何队伍组走，
+   *     即战场 state=watching）一个就组一个，直到全部组上再登场；一直等，不自动收尾
+   *     （手动停止 = 按当前已组队伍登场）；忽略机动开关。
+   *
    * @returns {object} 结果对象（不再抛错，失败信息在结果里）
    */
   const runOneSaltFieldTeam = async (team) => {
     const t = tag(team);
+    const mode = team.mode === "wait" ? "wait" : "immediate";
     const startedAt = Date.now();
     const result = {
       teamId: team.id,
       legionId: team.legionId,
       leaderTokenId: team.leaderTokenId,
+      mode,
       ok: false,
       stage: "init",
       invited: [],
@@ -337,70 +397,63 @@ export function createTasksSaltField(deps) {
 
     let probe = null;
     try {
-      // 1) 连接 + 定俱乐部 + 拿阵容 + 建候选池（复用探测流程，避免逻辑分叉）
+      // 1) 连接 + 定俱乐部 + 拿阵容 + roleMap（复用探测流程，避免逻辑分叉）
       result.stage = "probe";
       probe = await probeSaltFieldTeam(team);
-      const { legionId, legionName, roster, lineup, roleMap, myCid, roleId } = probe;
+      const { legionId, legionName, lineup, roleMap, myCid, roleId } = probe;
       const ownRoleId = Number(roleId || 0);
 
-      log(`${t} 进入战场 ${probe.battlefieldId} · ${legionName || legionId} · 自身 cId ${myCid}`, "info");
+      log(
+        `${t} 进入战场 ${probe.battlefieldId} · ${legionName || legionId} · 自身 cId ${myCid}` +
+          ` · 模式：${mode === "wait" ? "等待" : "立即"}`,
+        "info",
+      );
       log(`${t} roleMap ${Object.keys(roleMap).length} 人（本俱乐部）`, "info");
 
       if (!lineup.battleTeam) {
         throw new Error("角色没有可用的主阵容（battleTeam 为空），请先在游戏里配置阵容");
       }
 
-      // 2) 解析队员：先取指定队员，机动则在本俱乐部候选池内补齐
       const teams = cfg.getTeams();
       const siblingOccupied = teams
         .filter((x) => String(x.leaderTokenId) !== String(team.leaderTokenId))
         .filter((x) => Number(x.legionId) === Number(legionId))
         .flatMap((x) => [...(x.memberRoleIds || [])]);
 
-      const specified = [...new Set((team.memberRoleIds || []).map(Number))].filter(
+      const specifiedAll = [...new Set((team.memberRoleIds || []).map(Number))].filter(
         (r) => r && r !== ownRoleId,
       );
-
-      let memberRoleIds = [...specified];
-      const fillLog = [];
-      if (team.mobile) {
-        const pool = cfg.buildCandidatePool({
-          roster,
-          roleMap,
-          excludeRoleIds: [ownRoleId, ...specified, ...siblingOccupied],
-        });
-        const picked = cfg.pickMobileFill({
-          candidatePoolAvailable: pool.available,
-          team: { leaderRoleId: ownRoleId, memberRoleIds: specified },
-          occupiedRoleIds: siblingOccupied,
-        });
-        if (picked.length) {
-          memberRoleIds = [...specified, ...picked.map((p) => p.roleId)];
-          fillLog.push(...picked.map((p) => `cId ${p.cId} ${p.name}(${p.isOffline ? "离线" : "在线"})`));
+      // 队伍硬上限 5 人 = 1 队长 + 4 队员（master 2026-09-16 强调）；配置写超时这里兜底截断
+      const specified = specifiedAll.slice(0, 4);
+      if (specifiedAll.length > 4) {
+        for (const roleId of specifiedAll.slice(4)) {
+          result.failed.push({ roleId, reason: "超过队员上限 4 人，被忽略（请修正队伍配置）" });
         }
+        log(
+          `${t} 指定队员 ${specifiedAll.length} 人 > 上限 4，只取前 4 个（cId ${specified
+            .map((r) => roleMap[String(r)]?.cId ?? "?")
+            .join(",")}），多余的被忽略`, "warning",
+        );
       }
 
-      // 3) roleId -> cId（只能查本连接自己的 roleMap）
-      const targets = [];
-      for (const roleId of memberRoleIds) {
-        const cId = Number(roleMap[String(roleId)]?.cId ?? NaN);
-        if (!Number.isFinite(cId)) {
-          result.failed.push({ roleId, reason: "不在本俱乐部 roleMap（跨俱乐部或本场未参战）" });
-          log(`${t} 队员 ${roleId} 不在本俱乐部 roleMap，已跳过`, "error");
-          continue;
+      const cidOf = (roleId) => {
+        const v = Number(roleMap[String(roleId)]?.cId ?? NaN);
+        return Number.isFinite(v) ? v : null;
+      };
+
+      /** 发一次邀请并记日志；不写 result（失败处理交给调用方） */
+      const doInvite = async (roleId, cId) => {
+        const inv = await probe.session.inviteJoinTeam(cId);
+        const r = inv.role;
+        if (inv.ok) {
+          log(`${t} 邀请 cId ${cId} ${r?.name || roleId} ✓（队伍 ${inv.members.length} 人）`, "success");
+        } else {
+          log(`${t} 邀请 cId ${cId} ${r?.name || roleId} 未确认（队伍 ${inv.members.length} 人）`, "warning");
         }
-        targets.push({ roleId, cId });
-      }
+        return inv;
+      };
 
-      log(
-        `${t} 队伍构成：队长 cId ${myCid}` +
-          (targets.length ? ` + 队员 ${targets.map((x) => `cId ${x.cId}`).join(", ")}` : "（无队员）") +
-          (fillLog.length ? `｜机动补齐 ${fillLog.join("、")}` : ""),
-        "info",
-      );
-      result.invited = targets.map((x) => x.cId);
-
-      // 4) 选阵容
+      // 2) 选阵容（两种模式都先布阵）
       result.stage = "setBattleTeam";
       const bt = await probe.session.setBattleTeam({
         battleTeam: lineup.battleTeam,
@@ -412,27 +465,177 @@ export function createTasksSaltField(deps) {
         bt.ok ? "success" : "warning",
       );
 
-      // 5) 逐个邀请（间隔可配，避免触发限流）
-      result.stage = "invite";
-      const gap = Math.max(300, Number(settings().inviteIntervalMs) || 1200);
-      for (let i = 0; i < targets.length; i++) {
-        if (shouldStop?.value) {
-          result.error = "已手动停止";
-          break;
+      // 3) 组队
+      let targets = []; // 实际发过邀请的 {roleId, cId}
+      const fillLog = [];
+
+      if (mode === "immediate") {
+        /* ---------- 立即模式：一次清单，缺席放弃，机动可选补齐 ---------- */
+        result.stage = "prepare";
+        let memberRoleIds = [...specified];
+        if (team.mobile) {
+          const pool = cfg.buildCandidatePool({
+            roster: probe.roster,
+            roleMap,
+            excludeRoleIds: [ownRoleId, ...specified, ...siblingOccupied],
+          });
+          const picked = cfg.pickMobileFill({
+            candidatePoolAvailable: pool.available,
+            team: { leaderRoleId: ownRoleId, memberRoleIds: specified },
+            occupiedRoleIds: siblingOccupied,
+          });
+          if (picked.length) {
+            memberRoleIds = [...specified, ...picked.map((p) => p.roleId)];
+            fillLog.push(...picked.map((p) => `cId ${p.cId} ${p.name}(${p.isOffline ? "离线" : "在线"})`));
+          } else {
+            log(`${t} 机动开启但候选池无人可补，按现有队员登场`, "info");
+          }
         }
-        const { roleId, cId } = targets[i];
-        const inv = await probe.session.inviteJoinTeam(cId);
-        const r = inv.role;
-        if (inv.ok) {
-          log(`${t} 邀请 cId ${cId} ${r?.name || roleId} ✓（队伍 ${inv.members.length} 人）`, "success");
+
+        for (const roleId of memberRoleIds) {
+          const cId = cidOf(roleId);
+          if (cId === null) {
+            result.failed.push({ roleId, reason: "不在本俱乐部 roleMap（跨俱乐部或本场未参战）" });
+            log(`${t} 队员 ${roleId} 不在本俱乐部 roleMap，已放弃`, "error");
+            continue;
+          }
+          targets.push({ roleId, cId });
+        }
+
+        log(
+          `${t} 队伍构成：队长 cId ${myCid}` +
+            (targets.length ? ` + 队员 ${targets.map((x) => `cId ${x.cId}`).join(", ")}` : "（无队员）") +
+            (fillLog.length ? `｜机动补齐 ${fillLog.join("、")}` : ""),
+          "info",
+        );
+        result.invited = targets.map((x) => x.cId);
+
+        result.stage = "invite";
+        const gap = Math.max(300, Number(settings().inviteIntervalMs) || 1200);
+        for (let i = 0; i < targets.length; i++) {
+          if (shouldStop?.value) {
+            result.error = "已手动停止";
+            break;
+          }
+          const { roleId, cId } = targets[i];
+          const inv = await doInvite(roleId, cId);
+          if (!inv.ok) result.failed.push({ roleId, cId, reason: "邀请未确认（超时）" });
+          if (i < targets.length - 1) await sleep(gap);
+        }
+        result.expectedMembers = 1 + targets.length;
+      } else {
+        /* ---------- 等待模式：持续刷新清单，出现一个组一个，全部组上再登场 ---------- */
+        result.stage = "wait";
+        if (specified.length === 0) {
+          log(`${t} 等待模式未指定任何队员，直接登场`, "warning");
         } else {
-          result.failed.push({ roleId, cId, reason: "邀请未确认（超时）" });
-          log(`${t} 邀请 cId ${cId} ${r?.name || roleId} 未确认（队伍 ${inv.members.length} 人）`, "warning");
+          log(
+            `${t} 等待开始：等 ${specified.length} 名指定队员「出现」（未登场且未被其它队伍组走，即战场 watching）` +
+              `；一直等，手动停止 = 按当前已组队伍登场`,
+            "info",
+          );
+          log(
+            `${t} 提示：等待期间持续占用 1 个战场连接槽位（当前上限 ${settings().maxActiveBattlefield}，等待队伍多时请调大）`,
+            "info",
+          );
+
+          const pollMs = Math.max(3000, Number(settings().waitPollMs) || 12000);
+          const gap = Math.max(300, Number(settings().inviteIntervalMs) || 1200);
+          const mine = () => new Set(probe.session.teamMemberCids(myCid).map(Number));
+          const warned = new Set();
+          const warnOnce = (key, fn) => {
+            if (!warned.has(key)) {
+              warned.add(key);
+              fn();
+            }
+          };
+
+          // cId 缺失的队员永远等不到，提前说清楚
+          for (const roleId of specified) {
+            if (cidOf(roleId) === null) {
+              warnOnce(`nocid:${roleId}`, () =>
+                log(`${t} 队员 ${roleId} 不在本俱乐部 roleMap（跨俱乐部或本场未参战），将一直等待`, "warning"),
+              );
+            }
+          }
+
+          const waitStart = Date.now();
+          for (;;) {
+            if (shouldStop?.value) {
+              result.error = "已手动停止（按当前已组队伍登场收尾）";
+              log(`${t} 手动停止：按当前已组队伍登场收尾`, "warning");
+              break;
+            }
+
+            // 主动拉快照：观测外部变化（被别人组走 / 自行登场）+ 补漏掉的增量帧
+            const rf = await probe.session.refreshBattlefieldInfo();
+            if (!rf.ok) warnOnce("refresh", () => log(`${t} 拉取战场快照超时（继续轮询）`, "warning"));
+
+            const mineSet = mine();
+            const pending = specified.filter((roleId) => {
+              const cId = cidOf(roleId);
+              return cId === null || !mineSet.has(cId);
+            });
+
+            if (pending.length === 0) break;
+
+            for (const roleId of pending) {
+              if (shouldStop?.value) break;
+              const cId = cidOf(roleId);
+              if (cId === null) continue; // 已警告过
+              const rd = getInviteReadiness(probe.session.state, cId, myCid);
+              if (rd.ready) {
+                const inv = await doInvite(roleId, cId);
+                if (inv.ok && !targets.some((x) => x.roleId === roleId)) targets.push({ roleId, cId });
+                await sleep(gap);
+              } else if (rd.reason !== "in_my_team") {
+                warnOnce(`state:${roleId}:${rd.reason}`, () => {
+                  const why =
+                    rd.reason === "not_in_field"
+                      ? "尚未出现在战场"
+                      : rd.reason === "teaming"
+                        ? "已被其它队伍组走"
+                        : rd.reason === "idle"
+                          ? "已自行登场"
+                          : `状态 ${rd.reason}`;
+                  log(`${t} 队员 ${roleId}（cId ${cId}）未出现：${why}，继续等待`, "info");
+                });
+              }
+            }
+
+            // 完成判定：全部指定队员都已在自己队里
+            const mineNow = mine();
+            const done = specified.every((roleId) => {
+              const cId = cidOf(roleId);
+              return cId !== null && mineNow.has(cId);
+            });
+            if (done) break;
+
+            await sleep(pollMs);
+          }
+
+          const waitedSec = ((Date.now() - waitStart) / 1000).toFixed(0);
+          const confirmed = specified.filter((roleId) => {
+            const cId = cidOf(roleId);
+            return cId !== null && mine().has(cId);
+          });
+          result.waitedMs = Date.now() - waitStart;
+          result.invited = confirmed.map((roleId) => cidOf(roleId));
+          result.expectedMembers = 1 + confirmed.length;
+          for (const roleId of specified) {
+            if (!confirmed.includes(roleId)) {
+              result.failed.push({ roleId, cId: cidOf(roleId), reason: "等待中止/未出现" });
+            }
+          }
+          log(
+            `${t} 等待结束：用时 ${waitedSec}s，确认入队 ${confirmed.length}/${specified.length}` +
+              (confirmed.length === specified.length ? "（全员到齐）" : "（未到齐）"),
+            confirmed.length === specified.length ? "success" : "warning",
+          );
         }
-        if (i < targets.length - 1) await sleep(gap);
       }
 
-      // 6) 登场
+      // 4) 登场
       result.stage = "deploy";
       const dp = await probe.session.deploy({
         battleTeam: lineup.battleTeam,
@@ -447,15 +650,28 @@ export function createTasksSaltField(deps) {
         log(`${t} 登场未确认（角色仍是 ${dp.role?.state || "watching"}）`, "warning");
       }
 
-      // 7) 校验
+      // 5) 校验
       result.stage = "verify";
-      const expected = 1 + targets.length;
-      result.ok = result.teamMembers.length === expected;
-      if (!result.ok) {
-        result.error = `队伍人数 ${result.teamMembers.length} ≠ 预期 ${expected}`;
-        log(`${t} 校验失败：teamMap[${myCid}].mCodeIds = [${result.teamMembers.join(",")}]，预期 ${expected} 人`, "error");
+      const expected = result.expectedMembers ?? 1 + targets.length;
+      if (specified.length === 0 && targets.length === 0) {
+        // 单人队（master 明确支持"有多少人组多少人"，最少 1 人）：从未发过邀请。
+        // teamMap 的组队条目由组队动作创建，此时可能没有自己的条目
+        // （teamMemberCids 返回 []），人数校验无意义 —— 以登场结果为准。
+        result.ok = !!dp.ok;
+        if (result.ok) {
+          log(`${t} 校验通过：单人登场，无队员（未发过邀请）`, "success");
+        } else {
+          result.error = result.error || "单人登场未确认";
+          log(`${t} 校验失败：单人登场未确认（角色仍是 ${dp.role?.state || "watching"}）`, "error");
+        }
       } else {
-        log(`${t} 校验通过：${result.teamMembers.length} 人 [${result.teamMembers.join(",")}]`, "success");
+        result.ok = result.teamMembers.length === expected;
+        if (!result.ok) {
+          result.error = result.error || `队伍人数 ${result.teamMembers.length} ≠ 预期 ${expected}`;
+          log(`${t} 校验失败：teamMap[${myCid}].mCodeIds = [${result.teamMembers.join(",")}]，预期 ${expected} 人`, "error");
+        } else {
+          log(`${t} 校验通过：${result.teamMembers.length} 人 [${result.teamMembers.join(",")}]`, "success");
+        }
       }
     } catch (e) {
       result.error = e?.message || String(e);
@@ -515,6 +731,7 @@ export function createTasksSaltField(deps) {
   return {
     battlefieldQueue,
     syncSaltFieldRoles,
+    loadSaltFieldRoster,
     probeSaltFieldTeam,
     closeProbe,
     previewSaltFieldTeamCandidates,

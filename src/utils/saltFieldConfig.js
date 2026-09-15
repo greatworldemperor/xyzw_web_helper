@@ -21,6 +21,7 @@ export const DEFAULT_SETTINGS = {
   teamCdWaitMs: 10000, // constant.TeamCd
   enterTimeoutMs: 15000,
   maxActiveBattlefield: 3, // 战场连接并发上限（与批量 maxActive 分开）
+  waitPollMs: 12000, // 等待模式：轮询战场快照的间隔
 };
 
 function readJson(key, fallback) {
@@ -138,6 +139,7 @@ export function reconcileTeams() {
         enabled: true,
         memberRoleIds: [],
         mobile: false,
+        mode: "immediate", // immediate=立即执行 | wait=等待模式（等齐指定队员再登场）
       };
       teams.push(t);
       added.push(t);
@@ -254,13 +256,56 @@ export function buildCandidatePool({ roster = [], roleMap = {}, excludeRoleIds =
     available.push(rec);
   }
 
-  // 排序：① 离线优先 ② 势力降序
+  // 排序：① 离线优先 ② 势力降序（两个候选池构造共用，避免规则漂移）
   available.sort((a, b) => {
     if (a.isOffline !== b.isOffline) return a.isOffline ? -1 : 1;
     return b.power - a.power;
   });
 
   return { all, available, unavailable, excluded: excludedList };
+}
+
+/**
+ * 名册版候选池（master 2026-09-16：提前编队不能依赖战场 —— 开战前进不了战场）。
+ *
+ * 与 buildCandidatePool 的区别：数据只来自 legion_getinfo 名册（主连接，随时可拉），
+ * 没有 roleMap ⇒ 没有 cId，**全员视为可选取**（同俱乐部成员开战后按名册全量分配
+ * cId，这是抓包证实的机制，所以提前按名册选人是安全的）。
+ * 用途：编辑弹窗加载成员、开战前的机动补齐。执行时仍按 roleMap 换算 cId。
+ */
+export function buildRosterCandidatePool({ roster = [], excludeRoleIds = [] } = {}) {
+  const excluded = new Set(excludeRoleIds.map((x) => String(x)));
+
+  const all = [];
+  const available = [];
+  const excludedList = [];
+
+  for (const m of roster) {
+    const roleId = String(m.roleId ?? m.rId ?? "");
+    if (!roleId) continue;
+    const rec = {
+      roleId: Number(roleId),
+      name: m.name || "",
+      power: Number(m.power || 0),
+      online: m.online,
+      isOffline: isOfflineByFlag(m.online),
+      cId: null, // 开战前没有战场快照；执行时用 roleMap[roleId].cId 现算
+      excluded: excluded.has(roleId),
+    };
+    all.push(rec);
+    if (rec.excluded) {
+      excludedList.push(rec);
+      continue;
+    }
+    available.push(rec);
+  }
+
+  available.sort((a, b) => {
+    if (a.isOffline !== b.isOffline) return a.isOffline ? -1 : 1;
+    return b.power - a.power;
+  });
+
+  return { all, available, unavailable: [], excluded: excludedList };
 }
 
 /**
