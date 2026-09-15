@@ -28,7 +28,7 @@ const expectedRuntimeFiles = [
 const expectedAutomationFiles = [
   "salt-field-auto.js?v=20260911.1",
   "multi-game-control-bridge.js?v=20260911.1",
-  "multi-game-sync-bridge.js?v=20260913.1",
+  "multi-game-sync-bridge.js?v=20260915.2",
 ];
 
 function executeBootstrap(boot) {

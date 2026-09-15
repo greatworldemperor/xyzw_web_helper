@@ -3,7 +3,12 @@
 
   const EVENT_CHANNEL = "multi-game";
   const SYNC_CMD_CHANNEL = "multi-game-sync";
-  const VERSION = 1;
+  // ⚠️ 两个通道版本独立：multi-game 通道（user-event / ready / fatal）由宿主按 1 校验，
+  // 只有「同步命令」通道需要升级到 2（send / receive 双向角色）。别把两者合并成一个常量。
+  const EVENT_VERSION = 1;
+  const SYNC_VERSION = 2;
+  // 兼容旧宿主页面（只下发 enabled 的版本）
+  const LEGACY_SYNC_VERSION = 1;
   const scope = root.__MULTI_GAME_BRIDGE_READY__?.scope || "";
 
   // 需要捕获并转发的事件类型
@@ -21,11 +26,17 @@
 
   const ALL_EVENTS = [...MOUSE_EVENTS, ...TOUCH_EVENTS];
 
-  // 同步状态
-  let syncEnabled = false;
+  // 同步状态（拆分发送 / 接收两个方向）：
+  //   sendEnabled    —— 本窗口是同步源（组长 / 全局源）：捕获本地事件上报给宿主
+  //   receiveEnabled —— 本窗口是同步从：接收并回放其他窗口转发过来的事件
+  let sendEnabled = false;
+  let receiveEnabled = false;
   let lastSentAt = 0;
   let throttleMs = 16; // ~60fps 节流
   let ignoreNextRemoteEvents = false;
+
+  const isSyncActive = () => sendEnabled || receiveEnabled;
+
 
   function getCanvas() {
     return root.document?.getElementById?.("GameCanvas") || null;
@@ -228,10 +239,10 @@
   }
 
   /**
-   * 本地事件处理：提取数据并发送到父页面
+   * 本地事件处理：提取数据并发送到父页面（只有同步源才会上报）
    */
   function handleLocalEvent(event) {
-    if (!syncEnabled) return;
+    if (!sendEnabled) return;
     if (ignoreNextRemoteEvents) return;
 
     // 节流
@@ -250,7 +261,7 @@
     root.parent.postMessage(
       {
         channel: EVENT_CHANNEL,
-        version: VERSION,
+        version: EVENT_VERSION,
         type: "user-event",
         scope,
         event: data,
@@ -402,6 +413,40 @@
     scrollIsolationPatched = false;
   }
 
+  /**
+   * 应用宿主下发的同步角色；只在角色真正变化时重挂监听器。
+   */
+  function applySyncRole(send, receive) {
+    const nextSend = send === true;
+    const nextReceive = receive === true;
+    const changed = nextSend !== sendEnabled || nextReceive !== receiveEnabled;
+    sendEnabled = nextSend;
+    receiveEnabled = nextReceive;
+
+    // 同步开启期间隔离滚动副作用，避免从窗口把宿主网格滚到别处
+    if (isSyncActive()) enableScrollIsolation();
+    else disableScrollIsolation();
+
+    if (changed) {
+      // 重新挂载监听器（以防 canvas 被重建）
+      detachLocalListeners();
+      if (sendEnabled) attachLocalListeners();
+    }
+  }
+
+  function readSyncConfig(payload) {
+    // 新版：显式 send / receive；旧版：单个 enabled（视为双向）
+    const fallback = payload.enabled === true;
+    return {
+      send: typeof payload.send === "boolean" ? payload.send : fallback,
+      receive: typeof payload.receive === "boolean" ? payload.receive : fallback,
+    };
+  }
+
+  function isSupportedVersion(version) {
+    return version === SYNC_VERSION || version === LEGACY_SYNC_VERSION;
+  }
+
   function handleParentMessage(event) {
     if (event.origin !== root.location.origin || event.source !== root.parent) {
       return;
@@ -412,32 +457,22 @@
     // 接收同步控制命令
     if (
       payload?.channel === SYNC_CMD_CHANNEL &&
-      payload.version === VERSION &&
+      isSupportedVersion(payload.version) &&
       payload.type === "config"
     ) {
-      const prevEnabled = syncEnabled;
-      syncEnabled = !!payload.enabled;
+      const { send, receive } = readSyncConfig(payload);
       throttleMs = typeof payload.throttleMs === "number" ? payload.throttleMs : 16;
-
-      // 同步开启期间隔离滚动副作用，避免从窗口把宿主网格滚到别处
-      if (syncEnabled) enableScrollIsolation();
-      else disableScrollIsolation();
-
-      if (syncEnabled && !prevEnabled) {
-        // 重新挂载监听器（以防 canvas 被重建）
-        detachLocalListeners();
-        attachLocalListeners();
-      }
+      applySyncRole(send, receive);
       return;
     }
 
-    // 接收远程事件派发请求
+    // 接收远程事件派发请求（只有同步从需要回放）
     if (
       payload?.channel === SYNC_CMD_CHANNEL &&
-      payload.version === VERSION &&
+      isSupportedVersion(payload.version) &&
       payload.type === "forward-event" &&
       payload.scope !== scope && // 不是自己发回来的
-      syncEnabled
+      receiveEnabled
     ) {
       enableScrollIsolation();
       ignoreNextRemoteEvents = true;
@@ -454,7 +489,7 @@
   function waitForCanvas() {
     const tryNow = () => {
       if (getCanvas()) {
-        if (syncEnabled) attachLocalListeners();
+        if (sendEnabled) attachLocalListeners();
         return true;
       }
       return false;
@@ -470,19 +505,15 @@
   waitForCanvas();
 
   root.__MULTI_GAME_SYNC_BRIDGE__ = {
-    version: VERSION,
+    version: SYNC_VERSION,
+    eventVersion: EVENT_VERSION,
     sync: {
-      isEnabled: () => syncEnabled,
-      enable: () => {
-        syncEnabled = true;
-        enableScrollIsolation();
-        attachLocalListeners();
-      },
-      disable: () => {
-        syncEnabled = false;
-        disableScrollIsolation();
-        detachLocalListeners();
-      },
+      isEnabled: () => isSyncActive(),
+      isSending: () => sendEnabled,
+      isReceiving: () => receiveEnabled,
+      setRole: (send, receive) => applySyncRole(send, receive),
+      enable: () => applySyncRole(true, true),
+      disable: () => applySyncRole(false, false),
       setThrottle: (ms) => {
         throttleMs = typeof ms === "number" ? ms : 16;
       },
@@ -490,3 +521,4 @@
     },
   };
 })(window);
+

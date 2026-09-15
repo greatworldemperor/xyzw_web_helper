@@ -15,40 +15,6 @@
         {{ skippedSummary }}
       </span>
 
-      <!-- 同步操作控制区 -->
-      <div class="sync-controls" role="group" aria-label="同步操作">
-        <span class="sync-label">同步分组</span>
-        <div v-if="syncGroups.length" class="sync-group-options">
-          <label
-            v-for="group in syncGroups"
-            :key="group.id"
-            class="sync-group-option"
-            :title="`${group.name}（${group.scopeIds.length} 个窗口）`"
-          >
-            <span
-              class="sync-group-dot"
-              :style="{ backgroundColor: group.color }"
-            ></span>
-            <span class="sync-group-name">{{ group.name }}</span>
-            <span class="sync-group-count">{{ group.scopeIds.length }}</span>
-            <input
-              class="sync-group-checkbox"
-              type="checkbox"
-              :checked="isGroupSyncEnabled(group.id)"
-              :disabled="group.scopeIds.length < 2"
-              @change="toggleSyncGroup(group.id, $event.target.checked)"
-            />
-          </label>
-        </div>
-        <span v-if="!syncGroups.length" class="sync-status-off">
-          当前窗口没有匹配分组
-        </span>
-        <span v-else-if="hasSyncEnabled" class="sync-status-on">
-          ● 已启用
-        </span>
-        <span v-else class="sync-status-off">○ 未启用</span>
-      </div>
-
       <div
         v-if="frames.length"
         class="platform-spoof-controls"
@@ -155,6 +121,120 @@
       </n-popover>
     </header>
 
+    <!-- 同步栏：模式 / 分组顺序 / 组长（第一个分组的组长即全局同步源） -->
+    <section
+      v-if="frames.length"
+      class="sync-bar"
+      aria-label="批量运行时同步"
+      @dragend="endGroupDrag"
+    >
+      <div class="sync-mode-row">
+        <span class="sync-label">同步模式</span>
+        <div class="sync-mode-options" role="radiogroup" aria-label="同步模式">
+          <button
+            v-for="option in syncModeOptions"
+            :key="option.value"
+            type="button"
+            class="sync-mode-button"
+            :class="{ 'is-active': syncMode === option.value }"
+            :aria-pressed="syncMode === option.value"
+            :title="option.hint"
+            @click="setSyncMode(option.value)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+        <span
+          class="sync-summary"
+          :class="syncPlan.active ? 'is-on' : 'is-off'"
+        >
+          {{ syncSummary }}
+        </span>
+      </div>
+
+      <div v-if="syncGroups.length" class="sync-group-row">
+        <span class="sync-label">分组顺序</span>
+        <div class="sync-group-chips">
+          <div
+            v-for="(chip, index) in syncGroupChips"
+            :key="chip.id"
+            class="sync-chip"
+            :class="{
+              'is-dragging': draggingGroupId === chip.id,
+              'is-drop-target': dragOverGroupId === chip.id,
+              'is-global-source': chip.isGlobalSourceGroup,
+              'is-inactive': chip.inactive,
+            }"
+            @dragover.prevent="dragOverGroupId = chip.id"
+            @dragleave="clearDragOver(chip.id)"
+            @drop.prevent="dropGroupOn(chip.id)"
+          >
+            <span
+              class="sync-chip-handle"
+              draggable="true"
+              title="拖动调整分组顺序"
+              @dragstart="startGroupDrag(chip.id, $event)"
+            >
+              ⠿
+            </span>
+            <span class="sync-chip-index">{{ index + 1 }}</span>
+            <span
+              class="sync-chip-dot"
+              :style="{ backgroundColor: chip.color }"
+            ></span>
+            <span class="sync-chip-name" :title="chip.name">
+              {{ chip.name }}
+            </span>
+            <span class="sync-chip-count" :title="chip.countTitle">
+              {{ chip.countLabel }}{{ chip.inactive ? "（单窗口不参与）" : "" }}
+            </span>
+            <span v-if="chip.isGlobalSourceGroup" class="sync-chip-flag">
+              全局源
+            </span>
+            <span class="sync-chip-master">
+              <span class="sync-chip-master-label">组长</span>
+              <select
+                class="sync-chip-select"
+                :value="chip.masterScopeId || ''"
+                :aria-label="`${chip.name} 的组长`"
+                @change="setGroupMaster(chip.id, $event.target.value)"
+              >
+                <option v-for="member in chip.members" :key="member.scopeId" :value="member.scopeId">
+                  {{ member.name }}
+                </option>
+              </select>
+            </span>
+            <span class="sync-chip-move">
+              <button
+                type="button"
+                class="sync-chip-move-button"
+                title="上移一个位置"
+                :disabled="index === 0"
+                @click="moveGroup(chip.id, -1)"
+              >
+                ←
+              </button>
+              <button
+                type="button"
+                class="sync-chip-move-button"
+                title="下移一个位置"
+                :disabled="index === syncGroupChips.length - 1"
+                @click="moveGroup(chip.id, 1)"
+              >
+                →
+              </button>
+            </span>
+          </div>
+        </div>
+        <span class="sync-hint">
+          分组直接来自 Token 管理，只显示已打开窗口所在的分组；拖动 ⠿ 调整顺序，第一个分组的组长就是全局同步源，分组同步时各组组长只驱动本组
+        </span>
+      </div>
+      <span v-else class="sync-hint">
+        本次打开的窗口都不在任何 Token 管理分组里：同步分组只引用 Token 管理中的分组，请先到 Token 管理把账号分好组并勾选，再回到这里选择同步模式
+      </span>
+    </section>
+
     <main
       v-if="frames.length"
       ref="gameStrip"
@@ -168,6 +248,7 @@
         v-for="frame in frames"
         :key="frame.scopeId"
         class="game-panel"
+        :class="{ 'is-sync-source': isSyncSource(frame.scopeId) }"
         :style="{ order: frame.order }"
       >
         <header class="game-panel-header">
@@ -179,19 +260,31 @@
             @change="toggleFrameSelection(frame.scopeId)"
           />
           <div class="frame-group-tags" :title="getFrameGroupTitle(frame.scopeId)">
-            <span
+            <button
               v-for="group in getFrameGroups(frame.scopeId)"
               :key="group.id"
               class="frame-group-tag"
+              type="button"
+              :class="{ 'is-master': isGroupMaster(group.id, frame.scopeId) }"
               :style="{
                 borderColor: group.color,
                 color: group.color,
                 backgroundColor: `${group.color}22`,
               }"
+              :title="`${group.name}：点击把「${frame.name}」设为该组组长`"
+              @click="setGroupMaster(group.id, frame.scopeId)"
             >
               {{ group.name }}
-            </span>
+              <span v-if="isGroupMaster(group.id, frame.scopeId)">· 主</span>
+            </button>
           </div>
+          <span
+            v-if="frameSyncRole(frame.scopeId)"
+            class="frame-sync-flag"
+            :class="`is-${frameSyncRole(frame.scopeId).tone}`"
+          >
+            {{ frameSyncRole(frame.scopeId).label }}
+          </span>
           <span class="account-name" :title="frame.name">{{ frame.name }}</span>
           <span
             class="frame-status"
@@ -362,6 +455,7 @@ import {
   onUnmounted,
   reactive,
   ref,
+  watch,
 } from "vue";
 import { useRouter } from "vue-router";
 import {
@@ -369,11 +463,24 @@ import {
   closeMultiGameSession,
   moveMultiGameSession,
   MULTI_GAME_PLATFORM_SPOOF_KEY,
-  MULTI_GAME_SYNC_GROUPS_KEY,
+  MULTI_GAME_SYNC_GROUP_ORDER_KEY,
+  MULTI_GAME_SYNC_LEGACY_GROUPS_KEY,
+  MULTI_GAME_SYNC_MASTERS_KEY,
+  MULTI_GAME_SYNC_MODE_KEY,
   MULTI_GAME_TOKEN_GROUPS_KEY,
   readActiveMultiGameLaunch,
   resolveMultiGameFrameMessage,
 } from "@/utils/gameLauncher";
+import {
+  describeSyncRole,
+  normalizeSyncMode,
+  orderSyncGroups,
+  planMultiGameSync,
+  SYNC_MODE_GLOBAL,
+  SYNC_MODE_GROUP,
+  SYNC_MODE_NONE,
+  SYNC_MODE_OPTIONS,
+} from "@/utils/multiGameSyncPlan";
 
 const router = useRouter();
 const FRAME_LOAD_TIMEOUT_MS = 45_000;
@@ -424,11 +531,17 @@ const frameStates = reactive(
 );
 
 // ========== 同步操作相关状态 ==========
+// 三种模式：不同步（默认）/ 分组同步（各组组长驱动本组）/ 全局同步（第一个分组的组长驱动全部）
 const SYNC_CMD_CHANNEL = "multi-game-sync";
-const SYNC_VERSION = 1;
+const SYNC_VERSION = 2;
 const syncThrottleMs = 16; // ~60fps
 const tokenGroups = ref([]);
-const syncGroupEnabled = ref({});
+const syncMode = ref(SYNC_MODE_NONE);
+const syncGroupOrder = ref([]);
+const syncGroupMasters = ref({});
+const draggingGroupId = ref("");
+const dragOverGroupId = ref("");
+const syncModeOptions = SYNC_MODE_OPTIONS;
 
 function readJsonStorage(key, fallback) {
   try {
@@ -438,6 +551,14 @@ function readJsonStorage(key, fallback) {
     return value ?? fallback;
   } catch {
     return fallback;
+  }
+}
+
+function writeJsonStorage(key, value) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch (error) {
+    console.error(`Unable to persist ${key}:`, error);
   }
 }
 
@@ -457,32 +578,43 @@ function loadTokenGroups() {
     : [];
 }
 
-function loadSyncGroupSettings() {
-  const settings = readJsonStorage(MULTI_GAME_SYNC_GROUPS_KEY, {});
-  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
-    syncGroupEnabled.value = {};
-    return;
-  }
-  syncGroupEnabled.value = Object.fromEntries(
-    Object.entries(settings)
-      .filter(([, enabled]) => enabled === true)
-      .map(([groupId]) => [String(groupId), true]),
-  );
+function loadSyncSettings() {
+  const savedMode = readJsonStorage(MULTI_GAME_SYNC_MODE_KEY, null);
+  syncMode.value = savedMode
+    ? normalizeSyncMode(savedMode)
+    : migrateLegacySyncMode();
+  const order = readJsonStorage(MULTI_GAME_SYNC_GROUP_ORDER_KEY, []);
+  syncGroupOrder.value = Array.isArray(order) ? order.map(String) : [];
+  const masters = readJsonStorage(MULTI_GAME_SYNC_MASTERS_KEY, {});
+  syncGroupMasters.value =
+    masters && typeof masters === "object" && !Array.isArray(masters)
+      ? Object.fromEntries(
+          Object.entries(masters).map(([groupId, scopeId]) => [
+            String(groupId),
+            String(scopeId),
+          ]),
+        )
+      : {};
 }
 
-function persistSyncGroupSettings() {
-  try {
-    window.localStorage.setItem(
-      MULTI_GAME_SYNC_GROUPS_KEY,
-      JSON.stringify(syncGroupEnabled.value),
-    );
-  } catch (error) {
-    console.error("Unable to persist MultiGame sync groups:", error);
-  }
+/**
+ * 旧版按「每个分组一个开关」保存同步意图（multiGameSyncGroups）。
+ * 新模式只存一个全局模式，所以首次读取时把「曾经开过同步」迁移成分组同步，
+ * 避免老用户升级后同步静默失效。没存过模式的用户仍然是「不同步」。
+ */
+function migrateLegacySyncMode() {
+  const legacy = readJsonStorage(MULTI_GAME_SYNC_LEGACY_GROUPS_KEY, {});
+  const hadEnabledGroup =
+    legacy && typeof legacy === "object" && !Array.isArray(legacy)
+      ? Object.values(legacy).some((enabled) => enabled === true)
+      : false;
+  if (!hadEnabledGroup) return SYNC_MODE_NONE;
+  writeJsonStorage(MULTI_GAME_SYNC_MODE_KEY, SYNC_MODE_GROUP);
+  return SYNC_MODE_GROUP;
 }
 
 loadTokenGroups();
-loadSyncGroupSettings();
+loadSyncSettings();
 
 function initMultiGameSpoof() {
   try {
@@ -522,24 +654,108 @@ function toggleMultiGameSpoof() {
 
 initMultiGameSpoof();
 
+/**
+ * 同步分组 = Token 管理里的分组 ∩ 本次已打开窗口所在的账号。
+ * 页面不维护自己的分组、也没有固定槽位：Token 管理里没勾选（窗口没打开）的分组不会出现。
+ * 顺序按页面保存的 multiGameSyncGroupOrder 排列，组内窗口保持窗口顺序。
+ */
 const syncGroups = computed(() =>
-  tokenGroups.value
-    .map((group) => ({
-      ...group,
-      scopeIds: frames.value
-        .filter((frame) => group.tokenKeys.includes(String(frame.tokenKey)))
-        .map((frame) => frame.scopeId),
-    }))
-    .filter((group) => group.scopeIds.length > 0),
+  orderSyncGroups(
+    tokenGroups.value
+      .map((group) => ({
+        ...group,
+        scopeIds: frames.value
+          .filter((frame) => group.tokenKeys.includes(String(frame.tokenKey)))
+          .map((frame) => frame.scopeId),
+      }))
+      .filter((group) => group.scopeIds.length > 0),
+    syncGroupOrder.value,
+  ),
 );
 
-function getFrameGroups(scopeId) {
-  const frame = frames.value.find((item) => item.scopeId === scopeId);
-  const tokenKey = frame?.tokenKey;
-  if (!tokenKey) return [];
-  return tokenGroups.value.filter((group) =>
-    group.tokenKeys.includes(String(tokenKey)),
+const syncPlan = computed(() =>
+  planMultiGameSync({
+    mode: syncMode.value,
+    frames: frames.value.map((frame) => ({
+      scopeId: frame.scopeId,
+      name: frame.name,
+    })),
+    groups: syncGroups.value,
+    masters: syncGroupMasters.value,
+  }),
+);
+
+const hasSyncEnabled = computed(() => syncPlan.value.active);
+
+function frameName(scopeId) {
+  return frames.value.find((frame) => frame.scopeId === scopeId)?.name || "未知账号";
+}
+
+/** 没有被任何分组覆盖的窗口数量（分组同步时它们不参与）。 */
+const ungroupedFrameCount = computed(() => {
+  const grouped = new Set(
+    syncGroups.value.flatMap((group) => group.scopeIds),
   );
+  return frames.value.filter((frame) => !grouped.has(frame.scopeId)).length;
+});
+
+const syncGroupChips = computed(() => {
+  const plan = syncPlan.value;
+  const globalSourceGroupId =
+    plan.mode === SYNC_MODE_GLOBAL ? (plan.groups[0]?.id ?? null) : null;
+  return plan.groups.map((group) => {
+    const opened = group.scopeIds.length;
+    const totalMembers = group.tokenKeys.length;
+    return {
+      ...group,
+      isGlobalSourceGroup: group.id === globalSourceGroupId,
+      // 分组同步下单人分组没有同步对象，明确标出来免得以为失效
+      inactive: plan.mode === SYNC_MODE_GROUP && opened < 2,
+      // 组内还有账号没打开（没勾选）时把比例显示出来
+      countLabel:
+        totalMembers > opened
+          ? `已打开 ${opened} / 组内 ${totalMembers}`
+          : `${opened} 窗口`,
+      countTitle: `组内共 ${totalMembers} 个账号，本次已打开 ${opened} 个`,
+      members: group.scopeIds.map((scopeId) => ({
+        scopeId,
+        name: frameName(scopeId),
+      })),
+    };
+  });
+});
+
+const syncSummary = computed(() => {
+  const plan = syncPlan.value;
+  if (plan.mode === SYNC_MODE_NONE) return "○ 不同步（默认，不会互相影响）";
+  if (!plan.active) {
+    if (!plan.groups.length) {
+      return "○ 未生效：没有可用分组，请先在 Token 管理里给账号分组并勾选";
+    }
+    return plan.mode === SYNC_MODE_GLOBAL
+      ? "○ 未生效：没有可用窗口"
+      : "○ 未生效：同一个分组至少要有 2 个窗口";
+  }
+  const targetCount = new Set(Object.values(plan.targets).flat()).size;
+  if (plan.mode === SYNC_MODE_GLOBAL) {
+    return `● 全局：${frameName(plan.sourceScopeId)} 驱动 ${targetCount} 个窗口`;
+  }
+  const skipped = ungroupedFrameCount.value;
+  return `● 分组：${plan.sources.length} 个组长驱动 ${targetCount} 个窗口${
+    skipped > 0 ? `（另有 ${skipped} 个未分组窗口不参与）` : ""
+  }`;
+});
+
+function setSyncMode(mode) {
+  const next = normalizeSyncMode(mode);
+  if (next === syncMode.value) return;
+  syncMode.value = next;
+  writeJsonStorage(MULTI_GAME_SYNC_MODE_KEY, next);
+  broadcastSyncConfig();
+}
+
+function getFrameGroups(scopeId) {
+  return syncGroups.value.filter((group) => group.scopeIds.includes(scopeId));
 }
 
 function getFrameGroupTitle(scopeId) {
@@ -549,33 +765,100 @@ function getFrameGroupTitle(scopeId) {
     : "未加入 Token 管理分组，不参与同步";
 }
 
-function isGroupSyncEnabled(groupId) {
-  return syncGroupEnabled.value[String(groupId)] === true;
+function isGroupMaster(groupId, scopeId) {
+  const group = syncPlan.value.groups.find((item) => item.id === groupId);
+  return Boolean(group && group.masterScopeId === scopeId);
 }
 
-function toggleSyncGroup(groupId, enabled) {
-  const next = { ...syncGroupEnabled.value };
-  if (enabled) next[String(groupId)] = true;
-  else delete next[String(groupId)];
-  syncGroupEnabled.value = next;
-  persistSyncGroupSettings();
+/** 窗口卡片角标：谁是同步源、谁在跟随。 */
+function frameSyncRole(scopeId) {
+  if (syncMode.value === SYNC_MODE_NONE) return null;
+  return describeSyncRole(syncPlan.value.roles[scopeId]);
+}
+
+/** 当前真正在驱动其他窗口的那个窗口（只有它会收到本地输入并转发）。 */
+function isSyncSource(scopeId) {
+  return Boolean(syncPlan.value.roles[scopeId]?.send);
+}
+
+function setGroupMaster(groupId, scopeId) {
+  if (!groupId || !scopeId) return;
+  const key = String(groupId);
+  const group = syncGroups.value.find((item) => item.id === key);
+  if (!group || !group.scopeIds.includes(scopeId)) return;
+  const current = syncPlan.value.groups.find((item) => item.id === key);
+  if (current?.masterScopeId === scopeId) return;
+  syncGroupMasters.value = { ...syncGroupMasters.value, [key]: scopeId };
+  writeJsonStorage(MULTI_GAME_SYNC_MASTERS_KEY, syncGroupMasters.value);
   broadcastSyncConfig();
 }
 
-function isFrameSyncEnabled(scopeId) {
-  return syncGroups.value.some(
-    (group) =>
-      group.scopeIds.length > 1 &&
-      group.scopeIds.includes(scopeId) &&
-      isGroupSyncEnabled(group.id),
-  );
+function persistSyncGroupOrder() {
+  writeJsonStorage(MULTI_GAME_SYNC_GROUP_ORDER_KEY, syncGroupOrder.value);
 }
 
-const hasSyncEnabled = computed(() =>
-  syncGroups.value.some(
-    (group) => group.scopeIds.length > 1 && isGroupSyncEnabled(group.id),
-  ),
-);
+function applyGroupOrder(orderedIds) {
+  syncGroupOrder.value = orderedIds;
+  persistSyncGroupOrder();
+  broadcastSyncConfig();
+}
+
+function moveGroup(groupId, direction) {
+  const ordered = syncGroups.value.map((group) => group.id);
+  const index = ordered.indexOf(String(groupId));
+  const target = index + direction;
+  if (index < 0 || target < 0 || target >= ordered.length) return;
+  [ordered[index], ordered[target]] = [ordered[target], ordered[index]];
+  applyGroupOrder(ordered);
+}
+
+function startGroupDrag(groupId, event) {
+  draggingGroupId.value = String(groupId);
+  try {
+    event?.dataTransfer?.setData("text/plain", String(groupId));
+    if (event?.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  } catch {
+    // 部分内核不允许写 dataTransfer，排序本身不依赖它
+  }
+}
+
+function clearDragOver(groupId) {
+  if (dragOverGroupId.value === String(groupId)) dragOverGroupId.value = "";
+}
+
+function dropGroupOn(targetGroupId) {
+  const sourceId = draggingGroupId.value;
+  dragOverGroupId.value = "";
+  endGroupDrag();
+  if (!sourceId || sourceId === String(targetGroupId)) return;
+  const ordered = syncGroups.value.map((group) => group.id);
+  const from = ordered.indexOf(sourceId);
+  const to = ordered.indexOf(String(targetGroupId));
+  if (from < 0 || to < 0) return;
+  ordered.splice(from, 1);
+  ordered.splice(to, 0, sourceId);
+  applyGroupOrder(ordered);
+}
+
+function endGroupDrag() {
+  draggingGroupId.value = "";
+  dragOverGroupId.value = "";
+}
+
+/** 每个窗口下发的同步角色：send = 作为同步源上报，receive = 回放其他窗口的事件。 */
+function syncConfigFor(scopeId) {
+  const role = syncPlan.value.roles[scopeId] || { send: false, receive: false };
+  return {
+    channel: SYNC_CMD_CHANNEL,
+    version: SYNC_VERSION,
+    type: "config",
+    send: role.send,
+    receive: role.receive,
+    // 兼容旧版 bridge（只认 enabled）
+    enabled: role.send || role.receive,
+    throttleMs: syncThrottleMs,
+  };
+}
 
 /**
  * 向所有 iframe 广播同步配置
@@ -584,13 +867,7 @@ function broadcastSyncConfig() {
   for (const [scopeId, element] of frameElements) {
     if (!isFrameReady(scopeId)) continue;
     element.contentWindow?.postMessage(
-      {
-        channel: SYNC_CMD_CHANNEL,
-        version: SYNC_VERSION,
-        type: "config",
-        enabled: isFrameSyncEnabled(scopeId),
-        throttleMs: syncThrottleMs,
-      },
+      syncConfigFor(scopeId),
       window.location.origin,
     );
   }
@@ -603,37 +880,22 @@ function sendSyncConfigTo(scopeId) {
   const element = frameElements.get(scopeId);
   if (!element || !isFrameReady(scopeId)) return;
   element.contentWindow?.postMessage(
-    {
-      channel: SYNC_CMD_CHANNEL,
-      version: SYNC_VERSION,
-      type: "config",
-      enabled: isFrameSyncEnabled(scopeId),
-      throttleMs: syncThrottleMs,
-    },
+    syncConfigFor(scopeId),
     window.location.origin,
   );
 }
 
 /**
- * 处理来自 iframe 的用户事件：按 Token 管理中的已启用分组转发，并去重重叠分组。
+ * 处理来自 iframe 的用户事件：只有同步源（组长 / 全局源）会转发，
+ * 目标是该源负责的窗口集合，重叠分组自动去重。
  */
 function handleUserEventFromFrame(scopeId, eventData) {
-  const sourceGroups = syncGroups.value.filter(
-    (group) =>
-      group.scopeIds.length > 1 &&
-      group.scopeIds.includes(scopeId) &&
-      isGroupSyncEnabled(group.id),
+  const plan = syncPlan.value;
+  if (!plan.roles[scopeId]?.send) return;
+  const targetScopeIds = (plan.targets[scopeId] || []).filter((targetId) =>
+    isFrameReady(targetId),
   );
-  if (!sourceGroups.length) return;
-
-  const targetScopeIds = new Set();
-  for (const group of sourceGroups) {
-    for (const targetScopeId of group.scopeIds) {
-      if (targetScopeId !== scopeId && isFrameReady(targetScopeId)) {
-        targetScopeIds.add(targetScopeId);
-      }
-    }
-  }
+  if (!targetScopeIds.length) return;
 
   for (const targetId of targetScopeIds) {
     const element = frameElements.get(targetId);
@@ -650,8 +912,18 @@ function handleUserEventFromFrame(scopeId, eventData) {
     );
   }
   // 兜底：同步转发可能引发 iframe 内部的跨文档滚动，锁定宿主网格位置
-  if (targetScopeIds.size > 0) lockStripScroll();
+  lockStripScroll();
 }
+
+// 窗口增减 / 窗口顺序 / 分组归属变化都会改变同步角色，重新下发一次
+watch(
+  () =>
+    syncGroups.value
+      .map((group) => `${group.id}:${group.scopeIds.join(",")}`)
+      .join("|"),
+  () => broadcastSyncConfig(),
+);
+
 
 // ========== 同步操作相关状态结束 ==========
 
@@ -1072,10 +1344,11 @@ function handleMessage(event) {
   }
 
   // ===== 同步事件转发：来自 iframe 的 user-event =====
+  // bridge 的 user-event 走 multi-game 通道（version 1）；兼容曾经误用 2 的中间版本 bridge
   if (
     payload?.channel === "multi-game" &&
     payload.type === "user-event" &&
-    payload.version === 1 &&
+    (payload.version === 1 || payload.version === 2) &&
     event.origin === window.location.origin
   ) {
     const frame = frames.value.find((item) => item.scopeId === payload.scope);
@@ -1106,8 +1379,11 @@ function handleStorageChange(event) {
   if (event.key === MULTI_GAME_TOKEN_GROUPS_KEY) {
     loadTokenGroups();
     broadcastSyncConfig();
-  } else if (event.key === MULTI_GAME_SYNC_GROUPS_KEY) {
-    loadSyncGroupSettings();
+    return;
+  }
+  // 同步设置可能是另一个批量运行时标签页改的（同源共享 localStorage）
+  if (event.key === MULTI_GAME_SYNC_MODE_KEY) {
+    loadSyncSettings();
     broadcastSyncConfig();
   }
 }
@@ -1146,6 +1422,8 @@ onUnmounted(() => {
   position: fixed;
   inset: 0;
   z-index: 1000;
+  display: flex;
+  flex-direction: column;
   color: #e5e7eb;
   background: #080b12;
 }
@@ -1207,15 +1485,23 @@ onUnmounted(() => {
   color: #fbbf24;
 }
 
-/* ===== 同步操作控制区 ===== */
-.sync-controls {
+/* ===== 同步栏：模式 / 分组顺序 / 组长 ===== */
+.sync-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
-  border: 1px solid #3b4a63;
-  border-radius: 8px;
-  background: #0f1622;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 6px 12px;
+  border-bottom: 1px solid #1f2937;
+  background: #0d1420;
+}
+
+.sync-mode-row,
+.sync-group-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
 }
 
 .sync-label {
@@ -1224,118 +1510,190 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-.sync-toggle {
-  position: relative;
-  display: inline-block;
-  width: 38px;
-  height: 20px;
-  cursor: pointer;
-}
-
-.sync-toggle input {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  margin: 0;
-  cursor: pointer;
-  z-index: 1;
-}
-
-.sync-toggle-indicator {
-  position: absolute;
-  inset: 0;
-  border-radius: 20px;
-  background: #374151;
-  transition: background-color 0.2s;
-}
-
-.sync-toggle-indicator::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #e5e7eb;
-  transition: transform 0.2s;
-}
-
-.sync-toggle-indicator.is-on {
-  background: #2563eb;
-}
-
-.sync-toggle-indicator.is-on::after {
-  transform: translateX(18px);
-  background: #dbeafe;
-}
-
-.sync-status-on {
-  color: #4ade80;
-  font-size: 12px;
-}
-
-.sync-status-off {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.sync-group-options {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.sync-group-option {
+.sync-mode-options {
   display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 22px;
-  padding: 2px 6px;
+  padding: 2px;
   border: 1px solid #334155;
+  border-radius: 7px;
+  background: #111827;
+}
+
+.sync-mode-button {
+  min-height: 22px;
+  padding: 2px 10px;
+  border: 0;
   border-radius: 5px;
   color: #cbd5e1;
-  background: #172033;
+  background: transparent;
   cursor: pointer;
+  font-size: 12px;
+}
+
+.sync-mode-button:hover {
+  color: #f8fafc;
+  background: #1e293b;
+}
+
+.sync-mode-button.is-active {
+  color: #eff6ff;
+  background: #1d4ed8;
+}
+
+.sync-summary {
+  font-size: 12px;
+}
+
+.sync-summary.is-on {
+  color: #4ade80;
+}
+
+.sync-summary.is-off {
+  color: #64748b;
+}
+
+.sync-group-chips {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sync-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 2px 6px 2px 2px;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  color: #cbd5e1;
+  background: #172033;
   font-size: 11px;
 }
 
-.sync-group-option:has(.sync-group-checkbox:checked) {
+.sync-chip.is-global-source {
   border-color: #2563eb;
-  background: #1d4ed833;
+  background: #1d4ed826;
 }
 
-.sync-group-option:has(.sync-group-checkbox:disabled) {
+.sync-chip.is-inactive {
+  color: #94a3b8;
+  opacity: 0.75;
+}
+
+.sync-chip.is-dragging {
+  opacity: 0.45;
+}
+
+.sync-chip.is-drop-target {
+  border-color: #60a5fa;
+  box-shadow: inset 0 0 0 1px #60a5fa;
+}
+
+.sync-chip-handle {
+  padding: 0 3px;
   color: #64748b;
-  cursor: not-allowed;
-  opacity: 0.7;
+  cursor: grab;
+  font-size: 12px;
+  line-height: 1;
+  user-select: none;
 }
 
-.sync-group-dot {
+.sync-chip-handle:active {
+  cursor: grabbing;
+}
+
+.sync-chip-index {
+  min-width: 13px;
+  color: #93c5fd;
+  font-weight: 700;
+  text-align: center;
+}
+
+.sync-chip-dot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
 }
 
-.sync-group-name {
-  max-width: 120px;
+.sync-chip-name {
+  max-width: 110px;
   overflow: hidden;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.sync-group-count {
+.sync-chip-count {
   color: #94a3b8;
   font-size: 10px;
 }
 
-.sync-group-checkbox {
-  width: 13px;
-  height: 13px;
-  margin: 0;
-  accent-color: #2563eb;
+.sync-chip-flag {
+  padding: 0 4px;
+  border-radius: 4px;
+  color: #dbeafe;
+  background: #1d4ed8;
+  font-size: 10px;
 }
+
+.sync-chip-master {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.sync-chip-master-label {
+  color: #94a3b8;
+  font-size: 10px;
+}
+
+.sync-chip-select {
+  max-width: 120px;
+  padding: 1px 3px;
+  border: 1px solid #475569;
+  border-radius: 4px;
+  color: #e2e8f0;
+  background: #1e293b;
+  font-size: 11px;
+}
+
+.sync-chip-move {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.sync-chip-move-button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid #475569;
+  border-radius: 4px;
+  color: #cbd5e1;
+  background: #1e293b;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.sync-chip-move-button:hover:not(:disabled) {
+  background: #334155;
+}
+
+.sync-chip-move-button:disabled {
+  color: #475569;
+  cursor: not-allowed;
+}
+
+.sync-hint {
+  flex: 1 1 240px;
+  min-width: 0;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
 
 .platform-spoof-controls {
   display: flex;
@@ -1399,17 +1757,6 @@ onUnmounted(() => {
   font-size: 11px;
 }
 
-.sync-group-badge {
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 700;
-  cursor: help;
-}
-
 .frame-group-tags {
   flex: none;
   display: inline-flex;
@@ -1420,15 +1767,51 @@ onUnmounted(() => {
 }
 
 .frame-group-tag {
-  max-width: 88px;
+  max-width: 110px;
   padding: 2px 5px;
   border: 1px solid;
   border-radius: 4px;
   overflow: hidden;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.frame-group-tag.is-master {
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
+.frame-sync-flag {
+  flex: none;
+  padding: 1px 5px;
+  border: 1px solid;
+  border-radius: 4px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.frame-sync-flag.is-source {
+  border-color: #16a34a;
+  color: #bbf7d0;
+  background: #14532d;
+}
+
+.frame-sync-flag.is-target {
+  border-color: #1d4ed8;
+  color: #bfdbfe;
+  background: #1e3a8a55;
+}
+
+.frame-sync-flag.is-both {
+  border-color: #a855f7;
+  color: #e9d5ff;
+  background: #4c1d9555;
+}
+
 
 .automation-actions {
   display: flex;
@@ -1524,8 +1907,9 @@ onUnmounted(() => {
   grid-auto-rows: max-content;
   align-items: flex-start;
   align-content: flex-start;
+  flex: 1 1 auto;
   gap: 12px;
-  height: calc(100dvh - 68px);
+  min-height: 0;
   padding: 12px;
   overflow: auto;
 }
@@ -1544,6 +1928,14 @@ onUnmounted(() => {
   border-radius: 8px;
   background: #000;
   box-shadow: 0 10px 28px rgb(0 0 0 / 35%);
+}
+
+/* 同步源窗口：只有这个窗口的输入会转发给其他窗口 */
+.game-panel.is-sync-source {
+  border-color: #16a34a;
+  box-shadow:
+    inset 0 0 0 1px #16a34a,
+    0 10px 28px rgb(0 0 0 / 35%);
 }
 
 .game-panel-header {
@@ -1710,7 +2102,8 @@ onUnmounted(() => {
 
 .empty-state {
   display: grid;
-  height: calc(100dvh - 52px);
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 24px;
   place-items: center;
 }
@@ -1757,12 +2150,19 @@ onUnmounted(() => {
 
   .game-strip {
     grid-template-columns: minmax(0, 1fr);
-    height: calc(100dvh - 142px);
     padding: 8px;
   }
 
   .game-panel {
     max-width: none;
+  }
+
+  .sync-bar {
+    padding: 6px 8px;
+  }
+
+  .sync-hint {
+    flex-basis: 100%;
   }
 }
 </style>
