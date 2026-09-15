@@ -72,6 +72,13 @@ jspm_packages/
 tmp/
 temp/
 
+# Local verification and deployment scratch files
+/_*.txt
+/_check*.mjs
+/_check*.cjs
+/_deploy.bundle
+/.build-check/
+
 .github
 *.bat
 *.exe
