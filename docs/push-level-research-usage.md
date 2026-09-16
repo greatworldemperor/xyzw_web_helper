@@ -1,6 +1,6 @@
 # 推关研究页（游戏 Runtime 综合分析平台）使用说明
 
-> 适用桥版本：`2026-09-09.1`（此前 `2026-09-07.13` 及更早版本导出的 WSS `rawHex` 存在大帧截断，见文末「已知限制」）
+> 适用桥版本：`2026-09-16.1`（此前 `2026-09-07.13` 及更早版本导出的 WSS `rawHex` 存在大帧截断，见文末「已知限制」）
 >
 > 页面入口：`/admin/push-level-research`（游戏 iframe：`/game/index.html?research=push-level`）
 
@@ -16,6 +16,83 @@
 
 - 需要一个**已保存 BIN** 的账号（选择"研究账号"下拉）或一个 `.bin` 文件（临时导入到内存）。
 - 建议在可见浏览器窗口使用。页面隐藏时 Cocos 帧循环会暂停，登录/游戏进程可能不推进。
+
+### 2.1 只运行 Runtime、不连接 WSS
+
+如果目标是为 `7.7.12.js` 等注入脚本提供真实 H5/Cocos/`window.__require` 环境，但绝不让任何 WSS 出站，可以给游戏 iframe 加上：
+
+```text
+/game/index.html?wss-sandbox=1
+```
+
+该模式会：
+
+- 用内存 WebSocket 替代原生 WebSocket，异步进入 `OPEN` 状态，保留常用事件、`readyState`、`binaryType`、`send()` 和 `close()` 接口。
+- `send()` 只记录为 `ws:blocked-send`，不会调用原生 socket，也不会建立真实 WSS 连接。
+- 通过 `runtime:wss-inject` 注入 `text`、`base64` 或 `hex` 数据，触发游戏 WebSocket 的 `message` 回调，供协议/解码逻辑继续运行。
+- 通过 `runtime:wss-sandbox-snapshot` 查看 socket、阻断发送和注入消息统计。
+
+必须在游戏 Runtime 初始化前启用该查询参数。若先以普通模式建立过原生 socket，再通过命令临时启用 sandbox，需要刷新 iframe；命令返回的 `reloadRequiredForExistingSockets` 会提示这一点。
+
+父页面桥命令示例：
+
+```js
+{
+  type: "xyzw:push-research:request",
+  requestId: "sandbox-1",
+  command: "runtime:wss-sandbox",
+  payload: { enabled: true }
+}
+
+{
+  type: "xyzw:push-research:request",
+  requestId: "sandbox-2",
+  command: "runtime:wss-inject",
+  payload: { hex: "7078..." }
+}
+```
+
+该模式只隔离 WebSocket；HTTP/fetch/XHR 仍按对应开关工作。需要完全离线研究时，应同时阻断或模拟 HTTP 依赖，并确认页面没有加载需要真实上游的资源。
+
+### 2.2 运行时辅助反混淆
+
+仓库提供了整文件 tracer 和雪花兼容分块包：
+
+```powershell
+node tools/instrument-7.7.12-runtime.cjs `
+  scripts/7.7.12.js `
+  scripts/7.7.12.runtime-traced.js
+
+node tools/split-runtime-traced.cjs `
+  scripts/7.7.12.runtime-traced.js `
+  scripts/7.7.12.runtime-traced-parts-256k `
+  262144
+```
+
+将 `scripts/7.7.12.runtime-traced-parts-256k/` 中的所有 `.js` 分块导入雪花即可，导入顺序不重要；最后一个分块到达后会在页面内拼接并执行完整 tracer。每个分块约 264KB，避免雪花单文件大脚本限制。
+
+运行页面时使用：
+
+```text
+/game/index.html?wss-sandbox=1&deobfuscator-trace=1
+```
+
+运行结束后，父页面可发送 `runtime:decoder-trace` 查询 trace。也可以把页面内的 snapshot POST 到本地 collector：
+
+```powershell
+node tools/collect-runtime-trace.cjs 4174 tools/7.7.12.runtime-trace.json
+```
+
+再使用稳定 runtime 观测做第二轮整文件去混淆：
+
+```powershell
+node tools/deobfuscate-7.7.12.cjs `
+  scripts/7.7.12.js `
+  scripts/7.7.12.deobfuscated.runtime-assisted.js `
+  tools/7.7.12.runtime-trace.json
+```
+
+第二轮只替换参数和返回值稳定的观测；同一调用点在不同字符串表状态下返回多个值时会保留，不会猜测替换。这样生成的 runtime-assisted 副本仍是行为保持型结果。
 
 ## 3. 控件说明
 
@@ -34,6 +111,7 @@
 | **导入到内存** | 选择本地 `.bin` 文件 | BIN 只存当前页面内存，刷新后即失效 |
 | **HTTP 抓包** | 开关 → `runtime:http-capture` | 记录 fetch / XHR 请求与响应**摘要**（见 4.2） |
 | **WSS 抓包** | 开关 → `runtime:wss-capture` | 记录 WebSocket 帧与协议解码（cmd / seq / ack / body 预览） |
+| **WSS Sandbox** | URL 参数 `wss-sandbox=1` | 提供 H5 Runtime 但阻断所有 WebSocket 出站；只能通过 `runtime:wss-inject` 注入入站帧 |
 | **原始帧** | 开关 → `runtime:capture` | 在 WSS 事件中附带完整二进制十六进制（`rawHex`）；**必须开启才能拿到完整协议 body** |
 | **哈希原文** | 开关 → `runtime:hash-capture` | 安装只读 MD5 hook，记录 `outputCode` / `inputCode` 的哈希输入原文（`hash:matched`） |
 | **自动滚动** | 开关 | 新日志自动滚到底部，纯界面行为 |
@@ -62,7 +140,7 @@
   "version": 2,
   "category": "all | http | wss | runtime",
   "downloadedAt": "...",
-  "bridgeVersion": "2026-09-09.1",
+  "bridgeVersion": "2026-09-16.1",
   "mode": "passive-capture",
   "selectedToken": { "id": "...", "name": "...", "server": "..." },
   "captureHttp": true,

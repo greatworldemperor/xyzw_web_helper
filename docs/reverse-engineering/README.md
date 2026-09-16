@@ -9,6 +9,7 @@
 ## 专题
 
 - [7.7.12.js：skip150 关卡配置 Hook 逆向记录](7.7.12-skip150.md)
+- [7.7.12.js：反混淆进度与续作入口](7.7.12-deobfuscation-progress.md)
   - 混淆层和字符串解码器。
   - `o3` 控制器、`Configs.LevelConf.getById` 包装器。
   - `2..150` 边界实验和 `monsters = [[[0]]]` 改写。

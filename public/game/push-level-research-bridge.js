@@ -4,10 +4,17 @@
   var REQUEST_TYPE = "xyzw:push-research:request";
   var RESPONSE_TYPE = "xyzw:push-research:response";
   var EVENT_TYPE = "xyzw:push-research:event";
-  var BRIDGE_VERSION = "2026-09-09.1";
-  var HEADLESS_TEST_MODE = new URLSearchParams(window.location.search).get("headless-test") === "1";
-  var RESEARCH_MODE = new URLSearchParams(window.location.search).get("research") === "push-level";
-  var MODE = HEADLESS_TEST_MODE ? "headless-test" : "passive-capture";
+  var BRIDGE_VERSION = "2026-09-16.1";
+  var PAGE_PARAMS = new URLSearchParams(window.location.search);
+  var HEADLESS_TEST_MODE = PAGE_PARAMS.get("headless-test") === "1";
+  var RESEARCH_MODE = PAGE_PARAMS.get("research") === "push-level";
+  var WSS_SANDBOX_QUERY = PAGE_PARAMS.get("wss-sandbox") === "1";
+  var DECODER_TRACE_QUERY = PAGE_PARAMS.get("deobfuscator-trace") === "1";
+  var MODE = HEADLESS_TEST_MODE
+    ? "headless-test"
+    : WSS_SANDBOX_QUERY
+      ? "wss-sandbox"
+      : "passive-capture";
   var BLOCKED_COMMANDS = {
     "battle:start": "主动请求 fight_startlevel",
     "battle:simulate": "主动调用无头战斗模拟",
@@ -27,6 +34,20 @@
     captureRawFrames: false,
     captureHttp: false,
     captureWss: false,
+    wssSandboxEnabled: WSS_SANDBOX_QUERY,
+    wssSandboxSocketCount: 0,
+    wssSandboxBlockedSendCount: 0,
+    wssSandboxBlockedBytes: 0,
+    wssSandboxInjectedMessageCount: 0,
+    wssSandboxNativeSocketCount: 0,
+    decoderTraceEnabled: DECODER_TRACE_QUERY,
+    decoderTraceCalls: 0,
+    decoderTraceDropped: 0,
+    decoderTraceValues: Object.create(null),
+    decoderTraceOrder: [],
+    decoderTraceCallSites: Object.create(null),
+    decoderTraceCallSiteOrder: [],
+    decoderTraceScriptLoaded: false,
     requireHooked: false,
     networkHooksInstalled: false,
     apiHooks: [],
@@ -60,6 +81,132 @@
     loginCompletionRecorded: false,
   };
   var sh1LoadPromise = null;
+  var sandboxSockets = [];
+
+  function decoderTraceValue(value) {
+    if (value === null) return null;
+    if (typeof value === "string") return value.length > 20000 ? value.slice(0, 20000) + "...[truncated]" : value;
+    if (typeof value === "number" || typeof value === "boolean") return value;
+    if (value === undefined) return undefined;
+    return "[" + (typeof value) + "]";
+  }
+
+  function recordDecoderTrace(name, index, key, value) {
+    if (!state.decoderTraceEnabled) return value;
+    state.decoderTraceCalls += 1;
+    var normalizedIndex = typeof index === "number" ? index : String(index);
+    var normalizedKey = String(key);
+    var result = decoderTraceValue(value);
+    var mapKey = name + "|" + normalizedIndex + "|" + normalizedKey;
+    var existing = state.decoderTraceValues[mapKey];
+    if (existing) {
+      existing.calls += 1;
+      if (existing.value !== result) existing.alternateValues = true;
+      return value;
+    }
+    if (state.decoderTraceOrder.length >= 200000) {
+      state.decoderTraceDropped += 1;
+      return value;
+    }
+    state.decoderTraceValues[mapKey] = {
+      name: name,
+      index: normalizedIndex,
+      key: normalizedKey,
+      value: result,
+      calls: 1,
+      alternateValues: false,
+    };
+    state.decoderTraceOrder.push(mapKey);
+    return value;
+  }
+
+  function recordDecoderTraceCallSite(site, name, value) {
+    if (!state.decoderTraceEnabled) return value;
+    var normalizedSite = String(site);
+    var existing = state.decoderTraceCallSites[normalizedSite];
+    var result = decoderTraceValue(value);
+    if (existing) {
+      existing.calls += 1;
+      if (existing.value !== result) existing.alternateValues = true;
+      return value;
+    }
+    if (state.decoderTraceCallSiteOrder.length >= 200000) {
+      state.decoderTraceDropped += 1;
+      return value;
+    }
+    state.decoderTraceCallSites[normalizedSite] = {
+      site: Number(site),
+      name: String(name),
+      value: result,
+      calls: 1,
+      alternateValues: false,
+    };
+    state.decoderTraceCallSiteOrder.push(normalizedSite);
+    return value;
+  }
+
+  function decoderTraceSnapshot(limit) {
+    var max = Math.min(limit || 200000, state.decoderTraceOrder.length);
+    return {
+      enabled: state.decoderTraceEnabled,
+      calls: state.decoderTraceCalls,
+      unique: state.decoderTraceOrder.length,
+      dropped: state.decoderTraceDropped,
+      scriptLoaded: state.decoderTraceScriptLoaded || Boolean(window.__xyzwRuntimeTracerLoaded),
+      values: state.decoderTraceOrder.slice(0, max).map(function (key) {
+        return state.decoderTraceValues[key];
+      }),
+      callSites: state.decoderTraceCallSiteOrder.slice(0, max).map(function (key) {
+        return state.decoderTraceCallSites[key];
+      }),
+    };
+  }
+
+  function loadDecoderTraceScript(url) {
+    if (!url) return Promise.reject(new Error("decoder trace script URL is required"));
+    return new Promise(function (resolve, reject) {
+      var script = document.createElement("script");
+      script.src = String(url);
+      script.async = false;
+      script.onload = function () {
+        state.decoderTraceScriptLoaded = true;
+        record("runtime:decoder-trace-loaded", { url: safeNetworkUrl(url) });
+        resolve({ loaded: true, snapshot: decoderTraceSnapshot() });
+      };
+      script.onerror = function () { reject(new Error("decoder trace script failed to load")); };
+      (document.head || document.documentElement).appendChild(script);
+    });
+  }
+
+  var earlyDecoderTraceQueue = window.__xyzwRuntimeTraceBuffer || [];
+  var earlyDecoderTraceCallQueue = window.__xyzwRuntimeTraceCallBuffer || [];
+  window.__xyzwRuntimeTrace = recordDecoderTrace;
+  window.__xyzwRuntimeTraceCall = recordDecoderTraceCallSite;
+  window.__xyzwRuntimeTraceBuffer = [];
+  window.__xyzwRuntimeTraceCallBuffer = [];
+  earlyDecoderTraceQueue.forEach(function (entry) {
+    if (entry && entry.length >= 4) recordDecoderTrace(entry[0], entry[1], entry[2], entry[3]);
+  });
+  earlyDecoderTraceCallQueue.forEach(function (entry) {
+    if (entry && entry.length >= 3) recordDecoderTraceCallSite(entry[0], entry[1], entry[2]);
+  });
+  window.__pushResearchDecoderTrace = {
+    enable: function () {
+      state.decoderTraceEnabled = true;
+      return decoderTraceSnapshot();
+    },
+    clear: function () {
+      state.decoderTraceCalls = 0;
+      state.decoderTraceDropped = 0;
+      state.decoderTraceValues = Object.create(null);
+      state.decoderTraceOrder = [];
+      state.decoderTraceCallSites = Object.create(null);
+      state.decoderTraceCallSiteOrder = [];
+      return decoderTraceSnapshot();
+    },
+    snapshot: decoderTraceSnapshot,
+    load: function (url) { return loadDecoderTraceScript(url); },
+  };
 
   function origin() {
     return window.location.origin === "null" ? "*" : window.location.origin;
@@ -1548,6 +1695,7 @@
         frameDecodeErrorCount: state.frameDecodeErrorCount,
         protocolMessageCount: state.protocolMessageCount,
       },
+      wssSandbox: sandboxSnapshot(),
     };
   }
 
@@ -2678,6 +2826,165 @@
     });
   }
 
+  function sandboxEvent(type, init) {
+    var event;
+    try {
+      if (type === "message" && typeof MessageEvent === "function") {
+        event = new MessageEvent(type, { data: init && init.data });
+      } else if (typeof Event === "function") {
+        event = new Event(type);
+      } else {
+        event = { type: type };
+      }
+    } catch (error) {
+      event = { type: type };
+    }
+    Object.keys(init || {}).forEach(function (key) {
+      try {
+        if (key !== "data") Object.defineProperty(event, key, { value: init[key] });
+      } catch (error) {}
+    });
+    return event;
+  }
+
+  function SandboxWebSocket(url, protocols) {
+    var socket = this;
+    this.url = String(url);
+    this.protocol = "";
+    this.protocols = protocols;
+    this.readyState = SandboxWebSocket.CONNECTING;
+    this.bufferedAmount = 0;
+    this.extensions = "";
+    this.binaryType = "arraybuffer";
+    this.onopen = null;
+    this.onclose = null;
+    this.onerror = null;
+    this.onmessage = null;
+    this.__pushResearchSandbox = true;
+    this.__pushResearchListeners = Object.create(null);
+    sandboxSockets.push(this);
+    state.wssSandboxSocketCount += 1;
+
+    window.setTimeout(function () {
+      if (socket.readyState !== SandboxWebSocket.CONNECTING) return;
+      socket.readyState = SandboxWebSocket.OPEN;
+      socket.__pushResearchEmit("open", {});
+    }, 0);
+  }
+
+  SandboxWebSocket.CONNECTING = 0;
+  SandboxWebSocket.OPEN = 1;
+  SandboxWebSocket.CLOSING = 2;
+  SandboxWebSocket.CLOSED = 3;
+
+  SandboxWebSocket.prototype.addEventListener = function (type, listener) {
+    if (typeof listener !== "function") return;
+    var listeners = this.__pushResearchListeners[type] || (this.__pushResearchListeners[type] = []);
+    if (listeners.indexOf(listener) < 0) listeners.push(listener);
+  };
+
+  SandboxWebSocket.prototype.removeEventListener = function (type, listener) {
+    var listeners = this.__pushResearchListeners[type];
+    if (!listeners) return;
+    var index = listeners.indexOf(listener);
+    if (index >= 0) listeners.splice(index, 1);
+  };
+
+  SandboxWebSocket.prototype.dispatchEvent = function (event) {
+    if (!event || !event.type) return false;
+    this.__pushResearchEmit(event.type, event);
+    return true;
+  };
+
+  SandboxWebSocket.prototype.__pushResearchEmit = function (type, init) {
+    var event = init && init.type ? init : sandboxEvent(type, init);
+    var listeners = (this.__pushResearchListeners[type] || []).slice();
+    listeners.forEach(function (listener) {
+      try { listener.call(this, event); } catch (error) { setTimeout(function () { throw error; }, 0); }
+    }, this);
+    var handler = this["on" + type];
+    if (typeof handler === "function") {
+      try { handler.call(this, event); } catch (error) { setTimeout(function () { throw error; }, 0); }
+    }
+  };
+
+  SandboxWebSocket.prototype.send = function () {
+    if (this.readyState !== SandboxWebSocket.OPEN) {
+      throw new Error("WebSocket is not open: sandbox socket");
+    }
+  };
+
+  SandboxWebSocket.prototype.close = function (code, reason) {
+    var socket = this;
+    if (this.readyState === SandboxWebSocket.CLOSED || this.readyState === SandboxWebSocket.CLOSING) return;
+    this.readyState = SandboxWebSocket.CLOSING;
+    window.setTimeout(function () {
+      socket.readyState = SandboxWebSocket.CLOSED;
+      socket.__pushResearchEmit("close", {
+        code: code === undefined ? 1000 : code,
+        reason: reason === undefined ? "sandbox" : String(reason),
+        wasClean: true,
+      });
+    }, 0);
+  };
+
+  function sandboxBytesFromPayload(payload) {
+    if (!payload) return null;
+    if (typeof payload.hex === "string") {
+      var hex = payload.hex.replace(/\s+/g, "");
+      if (hex.length % 2 || !/^[0-9a-f]*$/i.test(hex)) throw new Error("invalid hex payload");
+      var bytes = new Uint8Array(hex.length / 2);
+      for (var index = 0; index < bytes.length; index += 1) bytes[index] = parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+      return bytes.buffer;
+    }
+    if (typeof payload.base64 === "string") {
+      var binary = atob(payload.base64);
+      var decoded = new Uint8Array(binary.length);
+      for (var binaryIndex = 0; binaryIndex < binary.length; binaryIndex += 1) decoded[binaryIndex] = binary.charCodeAt(binaryIndex);
+      return decoded.buffer;
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, "text")) return String(payload.text);
+    if (Object.prototype.hasOwnProperty.call(payload, "data")) return payload.data;
+    return null;
+  }
+
+  function injectSandboxMessage(payload) {
+    if (!state.wssSandboxEnabled) throw new Error("WSS sandbox is not enabled");
+    var data = sandboxBytesFromPayload(payload || {});
+    if (data === null) throw new Error("wss injection requires data, text, base64, or hex");
+    var targetUrl = payload && payload.url ? safeNetworkUrl(payload.url) : "";
+    var delivered = 0;
+    sandboxSockets.slice().forEach(function (socket) {
+      if (socket.readyState !== SandboxWebSocket.OPEN) return;
+      if (targetUrl && safeNetworkUrl(socket.url) !== targetUrl) return;
+      delivered += 1;
+      socket.__pushResearchEmit("message", { data: data, origin: window.location.origin, lastEventId: "", source: null, ports: [] });
+    });
+    state.wssSandboxInjectedMessageCount += delivered;
+    record("ws:injected-message", {
+      url: targetUrl || "[all]",
+      delivered: delivered,
+      frame: frameSummary(data),
+      decoded: decodeFrame(data),
+    });
+    return { delivered: delivered, sockets: sandboxSockets.length };
+  }
+
+  function sandboxSnapshot() {
+    return {
+      enabled: state.wssSandboxEnabled,
+      socketCount: sandboxSockets.length,
+      openSockets: sandboxSockets.filter(function (socket) { return socket.readyState === SandboxWebSocket.OPEN; }).length,
+      blockedSendCount: state.wssSandboxBlockedSendCount,
+      blockedBytes: state.wssSandboxBlockedBytes,
+      injectedMessageCount: state.wssSandboxInjectedMessageCount,
+      nativeSocketCount: state.wssSandboxNativeSocketCount,
+      sockets: sandboxSockets.map(function (socket) {
+        return { url: safeNetworkUrl(socket.url), readyState: socket.readyState, bufferedAmount: socket.bufferedAmount };
+      }),
+    };
+  }
+
   function installWebSocketHook() {
     var NativeWebSocket = window.WebSocket;
     if (typeof NativeWebSocket !== "function" || NativeWebSocket.__pushResearchWrapped) return;
@@ -2712,9 +3019,16 @@
       });
       var originalSend = socket.send;
       socket.send = function (data) {
-        if (!state.captureWss) return originalSend.call(socket, data);
         var frame = frameSummary(data);
         var decoded = decodeFrame(data);
+        if (state.wssSandboxEnabled) {
+          state.wssSandboxBlockedSendCount += 1;
+          state.wssSandboxBlockedBytes += frame && frame.byteLength ? frame.byteLength : 0;
+          record("ws:blocked-send", { url: url, frame: frame, decoded: decoded, sandbox: true });
+          observeProtocolMessage(decoded, "blocked-send", url, frame);
+          return undefined;
+        }
+        if (!state.captureWss) return originalSend.call(socket, data);
         record("ws:send", { url: url, frame: frame, decoded: decoded });
         observeProtocolMessage(decoded, "send", url, frame);
         return originalSend.call(socket, data);
@@ -2722,9 +3036,17 @@
     }
 
     function ResearchWebSocket(url, protocols) {
-      var socket = protocols === undefined
-        ? new NativeWebSocket(url)
-        : new NativeWebSocket(url, protocols);
+      var socket;
+      if (state.wssSandboxEnabled) {
+        socket = protocols === undefined
+          ? new SandboxWebSocket(url)
+          : new SandboxWebSocket(url, protocols);
+      } else {
+        socket = protocols === undefined
+          ? new NativeWebSocket(url)
+          : new NativeWebSocket(url, protocols);
+        state.wssSandboxNativeSocketCount += 1;
+      }
       attach(socket);
       return socket;
     }
@@ -2734,6 +3056,15 @@
     });
     ResearchWebSocket.__pushResearchWrapped = true;
     window.WebSocket = ResearchWebSocket;
+    window.__pushResearchWssSandbox = {
+      enable: function () {
+        state.wssSandboxEnabled = true;
+        record("runtime:wss-sandbox", { enabled: true, snapshot: sandboxSnapshot() });
+        return sandboxSnapshot();
+      },
+      snapshot: sandboxSnapshot,
+      injectMessage: function (payload) { return injectSandboxMessage(payload || {}); },
+    };
   }
 
   function respond(requestId, ok, result, error) {
@@ -2769,6 +3100,7 @@
           httpEnabled: state.captureHttp,
           wssEnabled: state.captureWss,
         },
+          wssSandbox: sandboxSnapshot(),
       };
     }
     if (command === "runtime:state") {
@@ -2802,6 +3134,30 @@
       state.captureWss = Boolean(message.payload && message.payload.enabled);
       record("runtime:wss-capture", { enabled: state.captureWss });
       return { enabled: state.captureWss };
+    }
+    if (command === "runtime:wss-sandbox") {
+      if (message.payload && message.payload.enabled === false) {
+        throw new Error("WSS sandbox cannot be disabled in the current page; reload without wss-sandbox=1");
+      }
+      state.wssSandboxEnabled = true;
+      var sandboxState = sandboxSnapshot();
+      record("runtime:wss-sandbox", {
+        enabled: true,
+        snapshot: sandboxState,
+        reloadRequiredForExistingSockets: state.wssSandboxNativeSocketCount > 0,
+      });
+      return {
+        enabled: true,
+        snapshot: sandboxState,
+        reloadRequiredForExistingSockets: state.wssSandboxNativeSocketCount > 0,
+      };
+    }
+    if (command === "runtime:wss-sandbox-snapshot") return sandboxSnapshot();
+    if (command === "runtime:wss-inject") return injectSandboxMessage(message.payload || {});
+    if (command === "runtime:decoder-trace") {
+      if (message.payload && message.payload.enabled) state.decoderTraceEnabled = true;
+      if (message.payload && message.payload.clear) window.__pushResearchDecoderTrace.clear();
+      return decoderTraceSnapshot(message.payload && message.payload.limit);
     }
     if (command === "runtime:hash-capture") {
       state.hashCaptureEnabled = Boolean(message.payload && message.payload.enabled);
