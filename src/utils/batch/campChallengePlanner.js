@@ -59,6 +59,18 @@ export const getCampTodayKey = (date = new Date()) => {
   return `${year}${month}${day}`;
 };
 
+/**
+ * 营地战斗日是每周二、三、四，每天只匹配一个敌方俱乐部。
+ * `oppoMap` 的键就是星期几（周二=2、周三=3、周四=4），与 `Date.getDay()` 一致。
+ * 只允许查询当天那一个键的对手，其它键的目标会被服务端以 200020 拒绝。
+ */
+export const getCampOppoKey = (date = new Date()) => String(date.getDay());
+
+export const isCampBattleDay = (date = new Date()) => {
+  const weekday = date.getDay();
+  return weekday >= 2 && weekday <= 4;
+};
+
 export const getCampAttackStats = (siege, date = new Date()) => {
   const attackMap = siege?.attackMap || {};
   const todayKey = getCampTodayKey(date);
@@ -174,6 +186,13 @@ export const selectCampProbeTargets = (enemies) => {
   };
 };
 
+/**
+ * 把 oppoMap 转成节点列表。
+ *
+ * ⚠️ 只能传入**单个来源组**（`{ [sourceGroupKey]: opponent }`，或当天对手那一个键）。
+ * 不同来源组的 nodeId 都是 1..30，跨组传进来会按 nodeId 互相覆盖，拼出一张"混合棋盘"；
+ * 服务端只接受当天对手的目标，其余目标会返回 200020。
+ */
 export const collectCampEnemies = (oppoMap, targetPowers = {}) => {
   const enemiesByNodeId = new Map();
 
@@ -185,7 +204,8 @@ export const collectCampEnemies = (oppoMap, targetPowers = {}) => {
       const groupId = getCampGroupId(nodeId);
       if (!defender || groupId === null) continue;
 
-      const roleId = defender.roleId ?? defender.targetId;
+      const rawRoleId = defender.roleId ?? defender.targetId;
+      const roleId = toFiniteNumber(rawRoleId) ?? rawRoleId;
       const candidate = {
         nodeId,
         groupId,
@@ -227,6 +247,36 @@ export const collectCampEnemies = (oppoMap, targetPowers = {}) => {
 
   return [...enemiesByNodeId.values()].sort((left, right) => left.nodeId - right.nodeId);
 };
+
+/**
+ * 取"当天唯一对手"的棋盘。每天只匹配一个敌方俱乐部，因此只读 `oppoMap[今天星期几]`；
+ * 不存在则返回 null（非战斗日或当天对手未生成），调用方应跳过而不是去猜其它来源组。
+ */
+export const selectTodayCampOppo = (oppoMap, date = new Date()) => {
+  const sourceGroupKey = getCampOppoKey(date);
+  const opponent = oppoMap?.[sourceGroupKey];
+  if (!opponent?.defenders) {
+    return { sourceGroupKey, opponent: null, enemies: [], missing: true };
+  }
+
+  return {
+    sourceGroupKey,
+    opponent,
+    enemies: collectCampEnemies({ [sourceGroupKey]: opponent }),
+    missing: false,
+  };
+};
+
+export const collectCampEnemyBoards = (oppoMap, targetPowers = {}) =>
+  Object.entries(oppoMap || {})
+    .filter(([sourceGroupKey, opponent]) =>
+      sourceGroupKey !== "null" && opponent?.defenders,
+    )
+    .map(([sourceGroupKey, opponent]) => ({
+      sourceGroupKey,
+      opponent,
+      enemies: collectCampEnemies({ [sourceGroupKey]: opponent }, targetPowers),
+    }));
 
 export const normalizeCampMember = (member) => {
   const attackCnt = Math.max(0, toFiniteNumber(member?.attackCnt) ?? 0);
@@ -420,3 +470,119 @@ export const selectBestCampGroup = ({
 
 export const getCampRewardConfIds = (groupId) =>
   CAMP_REWARD_CONF_IDS[groupId] ? [...CAMP_REWARD_CONF_IDS[groupId]] : [];
+
+/**
+ * 部分攻击计划：当三个区域组都无法整组全清时的降级方案。
+ *
+ * 规则（2026-09-17 与 master 确认）：
+ * - 把当天对手的 30 个节点（**含镜像**）统一排序，优先推进"最接近清掉"的节点（剩余可击败次数少者优先）；
+ * - 每个节点由"打得赢且最省额度"的我方角色补足，直到所有成员的成功额度用尽；
+ * - `reserveWinsForPet` 保留每个成员最后 `remainingWins` 次发起额度给宠物保底
+ *   （宠物攻击不计入服务端的 `attackCnt`，所以普通攻击要优先用掉发起次数）。
+ *
+ * 每个节点的剩余可击败次数来自 `5 - successCount`，见 `getCampSuccessCount`。
+ */
+export const planPartialCampAttacks = ({
+  enemies,
+  members,
+  powerThreshold = 1,
+  reserveWinsForPet = true,
+}) => {
+  const memberStates = (members || []).map(normalizeCampMember);
+  if (memberStates.length === 0) {
+    return {
+      assignments: [],
+      requiredWins: 0,
+      skipped: [],
+      reason: "missing-members",
+    };
+  }
+
+  const targets = (enemies || [])
+    .filter((enemy) => enemy && enemy.remainingTo5 > 0 && enemy.defeated !== true)
+    .sort((left, right) => {
+      const remainingDifference = left.remainingTo5 - right.remainingTo5;
+      if (remainingDifference !== 0) return remainingDifference;
+      const powerDifference = (left.power ?? -1) - (right.power ?? -1);
+      if (powerDifference !== 0) return powerDifference;
+      return left.nodeId - right.nodeId;
+    });
+
+  const assignmentsByKey = new Map();
+  const skipped = [];
+  const capacityStopped = [];
+  let requiredWins = 0;
+
+  for (const enemy of targets) {
+    const neededWins = Math.max(0, enemy.remainingTo5 ?? 0);
+    let assignedForThisEnemy = 0;
+    let lastFailureReason = null;
+
+    for (let attempt = 0; attempt < neededWins; attempt += 1) {
+      const candidates = memberStates
+        .filter((member) => {
+          if (member.remainingWins <= 0 || member.power === null) return false;
+          const normalBudget = reserveWinsForPet
+            ? Math.max(0, member.remainingAttacks - member.remainingWins)
+            : member.remainingAttacks;
+          if (normalBudget <= 0) {
+            lastFailureReason = "no-normal-budget";
+            return false;
+          }
+          if (enemy.power === null || enemy.power === undefined) {
+            lastFailureReason = "missing-target-power";
+            return false;
+          }
+          if (enemy.power > member.power * powerThreshold) return false;
+          return true;
+        })
+        .sort((left, right) => {
+          const powerDifference = left.power - right.power;
+          if (powerDifference !== 0) return powerDifference;
+          return String(left.tokenId).localeCompare(String(right.tokenId));
+        });
+
+      const member = candidates[0];
+      if (!member) break;
+
+      member.remainingAttacks -= 1;
+      member.remainingWins -= 1;
+      requiredWins += 1;
+      assignedForThisEnemy += 1;
+      const key = `${member.tokenId}:${enemy.nodeId}`;
+      const assignment = assignmentsByKey.get(key) || {
+        tokenId: member.tokenId,
+        nodeId: enemy.nodeId,
+        targetId: enemy.targetId,
+        targetIsMirror: enemy.targetIsMirror,
+        count: 0,
+      };
+      assignment.count += 1;
+      assignmentsByKey.set(key, assignment);
+    }
+
+    if (assignedForThisEnemy === 0) {
+      skipped.push({
+        nodeId: enemy.nodeId,
+        power: enemy.power ?? null,
+        remainingTo5: enemy.remainingTo5,
+        reason: lastFailureReason || "unbeatable",
+      });
+    } else if (assignedForThisEnemy < neededWins) {
+      capacityStopped.push({
+        nodeId: enemy.nodeId,
+        assigned: assignedForThisEnemy,
+        remainingTo5: enemy.remainingTo5,
+      });
+    }
+  }
+
+  return {
+    partial: true,
+    assignments: [...assignmentsByKey.values()],
+    requiredWins,
+    skipped,
+    capacityStopped,
+    members: memberStates,
+  };
+};

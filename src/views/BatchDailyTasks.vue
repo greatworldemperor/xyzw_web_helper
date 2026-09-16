@@ -3877,6 +3877,7 @@ const campChallengeModeOptions = [
   { label: "智能规划战斗", value: "strategy" },
   { label: "简版：宠物3次+领奖", value: "simple" },
   { label: "只领取营地奖励", value: "claim" },
+  { label: "测试：读对方30战力", value: "diagnose" },
 ];
 const campChallengeModeLabel = computed(
   () =>
@@ -3900,6 +3901,9 @@ const onCampChallengeModeChange = async (value) => {
   } else if (value === "simple") {
     // 简版与智能规划并列：不做虚拟评估，直接攻击宠物 3 次后领奖。
     await batchCampChallengePet();
+  } else if (value === "diagnose") {
+    // 测试模式：只读取当天对手 30 个位置的全部战力，不攻击、不领奖。
+    await batchCampDiagnose();
   } else {
     await batchCampChallenge();
   }
@@ -7556,6 +7560,7 @@ const {
   batchCampChallenge,
   batchCampChallengePet,
   batchCampClaimTasks,
+  batchCampDiagnose,
 } = tasksCampChallenge;
 
 const createFlexibleTaskHandlers = (deps) => ({

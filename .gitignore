@@ -79,6 +79,10 @@ temp/
 /_deploy.bundle
 /.build-check/
 
+# 本地 vite 构建验证产物与 agent 工作目录
+/._tmp_build*/
+.workbuddy/
+
 .github
 *.bat
 *.exe

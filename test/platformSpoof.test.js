@@ -71,11 +71,11 @@ test("ordinary runtime keeps the research spoof key independent", () => {
     ],
     [
       "xyzwPlatformSpoof",
-      JSON.stringify({ enabled: true, platform: "mix", gameVersion: "" }),
+      JSON.stringify({ enabled: true, platform: "h5web", gameVersion: "" }),
     ],
   ]);
 
   assert.equal(result.window.__xyzwPlatformSpoof.KEY, "xyzwPlatformSpoof");
-  assert.equal(result.window.PLATFORM, "mix");
+  assert.equal(result.window.PLATFORM, "h5web");
   assert.equal(result.window.__xyzwPlatformSpoof.applied.active, true);
 });

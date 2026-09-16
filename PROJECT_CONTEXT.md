@@ -90,6 +90,11 @@ H5 方法
 手机号登录的三批抓包分析、与微信扫码登录的字段对照、已确认的 `combUser -> bin -> Token` 复用链路以及后续失败分支抓包清单，记录在 [docs/mobile-phone-login-protocol-research.md](docs/mobile-phone-login-protocol-research.md)。当前实现位于 [src/utils/hortorLogin.js](src/utils/hortorLogin.js) 和 [src/views/TokenImport/mobile.vue](src/views/TokenImport/mobile.vue)，支持发送验证码、组合登录、角色选择、bin 下载和批量 Token 导入；手机号和验证码不会持久化。成功链已由协议测试和浏览器 mock 闭环，真实上游仍需确认网页生成的 `activeLoginMatchId` 可被接受；验证码错误、过期和上游限流等失败响应仍待补抓。
 
 主线推关（pushLevel）的抓包分析（`fight_startlevel` → `Fight_StartLevelResp` → 本地生成/官方模拟战报 → `fight_endlevel`）和 `outputCode` 生成链记录在 [docs/mainline-pushlevel-protocol-research.md](docs/mainline-pushlevel-protocol-research.md)；完整的重方案/轻方案实施计划见 [docs/mainline-pushlevel-implementation-plan.md](docs/mainline-pushlevel-implementation-plan.md)。当前已增加只读研究页 [src/views/PushLevelResearch.vue](src/views/PushLevelResearch.vue) 与同源 iframe 桥 [public/game/push-level-research-bridge.js](public/game/push-level-research-bridge.js)：支持临时 BIN 内存载入、官方运行时/模块探测、控制台与 WebSocket 被动捕获、TGA 战斗日志归一化和 JSONL 下载。研究桥固定为 `passive-capture`，明确阻止主动 `fight_startlevel`、无头模拟和 `fight_endlevel`，不会包装或改写官方 API；真实账号只允许登录后由用户手动操作，后续统一分析下载日志。
+主线推关（pushLevel）的抓包分析（`fight_startlevel` → `Fight_StartLevelResp` → 本地生成/官方模拟战报 → `fight_endlevel`）和 `outputCode` 生成链记录在 [docs/mainline-pushlevel-protocol-research.md](docs/mainline-pushlevel-protocol-research.md)；完整的重方案/轻方案实施计划见 [docs/mainline-pushlevel-implementation-plan.md](docs/mainline-pushlevel-implementation-plan.md)。当前已增加只读研究页 [src/views/PushLevelResearch.vue](src/views/PushLevelResearch.vue) 与同源 iframe 桥 [public/game/push-level-research-bridge.js](public/game/push-level-research-bridge.js)：支持临时 BIN 内存载入、官方运行时/模块探测、控制台与 WebSocket 被动捕获、TGA 战斗日志归一化和 JSONL 下载。研究桥默认保持 `passive-capture`，明确阻止主动 `fight_startlevel`、无头模拟和 `fight_endlevel`，不会包装或改写官方 API；真实账号只允许登录后由用户手动操作，后续统一分析下载日志。
+
+2026-09-16 增加 WSS Runtime Sandbox：游戏 iframe 使用 `?wss-sandbox=1` 时，研究桥在 H5/Cocos/`window.__require` 初始化前替换原生 WebSocket 为内存 socket。socket 会异步进入 `OPEN`，脚本的 `send()` 只记录 `ws:blocked-send`，不建立真实 WSS；父页面可通过 `runtime:wss-sandbox-snapshot` 查看状态，使用 `runtime:wss-inject` 注入 text/base64/hex 入站帧以驱动消息回调。sandbox 必须在 Runtime 初始化前启用；若已经建立 native socket，必须刷新 iframe 才能保证全量隔离。浏览器验证已确认测试 socket 的 `nativeSocketCount=0`、发送阻断计数递增、入站 message 回调可注入；未使用真实 BIN、未登录账号、未发送游戏请求。
+
+2026-09-16 进一步完成 H5 runtime 辅助反混淆链：`tools/instrument-7.7.12-runtime.cjs` 对整文件中直接触达 `a0D/a0w` 的命名 wrapper 插入透明 tracer；`tools/split-runtime-traced.cjs` 将约 11MB tracer 拆成 56 个约 264KB 的雪花脚本分块，全部导入后自动拼接执行。当前保留 trace 在 `wss-sandbox=1&deobfuscator-trace=1` 下捕获 `57,458,572` 次调用、`68,111` 个唯一值观测和 44 个 call-site 观测，WSS `nativeSocketCount=0`。`tools/collect-runtime-trace.cjs` 可把完整 snapshot 保存到本地 JSON；`tools/deobfuscate-7.7.12.cjs` 的第四个参数接受该 trace，仅替换稳定 runtime 观测。当前 runtime-assisted 输出为 [scripts/7.7.12.deobfuscated.runtime-assisted.js](scripts/7.7.12.deobfuscated.runtime-assisted.js)，共 `338,877` 项替换，其中 `22,985` 项由稳定 runtime 观测支撑；同一调用点出现多值的观测被保留，不会强行猜测。页面在无账号/无 BIN/无真实 WSS 的 sandbox 中运行，期间出现的 `sendAsync` 初始化异常来自无网络游戏模块，不是账号操作。
 
 2026-09-04 对 [scripts/7.7.12.js](scripts/7.7.12.js) 的混淆逆向成果已单独整理到 [docs/reverse-engineering/7.7.12-skip150.md](docs/reverse-engineering/7.7.12-skip150.md)，目录入口为 [docs/reverse-engineering/README.md](docs/reverse-engineering/README.md)。该脚本的“自动推 150 关”实际是 `skip150` 客户端配置 Hook，不是当前 `fight_startlevel`/`fight_endlevel`/`outputCode` 方案：脚本通过 `window.__require("Configs")` 找到 `Configs.LevelConf.getById`，在 `2 <= levelId <= 150` 时对原配置做浅拷贝，并将 `monsters` 替换为 `[[[0]]]`；边界外返回原配置。`o3` 控制器使用 `localStorage["skip150_enabled"]` 持久化开关，`hookInjected` 防止重复安装；关闭时保留包装器但不再改写结果。该结论已由 AST 范围分析、隔离 VM、惰性 `__require` 模块桩和 Proxy 字段差分实验复核，未读取 BIN、未登录真实角色、未发送网络请求。脚本内的 `o1` 是咸王梦境快速战斗控制器，`qa` 是 BOSS/宝箱/奖励控制器，均须与 `o3` 的 skip150 配置 Hook 分开理解。当前仍待真实 H5 被动确认主线战斗是否读取被 Hook 的 `LevelConf`；不能仅凭该客户端注入证明服务器一定会推进主线关卡。
 
@@ -506,6 +511,8 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 - [x] 已根据批量调试日志修正每日计数判定：历史 attackMap 存在但缺少今日键时按零次处理；仅 attackMap 为空或今日计数不完整时安全跳过。日志显示主动刷新 Token、WSS 建连和初始化均成功，连接超时应单独排查。
 - [x] 已确认 `club.members.<slot>.challengeCnt/failCnt/score` 不是当前角色每日攻击计数：39 号当天已攻击 3 次但这些成员字段仍为 `0/0/26`；自动规划不读取成员字段，只使用 `siege.attackMap[YYMMDD]`。
 - [x] 已将 `club.members.<key>` 解析为当前角色的 `ownNodeId` 诊断信息：39 号角色与 `members["2"]` 对应；该键只表示我方节点/阵位身份，不改变每日次数仍由 `siege.attackMap[YYMMDD]` 提供的规则。
+- [x] debug9 与真实抓包对比发现 `club_gettargetteam` 的 `targetId` 类型差异：真实 BON 请求为数值，旧自动日志为字符串；当前实现已在节点适配和查询/攻击请求边界统一转换为 Number。
+- [x] debug10 确认 `club.oppoMap` 的 `2/3/4` 是独立敌方 club 来源，而不是可按 `nodeId` 合并的一张棋盘：来源 club 2 的目标持续返回 `200020`，来源 club 3 的部分目标可查询；当前策略按来源 club 保留 30 节点棋盘，先探测可查询来源再规划。
 - [x] 已修正目标阵容查询：`club_gettargetteam` 只针对 `remainingTo5>0` 且未 `defeated` 的敌方节点发送；已完成节点不再重复查询，避免服务端返回 `200020` 中止整个 club 计划。
 - [x] 批量任务账号切换前主动刷新 Token 的通用连接逻辑已实现；后续测试重点观察 `[连接诊断]` 是否显示“切换账号先刷新”，以及 60 秒内重复任务是否正确复用。
 
@@ -583,6 +590,31 @@ Token 输入可能是纯文本、Base64、带前缀内容或 JSON 包装内容�
 ### 当前结论
 
 营地挑战的业务规则已经明确，工程接线可以继续推进；但截至当前，仓库没有 H5 bundle、脚本或历史抓包提供五个 `club_*` 操作的独立协议证据。可以先完成注册、接线和 mock 测试，真实网络动作必须在请求体、成功计数字段和响应语义确认后再启用。
+
+### 2026-09-17 更新：信息搜集层改造（推翻"逐来源探测"方案）
+
+当日复核 `log_for_debug9|10` 与历史日志后确认：活动为**每周二、三、四各匹配一个敌方俱乐部**，`club_getinfo.club.oppoMap` 的键就是**星期几**（2=周二、3=周三、4=周四，与 `Date.getDay()` 一致），**当天只有那一个键的对手可以查询目标阵容**；其余键的目标一律返回 `200020`。此前把三个来源组按 `nodeId` 合并成一张棋盘的做法会在当天对手之外发出大量无效请求（可逐项复现日志里 25 个 `(nodeId, targetId)`），是"三组均不可达、当天 0 攻击"的直接原因。详见 [docs/camp-challenge-protocol-research.md](docs/camp-challenge-protocol-research.md) 的 §2.2.1、§6.1 与 §9.1。
+
+随之落地的改动：
+
+- `campChallengePlanner.js`：新增 `getCampOppoKey()` / `isCampBattleDay()` / `selectTodayCampOppo()`，棋盘只取当天那一个来源组；`collectCampEnemies` 明确禁止跨来源组调用。
+- `tasksCampChallengeStrategy.js`：按俱乐部去重分组，**一个俱乐部只用一个成员探测一次**（`legion_getinfo` 成员表给出全俱乐部战力，与 `role_getroleinfo` 一致），规划阶段不再逐角色建连；目标战力与被拒目标按 `clubId + YYMMDD` 当天缓存；执行阶段才取 `teamSetParams` 并做实时额度闸门；战力阈值改为「目标 ≤ 我方 × 75%」（`batchSettings.campPowerThreshold` 可覆盖）。
+- `BatchDailyTasks.vue`：营地挑战下拉新增第 4 项 `测试：读对方30战力`（只读，逐位置打印战力并汇总成功数），用于验收信息搜集层。
+- 回归：新增 `test/campChallengeTodayOppo.test.js`；`node --test "test/*.test.js"` 166 用例 165 通过（仅剩既有 `skinChallenge` 失败）。
+
+仍待完成：规划阶段的每日额度目前是乐观值（靠执行阶段闸门校正）；`club_draw` 次数待定；「打不过时改打最低战力敌人」的例外未实现。
+
+### 2026-09-17 更新（二）：规划原则定稿 + 部分攻击降级
+
+master 澄清后的原则（已实现）：
+
+1. **高战力对战不做自动化**（战力参考意义弱、规则复杂，由人工击杀对方高战力）；本功能面向"低战力清对面低战力"，阈值默认「目标战力 ≤ 我方 × 75%」（`batchSettings.campPowerThreshold` 可改）。
+2. **全清判定用对方节点的"剩余可击败次数"** = `5 - (challengeCnt - failCnt)`（`defeated=true` 视为已完成）——人工打到 3/4 次的节点，自动化只补剩余次数。
+3. **三个区域组都清不掉时降级为"部分攻击"**（`planPartialCampAttacks`）：把当天对手 30 个节点（含镜像）统一排序（剩余次数少者优先、其次战力低者），用"打得赢且最省额度"的角色补足，而不是直接打宠物。
+4. **宠物只作保底**（`runPetInsurance`）：攻击宠物**也消耗每日战斗次数与获胜次数**（必赢），因此规划层要保留每个成员最后 `remainingWins` 次发起额度给宠物，确保**每个角色每天拿满 3 次获胜**。
+5. **镜像是完全复制体、进度与原版不互通**：30 个 `nodeId` 各自独立计数与完成。
+
+信息层实测（`local-data/camp_data/log_for_debug11.txt`，09-17）：20 个选中角色归并为 2 个俱乐部、只建连 3 次、73 条命令、**0 次失败**；当天两个俱乐部的 30 个位置**60/60 全部拿到战力**（key=4），确认"键=星期几、只有当天对手可查"。
 
 ## 6. 路由结构
 
