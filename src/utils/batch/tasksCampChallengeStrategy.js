@@ -267,6 +267,7 @@ export function createTasksCampChallengeStrategy(deps) {
     message,
     currentRunningTokenId,
     batchSettings,
+    confirmCampPlan,
   } = deps;
 
   const log = (text, type = "info") => {
@@ -1188,8 +1189,10 @@ export function createTasksCampChallengeStrategy(deps) {
     const groupConfIds = claimAll
       ? [1, 2, 3].flatMap((id) => getCampRewardConfIds(id))
       : getCampRewardConfIds(groupId).slice(0, Math.max(0, (stage ?? 0) - 2));
+    // claimAll（部分攻击/取消执行）时不看本地发起计数，直接把 confId=1 交给服务端判定，
+    // 避免"角色今天手动打过 3 次、但本地没读到计数"而漏领。
     const confIds = [
-      ...(member.attackCnt >= 3 ? [1] : []),
+      ...(claimAll || member.attackCnt >= 3 ? [1] : []),
       ...groupConfIds,
     ];
     let claimed = 0;
@@ -1243,6 +1246,58 @@ export function createTasksCampChallengeStrategy(deps) {
     });
 
     return claimed;
+  };
+
+  /**
+   * 把计划转成确认弹框要展示的清单：
+   * 我方角色 + 战力 → 每个攻击目标（角色名/战力/次数，同一角色可能打多个对手）。
+   */
+  const buildPlanPreview = (members, plan, enemiesByNodeId) => {
+    const byToken = new Map();
+    for (const assignment of plan.assignments || []) {
+      const list = byToken.get(assignment.tokenId) || [];
+      const enemy = enemiesByNodeId.get(assignment.nodeId);
+      list.push({
+        nodeId: assignment.nodeId,
+        targetRoleId: enemy?.roleId ?? assignment.targetId ?? null,
+        targetName: enemy?.name || `node-${assignment.nodeId}`,
+        targetPower: enemy?.power ?? null,
+        mirror: enemy?.targetIsMirror ?? assignment.targetIsMirror === true,
+        count: assignment.count,
+      });
+      byToken.set(assignment.tokenId, list);
+    }
+
+    return [...byToken.entries()].map(([tokenId, targets]) => {
+      const member = members.find((item) => item.tokenId === tokenId);
+      return {
+        tokenId,
+        roleName: member?.token?.name || `token ${tokenId}`,
+        power: member?.power ?? null,
+        targets,
+      };
+    });
+  };
+
+  /** 规划完成后的确认环节：UI 传入了 confirmCampPlan 就弹框询问，否则按自动确认处理。 */
+  const requestPlanConfirmation = async (preview) => {
+    if (typeof confirmCampPlan !== "function") {
+      log(
+        "[营地诊断] 未接入确认弹框（confirmCampPlan），按自动确认继续执行",
+        "info",
+      );
+      return true;
+    }
+    try {
+      const approved = await confirmCampPlan(preview);
+      return approved !== false;
+    } catch (error) {
+      log(
+        `[营地诊断] 确认弹框异常: ${error?.message || error}，按取消处理`,
+        "warning",
+      );
+      return false;
+    }
   };
 
   /**
@@ -1497,6 +1552,7 @@ export function createTasksCampChallengeStrategy(deps) {
     // 整组都清不掉时降级为"部分攻击"：30 个节点（含镜像）统一排序，打打得赢的对手，
     // 剩余成功额度再用宠物保底（见 runPetInsurance）。
     let claimAll = false;
+    let planKindText = "";
     if (!plan) {
       const partial = planPartialCampAttacks({
         enemies,
@@ -1522,36 +1578,83 @@ export function createTasksCampChallengeStrategy(deps) {
         );
         plan = partial;
         claimAll = true;
+        planKindText = "部分攻击（三组均无法整组全清）";
       }
     }
 
+    let confirmed = true;
     if (plan) {
-      const clubContext = {
-        clubId,
-        members,
-        enemies,
-        sourceGroupKey: today.sourceGroupKey,
-        groupId: plan.groupId ?? null,
+      // 规划完成 → 弹框列出「我方角色 + 战力 → 攻击目标 + 战力 + 次数」，确认后才执行。
+      const enemiesByNodeId = new Map(enemies.map((enemy) => [enemy.nodeId, enemy]));
+      const totalAttacks = plan.assignments.reduce(
+        (sum, item) => sum + item.count,
+        0,
+      );
+      const preview = {
+        title: planning.selected
+          ? `俱乐部 ${clubId}${group.clubName ? `（${group.clubName}）` : ""}：执行第${plan.groupId}组 ${plan.stage} 层全清计划，共 ${totalAttacks} 次攻击`
+          : `俱乐部 ${clubId}${group.clubName ? `（${group.clubName}）` : ""}：${planKindText}，共 ${totalAttacks} 次攻击`,
+        members: buildPlanPreview(members, plan, enemiesByNodeId),
+        extraSummary: `目标对手：${today.opponent?.name || "-"}（${today.opponent?.legionId ?? "-"}），棋盘 ${today.enemies.length} 个位置`,
       };
-      if (planning.selected) {
+      logClub(
+        `计划已生成（${preview.members.length} 个角色 / ${totalAttacks} 次攻击），等待确认`,
+        "info",
+      );
+      confirmed = await requestPlanConfirmation(preview);
+      if (!confirmed) {
         logClub(
-          `选择第${plan.groupId}组，最高可达 ${plan.stage} 层，` +
-            `计划攻击 ${plan.assignments.reduce((sum, item) => sum + item.count, 0)} 次`,
-          "success",
+          "计划被取消：跳过该俱乐部的普通攻击与宠物保底，仅尝试领取已达成奖励",
+          "warning",
         );
       }
-      try {
-        await executePlan(clubContext, plan);
-      } catch (error) {
-        // 计划中途中止（例如目标没按计划获胜）也要继续做保底与领奖，别浪费当天额度。
-        logClub(
-          `计划执行中止: ${error?.message || error}；继续执行宠物保底与领奖`,
-          "error",
-        );
+    } else {
+      // 没有任何普通攻击计划时也要征求确认（只剩宠物保底这一个动作）。
+      const petPreview = {
+        title: `俱乐部 ${clubId}${group.clubName ? `（${group.clubName}）` : ""}：无普通攻击计划，仅用宠物保底补满每人 3 次获胜`,
+        members: members.map((member) => ({
+          tokenId: member.tokenId,
+          roleName: member.token.name,
+          power: member.power,
+          targets: [],
+        })),
+        extraSummary: `目标对手：${today.opponent?.name || "-"}（${today.opponent?.legionId ?? "-"}）`,
+      };
+      confirmed = await requestPlanConfirmation(petPreview);
+      if (!confirmed) {
+        logClub("计划被取消：跳过该俱乐部的宠物保底与攻击", "warning");
       }
     }
 
-    await runPetInsurance(members, clubId);
+    if (confirmed) {
+      if (plan) {
+        const clubContext = {
+          clubId,
+          members,
+          enemies,
+          sourceGroupKey: today.sourceGroupKey,
+          groupId: plan.groupId ?? null,
+        };
+        if (planning.selected) {
+          logClub(
+            `选择第${plan.groupId}组，最高可达 ${plan.stage} 层，` +
+              `计划攻击 ${plan.assignments.reduce((sum, item) => sum + item.count, 0)} 次`,
+            "success",
+          );
+        }
+        try {
+          await executePlan(clubContext, plan);
+        } catch (error) {
+          // 计划中途中止（例如目标没按计划获胜）也要继续做保底与领奖，别浪费当天额度。
+          logClub(
+            `计划执行中止: ${error?.message || error}；继续执行宠物保底与领奖`,
+            "error",
+          );
+        }
+      }
+
+      await runPetInsurance(members, clubId);
+    }
 
     for (const member of members) {
       if (shouldStop.value) break;

@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   collectCampEnemies,
   getCampOppoKey,
+  getCampTodayKey,
   isCampBattleDay,
   selectTodayCampOppo,
 } from "../src/utils/batch/campChallengePlanner.js";
@@ -42,7 +43,7 @@ const buildDefenders = (roleIdBase) => {
   return defenders;
 };
 
-const createHarness = ({ respond, tokens = [{ id: "t1", name: "角色1", roleId: 1 }] }) => {
+const createHarness = ({ respond, tokens = [{ id: "t1", name: "角色1", roleId: 1 }], extraDeps = {} }) => {
   const calls = [];
   const logs = [];
   const deps = {
@@ -65,6 +66,7 @@ const createHarness = ({ respond, tokens = [{ id: "t1", name: "角色1", roleId:
     addLog: (entry) => logs.push(entry),
     message: { success: () => {}, warning: () => {}, error: () => {} },
     batchSettings: { arenaFormation: 1, commandDelay: 1 },
+    ...extraDeps,
   };
 
   return {
@@ -293,6 +295,160 @@ test("单连接 rank_getroleinfo 完成俱乐部分组，每个俱乐部只探�
   assert.equal(commandsOf(calls, "club_attack").length, 0);
 });
 
+test("计划确认：弹框清单包含角色/战力/目标/次数；取消则不发起任何攻击", async () => {
+  const oppoKey = getCampOppoKey(); // oppoMap 的键 = 星期几
+  const statsKey = getCampTodayKey(); // attackMap 的键 = YYMMDD
+  const unbeatable = new Set([1, 11, 21]);
+  const defenders = {};
+  for (let nodeId = 1; nodeId <= 30; nodeId += 1) {
+    defenders[nodeId] = {
+      roleId: 800000000 + nodeId,
+      name: `防守${nodeId}`,
+      mirror: false,
+      challengeCnt: 0,
+      failCnt: 0,
+      defeated: false,
+      power: unbeatable.has(nodeId) ? 200 : 50,
+    };
+  }
+
+  let capturedPreview = null;
+  const attackMap = {};
+  const { strategy, calls } = createHarness({
+    tokens: [{ id: "t1", name: "角色1", roleId: 101 }],
+    extraDeps: {
+      confirmCampPlan: async (preview) => {
+        capturedPreview = preview;
+        return false; // 拒绝执行
+      },
+    },
+    respond: (command, params) => {
+      switch (command) {
+        case "rank_getroleinfo":
+          return {
+            roleInfo: {
+              roleId: params.roleId,
+              legionId: 300,
+              power: 10000000000,
+              lordWeaponId: 3,
+              battleTeam: { 0: { heroId: 116 } },
+              pet: { petId: 501, petUId: "109-Ple" },
+              name: "角色1",
+            },
+            legionInfo: { id: 300, name: "我方俱乐部" },
+          };
+        case "legion_getinfo":
+          return { info: { id: 300, name: "我方俱乐部", members: {} } };
+        case "club_getinfo":
+          return {
+            club: { legionId: 300, oppoMap: { [oppoKey]: { legionId: 500, name: "当天对手", defenders } } },
+            siege: { attackMap, taskClaimedMap: {} },
+          };
+        case "club_gettargetteam":
+          return {
+            roleBattleTeam: { role: { roleId: Number(params.targetId), power: 5000000000 } },
+          };
+        case "club_attack":
+          attackMap[statsKey] = { attackCnt: (attackMap[statsKey]?.attackCnt || 0) + 1, aSuccessCnt: attackMap[statsKey]?.aSuccessCnt || 0 };
+          return { siege: { attackMap }, battleData: { result: { accept: { ext: { curHP: 0 } } } } };
+        case "club_taskclaim":
+          return { siege: { taskClaimedMap: {} } };
+        default:
+          return {};
+      }
+    },
+  });
+
+  await withInstantTimers(() => strategy.batchCampChallenge());
+
+  assert.ok(capturedPreview, "应弹出计划确认");
+  assert.match(capturedPreview.title, /部分攻击/);
+  assert.equal(capturedPreview.members.length, 1);
+  const member = capturedPreview.members[0];
+  assert.equal(member.roleName, "角色1");
+  assert.equal(member.power, 10000000000);
+  assert.ok(member.targets.length > 0, "清单应包含攻击目标");
+  const firstTarget = member.targets[0];
+  assert.equal(firstTarget.targetName, "防守2");
+  assert.equal(firstTarget.targetPower, 50);
+  assert.ok(firstTarget.count >= 1);
+
+  // 拒绝后：不攻击、不宠物保底，但领奖照常尝试（confId=1 + 5..13 共 10 项）。
+  assert.equal(commandsOf(calls, "club_attack").length, 0);
+  assert.equal(commandsOf(calls, "club_attackmonster").length, 0);
+  assert.equal(commandsOf(calls, "club_taskclaim").length, 10);
+});
+
+test("计划确认：同意后按计划执行", async () => {
+  const oppoKey = getCampOppoKey();
+  const statsKey = getCampTodayKey();
+  const unbeatable = new Set([1, 11, 21]);
+  const defenders = {};
+  for (let nodeId = 1; nodeId <= 30; nodeId += 1) {
+    defenders[nodeId] = {
+      roleId: 800000000 + nodeId,
+      name: `防守${nodeId}`,
+      mirror: false,
+      challengeCnt: 0,
+      failCnt: 0,
+      defeated: false,
+      power: unbeatable.has(nodeId) ? 200 : 50,
+    };
+  }
+
+  const attackMap = {};
+  const { strategy, calls } = createHarness({
+    tokens: [{ id: "t1", name: "角色1", roleId: 101 }],
+    extraDeps: {
+      confirmCampPlan: async () => true,
+    },
+    respond: (command, params) => {
+      switch (command) {
+        case "rank_getroleinfo":
+          return {
+            roleInfo: {
+              roleId: params.roleId,
+              legionId: 300,
+              power: 10000000000,
+              lordWeaponId: 3,
+              battleTeam: { 0: { heroId: 116 } },
+              pet: { petId: 501, petUId: "109-Ple" },
+              name: "角色1",
+            },
+            legionInfo: { id: 300, name: "我方俱乐部" },
+          };
+        case "legion_getinfo":
+          return { info: { id: 300, name: "我方俱乐部", members: {} } };
+        case "club_getinfo":
+          return {
+            club: { legionId: 300, oppoMap: { [oppoKey]: { legionId: 500, name: "当天对手", defenders } } },
+            siege: { attackMap, taskClaimedMap: {} },
+          };
+        case "club_gettargetteam":
+          return {
+            roleBattleTeam: { role: { roleId: Number(params.targetId), power: 5000000000 } },
+          };
+        case "club_attack":
+          attackMap[statsKey] = {
+            attackCnt: (attackMap[statsKey]?.attackCnt || 0) + 1,
+            aSuccessCnt: (attackMap[statsKey]?.aSuccessCnt || 0) + 1,
+          };
+          return { siege: { attackMap }, battleData: { result: { accept: { ext: { curHP: 0 } } } } };
+        case "club_taskclaim":
+          return { siege: { taskClaimedMap: {} } };
+        default:
+          return {};
+      }
+    },
+  });
+
+  await withInstantTimers(() => strategy.batchCampChallenge());
+
+  assert.ok(commandsOf(calls, "club_attack").length > 0, "确认后应执行攻击");
+  // 3 次成功额度拿满后不再需要宠物保底。
+  assert.equal(commandsOf(calls, "club_attackmonster").length, 0);
+});
+
 test("智能规划：当天没有对手时不发起任何目标查询", async () => {
   const todayKey = getCampOppoKey();
   const otherKey = todayKey === "2" ? "3" : "2";
@@ -329,7 +485,8 @@ test("智能规划：当天没有对手时不发起任何目标查询", async ()
 });
 
 test("三组不可达时降级为部分攻击，普通攻击失败后用宠物补满 3 胜", async () => {
-  const todayKey = getCampOppoKey();
+  const oppoKey = getCampOppoKey();
+  const statsKey = getCampTodayKey();
   // 每个区域组各留一个打不动的强节点 → 三组都无法整组全清。
   const unbeatable = new Set([1, 11, 21]);
   const defenders = {};
@@ -351,7 +508,7 @@ test("三组不可达时降级为部分攻击，普通攻击失败后用宠物�
   const { strategy, calls, logs } = createHarness({
     tokens: [{ id: "t1", name: "角色1", roleId: 101 }],
     respond: (command, params) => {
-      const todayStats = attackMap[todayKey] || { attackCnt: 0, aSuccessCnt: 0 };
+      const todayStats = attackMap[statsKey] || { attackCnt: 0, aSuccessCnt: 0 };
       switch (command) {
         case "rank_getroleinfo":
           return {
@@ -370,7 +527,7 @@ test("三组不可达时降级为部分攻击，普通攻击失败后用宠物�
           return { info: { id: 300, name: "我方俱乐部", members: {} } };
         case "club_getinfo":
           return {
-            club: { legionId: 300, oppoMap: { [todayKey]: { legionId: 500, name: "当天对手", defenders } } },
+            club: { legionId: 300, oppoMap: { [oppoKey]: { legionId: 500, name: "当天对手", defenders } } },
             siege: { attackMap, taskClaimedMap: {} },
           };
         case "club_gettargetteam":
@@ -379,7 +536,7 @@ test("三组不可达时降级为部分攻击，普通攻击失败后用宠物�
           };
         case "club_attack": {
           // 故意让它全部失败：验证宠物保底会补上 3 次获胜。
-          attackMap[todayKey] = {
+          attackMap[statsKey] = {
             attackCnt: todayStats.attackCnt + 1,
             aSuccessCnt: todayStats.aSuccessCnt,
           };
@@ -390,7 +547,7 @@ test("三组不可达时降级为部分攻击，普通攻击失败后用宠物�
         }
         case "club_attackmonster": {
           petAttacks += 1;
-          attackMap[todayKey] = {
+          attackMap[statsKey] = {
             attackCnt: todayStats.attackCnt + 1,
             aSuccessCnt: todayStats.aSuccessCnt + 1,
           };

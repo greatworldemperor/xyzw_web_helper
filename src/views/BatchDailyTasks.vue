@@ -3560,7 +3560,7 @@ import {
   runWithRateLimitRetry,
 } from "@/utils/helperTaskRunner";
 import { preloadQuestions } from "@/utils/studyQuestionsFromJSON.js";
-import { useMessage } from "naive-ui";
+import { useDialog, useMessage } from "naive-ui";
 import { Copy, Settings } from "@vicons/ionicons5";
 import { DEFAULT_WEIRD_TOWER_MAX_CLIMB } from "@/utils/towerClimbLimit.js";
 import { compareTokensByServerAndRole } from "@/utils/tokenSort.js";
@@ -3634,7 +3634,78 @@ import { merchantConfig, goldItemsConfig } from "@/utils/dreamConstants";
 // Initialize token store, message service, and task runner
 const tokenStore = useTokenStore();
 const message = useMessage();
+const dialog = useDialog();
 const weirdTowerMaxClimb = ref(DEFAULT_WEIRD_TOWER_MAX_CLIMB);
+
+/**
+ * 营地挑战计划确认弹框：规划完成后展示
+ * 「我方角色 + 战力 → 攻击目标 + 战力 + 次数」清单，确认后才执行。
+ */
+const confirmCampPlan = (plan) => {
+  const formatPower = (power) => {
+    const value = Number(power);
+    if (!Number.isFinite(value)) return "未知";
+    return value >= 1e8
+      ? `${(value / 1e8).toFixed(2)} 亿`
+      : `${Math.round(value / 1e4)} 万`;
+  };
+
+  const content = () =>
+    h("div", { style: "max-height: 46vh; overflow-y: auto;" }, [
+      h(
+        "div",
+        { style: "margin-bottom: 8px; font-weight: 600;" },
+        `${plan.title}`,
+      ),
+      ...plan.members.map((member) =>
+        h(
+          "div",
+          { style: "margin-bottom: 10px; padding: 6px 8px; border-radius: 6px; background: rgba(128,128,128,0.08);" },
+          [
+            h(
+              "div",
+              { style: "font-weight: 600;" },
+              `角色 ${member.roleName}（战力 ${formatPower(member.power)}）`,
+            ),
+            ...member.targets.map((target) =>
+              h(
+                "div",
+                { style: "margin: 2px 0 2px 14px; font-size: 13px;" },
+                `攻击 ${target.mirror ? "[镜像] " : ""}${target.targetName}（${target.targetRoleId}，战力 ${formatPower(target.targetPower)}）× ${target.count} 次`,
+              ),
+            ),
+          ],
+        ),
+      ),
+      plan.extraSummary
+        ? h(
+            "div",
+            { style: "font-size: 13px; color: var(--n-text-color-disabled, #999);" },
+            plan.extraSummary,
+          )
+        : null,
+      h(
+        "div",
+        { style: "font-size: 13px; color: var(--n-text-color-disabled, #999); margin-top: 6px;" },
+        "确认后才会真实发起攻击；取消则跳过该俱乐部的攻击与宠物保底（仍会尝试领取已达成奖励）。",
+      ),
+    ]);
+
+  return new Promise((resolve) => {
+    dialog.warning({
+      title: "营地挑战计划确认",
+      content,
+      positiveText: "执行计划",
+      negativeText: "取消",
+      closable: false,
+      maskClosable: false,
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+      onMaskClick: () => resolve(false),
+    });
+  });
+};
 
 // ===== 400340 限流弹窗 =====
 const showRateLimitModal = ref(false);
@@ -7330,6 +7401,8 @@ const createTaskDeps = () => ({
   getTodayStartSec,
   isTodayAvailable,
   calculateMonthProgress,
+  // 营地挑战计划确认弹框
+  confirmCampPlan,
   // 配置加载函数
   loadSettings,
 });
