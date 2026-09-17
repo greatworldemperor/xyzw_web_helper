@@ -8,43 +8,10 @@ import { bonProtocol, g_utils } from "./bonProtocol.js";
 import { wsLogger, gameLogger } from "./logger.js";
 
 /**
- * 错误码映射表
- * 用于将服务器返回的错误码转换为可读的错误描述
+ * 错误码映射表与错误信封解析见 ./protocolError.js
+ * （抽出去是为了让 node 测试能直接覆盖，本文件依赖 @/ 别名无法被测试导入）
  */
-const errorCodeMap = {
-  700010: "任务未达成完成条件",
-  1400010: "没有购买该月卡,不能领取每日奖励",
-  12000116: "今日已领取免费奖励",
-  3300060: "扫荡条件不满足",
-  1300050: "请修改您的采购次数",
-  200020: "出了点小问题，请尝试重启游戏解决～",
-  200160: "模块未开启",
-  7500140: "请先输入密码",
-  7500100: "密码输入错误",
-  7500120: "密码输入错误次数已达上限",
-  200400: "操作太快，请稍后再试",
-  200760: "您当前看到的界面已发生变化，请重新登录",
-  2300190: "今天已经签到过了",
-  2300370: "俱乐部商品购买数量超出上限",
-  400000: "物品不存在",
-  1500020: "能量不足",
-  2300070: "未加入俱乐部",
-  3500020: "没有可领取的奖励",
-  400190: "没有可领取的签到奖励",
-  1000020: "今天已经领取过奖励了",
-  3300050: "购买数量超出限制",
-  700020: "已经领取过这个任务",
-  12400000: "挂机奖励领取过于频繁",
-  2300250: "俱乐部BOSS今日攻打次数已用完",
-  400010: "物品数量不足",
-  7900023: "已达到使用次数上限",
-  12300040: "没有空格子了",
-  12300080: "未达到解锁条件",
-  200330: "无效的ID",
-  1500040: "上座塔的奖励未领取",
-  1500010: "已经全部通关",
-  1100010: "招募周奖励本期已领取",
-};
+import { createServerError } from "./protocolError.js";
 
 // 事件节流定义表，根据实际需要调整命令和节流时间
 const CmdDebounceMap = {
@@ -254,6 +221,10 @@ export function registerDefaultCommands(reg) {
     .register("mergebox_claimcostprogress", { actType: 1 })
     .register("mergebox_claimmergeprogress", { actType: 1 })
     .register("evotower_claimtask", { taskId: 1 })
+    // 怪异咸将塔 · 助力码（发方连接发对方的码；详见 docs/weird-tower-share-code-protocol.md）
+    .register("evotower_getshareinfo")
+    .register("evotower_getsharecode")
+    .register("evotower_acceptsharebycode", { shareCode: "" })
 
     // 瓶子机器人
     .register("bottlehelper_claim")
@@ -1043,13 +1014,9 @@ export class XyzwWebSocketClient {
       if (packet.code === 0 || packet.code === undefined) {
         promiseData.resolve(responseBody || packet);
       } else {
-        // 获取错误描述
-        const errorDesc =
-          errorCodeMap[packet.code] || packet.hint || "未知错误";
-
-        promiseData.reject(
-          new Error(`服务器错误: ${packet.code} - ${errorDesc}`),
-        );
+        // 错误描述优先级与字段挂载见 protocolError.js
+        // （服务端 error 文案优先于兜底：幻塔助力 12200100/12200090 只在 error 里给提示）
+        promiseData.reject(createServerError(packet));
       }
       return;
     }
@@ -1117,6 +1084,10 @@ export class XyzwWebSocketClient {
       mergebox_claimcostprogressresp: "mergebox_claimcostprogress",
       mergebox_claimmergeprogressresp: "mergebox_claimmergeprogress",
       evotower_claimtaskresp: "evotower_claimtask",
+      // 助力码：响应命令 = PascalCase 响应名小写化
+      evotower_getshareinforesp: "evotower_getshareinfo",
+      evotower_getsharecoderesp: "evotower_getsharecode",
+      evotower_acceptsharebycoderesp: "evotower_acceptsharebycode",
       item_openpackresp: "item_openpack",
       equipment_quenchresp: "equipment_quench",
       rank_getserverrankresp: "rank_getserverrank",
@@ -1235,13 +1206,8 @@ export class XyzwWebSocketClient {
         if (packet.code === 0 || packet.code === undefined) {
           promiseData.resolve(responseBody || packet);
         } else {
-          // 获取错误描述
-          const errorDesc =
-            errorCodeMap[packet.code] || packet.hint || "未知错误";
-
-          promiseData.reject(
-            new Error(`服务器错误: ${packet.code} - ${errorDesc}`),
-          );
+          // 错误描述优先级与字段挂载见 protocolError.js
+          promiseData.reject(createServerError(packet));
         }
         break;
       }

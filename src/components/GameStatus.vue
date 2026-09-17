@@ -43,6 +43,9 @@
     <!-- 怪异塔状态 -->
     <WeirdTowerStatus v-show="activeSection === 'daily'" />
 
+    <!-- 怪异塔助力（接受助力角色 ↔ 助力角色池） -->
+    <WeirdTowerShareCard v-show="activeSection === 'daily'" />
+
     <!-- 盐罐机器人状态（提取组件） -->
     <BottleHelperCard v-show="activeSection === 'daily'" />
 
@@ -381,6 +384,7 @@ import ConsumptionProgressCard from "./cards/ConsumptionProgressCard.vue";
 import RefineHelperCard from "./cards/RefineHelperCard.vue";
 import TowerStatus from "./Tower/TowerStatus.vue";
 import WeirdTowerStatus from "./Tower/WeirdTowerStatus.vue";
+import WeirdTowerShareCard from "./cards/WeirdTowerShareCard.vue";
 import BossTower from "./Tower/BossTower.vue";
 import PeachInfo from "./Club/PeachInfo.vue";
 import PeachInfoV2 from "./Club/PeachInfoV2.vue";

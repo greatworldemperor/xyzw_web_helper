@@ -591,6 +591,31 @@
                 >
                   一键领取怪异塔免费道具
                 </n-button>
+                <n-button
+                  size="small"
+                  type="info"
+                  ghost
+                  @click="markSelectedAsShareReceivers"
+                  :disabled="isRunning || selectedTokens.length === 0"
+                >
+                  设为接受助力角色
+                </n-button>
+                <n-button
+                  size="small"
+                  type="info"
+                  ghost
+                  @click="markSelectedAsAssistPool"
+                  :disabled="isRunning || selectedTokens.length === 0"
+                >
+                  设置为助力角色池
+                </n-button>
+                <n-button
+                  size="small"
+                  @click="selectAssistPoolTokens"
+                  :disabled="isRunning || assistPlan.assistPool.length === 0"
+                >
+                  选中当前助力角色池（{{ assistPlan.assistPool.length }}）
+                </n-button>
               </n-space>
             </n-tab-pane>
             <n-tab-pane name="resource" tab="资源">
@@ -3574,6 +3599,19 @@ import {
   normalizeFlexibleTemplate,
   parseFlexibleTemplates,
 } from "@/utils/batch/flexibleTemplate.js";
+import { getStableTokenKey } from "@/utils/token";
+import {
+  diffPoolSelection,
+  normalizeAssistPlan,
+  setAssistPool,
+  upsertReceivers,
+} from "@/utils/weirdTowerSharePlan.js";
+import {
+  readCycleRuntime,
+  weirdTowerAssistPlan,
+  writeAssistPlan,
+} from "@/stores/weirdTowerAssist";
+import { getWeirdTowerCycleKey } from "@/utils/weirdTowerShareWindow.js";
 
 // Import batch task modules
 import {
@@ -3636,6 +3674,143 @@ const tokenStore = useTokenStore();
 const message = useMessage();
 const dialog = useDialog();
 const weirdTowerMaxClimb = ref(DEFAULT_WEIRD_TOWER_MAX_CLIMB);
+
+// —— 怪异塔助力：批量日常页的 3 个按钮（关系表见 docs/weird-tower-share-assist-design.md §3） ——
+const assistPlan = computed(() => normalizeAssistPlan(weirdTowerAssistPlan.value));
+
+/** token → 稳定身份键（serverId:roleId）；缺 serverId/roleId 时返回 null，无法持久化 */
+const toAssistKey = (token) =>
+  token ? getStableTokenKey(token.serverId, token.roleId) : null;
+
+/** 当前勾选的角色对象（保持勾选顺序） */
+const selectedTokenObjects = computed(() =>
+  selectedTokens.value
+    .map((id) => tokenStore.gameTokens.find((token) => token.id === id))
+    .filter(Boolean),
+);
+
+/** 把 token 列表转成关系表条目，并统计无法映射的个数 */
+const assistRowsOf = (tokens) => {
+  const rows = [];
+  let missingKey = 0;
+  for (const token of tokens) {
+    const key = toAssistKey(token);
+    if (!key) {
+      missingKey += 1;
+      continue;
+    }
+    rows.push({ key, name: token.name || "", server: token.server || "" });
+  }
+  return { rows, missingKey };
+};
+
+/** 1.1 设为接受助力角色（追加，已存在的跳过） */
+const markSelectedAsShareReceivers = () => {
+  if (selectedTokens.value.length === 0) return;
+  const { rows, missingKey } = assistRowsOf(selectedTokenObjects.value);
+  const result = upsertReceivers(assistPlan.value, rows);
+  writeAssistPlan(result.plan);
+
+  const notes = [`新增 ${result.added.length} 个接受助力角色`];
+  if (missingKey > 0) notes.push(`${missingKey} 个角色缺少 serverId/roleId，无法记录`);
+  message.success(notes.join("；"));
+};
+
+/** 1.2 设置为助力角色池（**直接覆盖**，不是合并） */
+const markSelectedAsAssistPool = () => {
+  if (selectedTokens.value.length === 0) return;
+  const { rows, missingKey } = assistRowsOf(selectedTokenObjects.value);
+  const before = assistPlan.value.assistPool.length;
+  const next = setAssistPool(assistPlan.value, rows.map((row) => row.key));
+  writeAssistPlan(next);
+
+  const notes = [
+    `助力角色池已覆盖为 ${next.assistPool.length} 个角色（覆盖前 ${before} 个）`,
+  ];
+  if (missingKey > 0) notes.push(`${missingKey} 个角色缺少 serverId/roleId，已忽略`);
+  message.success(notes.join("；"));
+};
+
+/** 1.3 选中当前助力角色池，并检查内容合理性 */
+const selectAssistPoolTokens = () => {
+  const poolKeys = assistPlan.value.assistPool;
+  if (poolKeys.length === 0) {
+    message.info("助力角色池还是空的，请先用「设置为助力角色池」");
+    return;
+  }
+
+  const allTokens = tokenStore.gameTokens || [];
+  const poolSet = new Set(poolKeys);
+
+  // 先对「覆盖前的勾选」做差异检查，这才是「该选的是否都选了 / 是否选了不该选的」
+  const beforeKeys = selectedTokenObjects.value
+    .map((token) => toAssistKey(token))
+    .filter(Boolean);
+  const diff = diffPoolSelection(poolKeys, beforeKeys);
+
+  // 再把池内角色勾上
+  const ids = allTokens
+    .filter((token) => poolSet.has(toAssistKey(token)))
+    .map((token) => token.id);
+  selectedTokens.value = ids;
+
+  const cycleKey = getWeirdTowerCycleKey(new Date());
+  const usedInitiators = cycleKey
+    ? readCycleRuntime(cycleKey).usedInitiators || []
+    : [];
+  const usedInPool = poolKeys.filter((key) => usedInitiators.includes(key));
+  const missingInList = poolKeys.filter(
+    (key) => !allTokens.some((token) => toAssistKey(token) === key),
+  );
+
+  const problems = [];
+  if (missingInList.length > 0) {
+    problems.push(
+      `池内 ${missingInList.length} 个角色已不在角色列表（该选但选不到）：${missingInList.join("、")}`,
+    );
+  }
+  if (diff.missing.length > 0) {
+    problems.push(
+      `覆盖前有 ${diff.missing.length} 个池内角色没被勾选（该选没选）：${diff.missing.join("、")}`,
+    );
+  }
+  if (diff.extra.length > 0) {
+    problems.push(
+      `覆盖前勾选了 ${diff.extra.length} 个非池内角色（选了不该选的）：${diff.extra.join("、")}`,
+    );
+  }
+  if (usedInPool.length > 0) {
+    problems.push(
+      `池内 ${usedInPool.length} 个角色本周期已用掉助力机会（12200100）：${usedInPool.join("、")}`,
+    );
+  }
+
+  if (problems.length === 0) {
+    message.success(`已勾选助力角色池的 ${ids.length} 个角色，检查未发现问题`);
+    return;
+  }
+
+  dialog.warning({
+    title: "助力角色池检查",
+    content: () =>
+      h(
+        "div",
+        { style: "line-height:1.8" },
+        [
+          h("div", `已为你勾选池内的 ${ids.length} 个角色。`),
+          h(
+            "div",
+            { style: "margin-top:8px; font-weight:600" },
+            `发现 ${problems.length} 项需要留意：`,
+          ),
+          ...problems.map((text) =>
+            h("div", { style: "margin-top:4px" }, `· ${text}`),
+          ),
+        ],
+      ),
+    positiveText: "知道了",
+  });
+};
 
 /**
  * 营地挑战计划确认弹框：规划完成后展示

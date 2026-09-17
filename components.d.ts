@@ -75,6 +75,7 @@ declare module 'vue' {
     TowerStatus: typeof import('./src/components/Tower/TowerStatus.vue')['default']
     Unlimitedlineup: typeof import('./src/components/cards/Unlimitedlineup.vue')['default']
     WebSocketTester: typeof import('./src/components/Test/WebSocketTester.vue')['default']
+    WeirdTowerShareCard: typeof import('./src/components/cards/WeirdTowerShareCard.vue')['default']
     WeirdTowerStatus: typeof import('./src/components/Tower/WeirdTowerStatus.vue')['default']
   }
 }
