@@ -43,8 +43,10 @@
     <!-- 怪异塔状态 -->
     <WeirdTowerStatus v-show="activeSection === 'daily'" />
 
-    <!-- 怪异塔助力（接受助力角色 ↔ 助力角色池） -->
-    <WeirdTowerShareCard v-show="activeSection === 'daily'" />
+    <!-- 怪异塔助力（接受助力角色 ↔ 助力角色池）：左列表右槽位的两栏布局，需跨满整行 -->
+    <div v-show="activeSection === 'daily'" class="weird-tower-share-group">
+      <WeirdTowerShareCard />
+    </div>
 
     <!-- 盐罐机器人状态（提取组件） -->
     <BottleHelperCard v-show="activeSection === 'daily'" />
@@ -882,6 +884,12 @@ onUnmounted(() => {
   width: 100%;
   display: flex;
   flex-direction: column;
+}
+
+/* 怪异塔助力：左列表 + 右槽位两栏，同样跨满整行（否则会被塞进单列网格里挤爆） */
+.weird-tower-share-group {
+  grid-column: 1 / -1;
+  width: 100%;
 }
 
 .monthly-tasks .description.muted {
