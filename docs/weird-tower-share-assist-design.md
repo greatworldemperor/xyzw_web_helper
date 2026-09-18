@@ -84,6 +84,7 @@ localStorage key 建议 `weirdTowerAssistPlan`：
 | **1.1 设为接受助力角色** | 把选中角色**追加**进 `receivers`（已存在则跳过、不重复） | 见 §7-Q1：追加还是覆盖？ |
 | **1.2 设置为助力角色池** | 把选中角色 **直接覆盖** `assistPool` | master 已明确：**覆盖，不是合并** |
 | **1.3 选中当前助力角色池** | 把 `assistPool` 里的角色在角色列表里勾上 | 并输出校验报告 |
+| **1.4 打开助力界面** | 打开助力弹窗（见 §4） | 2026-09-18 新增；原来的入口是 GameStatus 的卡片，发现性太差 |
 
 **1.3 的实现路径**：项目已有同构逻辑 `updateSelectedTokensFromGroups()`（`BatchDailyTasks.vue` 约 6749 行）
 ——「按分组里的稳定键 → 反查当前 tokenId → 赋给 `selectedTokens`」。1.3 直接照这个写法做即可。
@@ -101,12 +102,30 @@ localStorage key 建议 `weirdTowerAssistPlan`：
 
 ---
 
-## 4. 专用页面（独立卡片）
+## 4. 助力界面（独立弹窗）
+
+**入口：批量日常页 →「怪异塔」栏目 →「打开助力界面」按钮**（2026-09-18 调整，见 §4.0）。
+
+最早是挂在 `GameStatus`「日常」分区的一张卡片，但实测它是那里的第 5 张卡（文档纵向 1002px，
+刚好落在首屏之外），master 反馈找不到 —— **发现性太差，改成从批量页按钮打开的弹窗**
+（复用该文件既有的 `n-modal` 写法，不动两栏布局）。
+
+### 4.0 弹窗实现要点
+
+- `<n-modal preset="card" title="怪异塔助力" style="width: 1100px; max-width: 94vw">`，
+  内容外再裹一层 `max-height: 76vh; overflow: auto`，避免小屏顶出屏幕。
+- **必须用 `display-directive="show"`**：默认 `"if"` 会在关闭时销毁内容，
+  执行日志与进行中的状态就丢了。
+- 卡片组件加 **`embedded` 属性**：为 true 时去掉自带的白底 / 阴影 / 圆角 / 内边距
+  （弹窗自带卡片外观，否则"卡片套卡片"），并隐藏自己的 `h3`、把滚动区放高。
+- 关掉弹窗不影响正在跑的助力任务（组件常驻，异步流程继续，日志保留）。
+
+### 4.1 界面内容
 
 ```
 ┌─ 怪异塔助力 ─────────────────────────────────────────────┐
-│ 周期 #13 · 助力窗口 09/11 12:00 → 09/17 24:00  [已关闭]   │
-│                                        [自动分配] [开始助力] │
+│ 周期 #13 招募周：助力只在黑市周开放          [非黑市周]   │
+│ 自动分配  开始助力（n）   助力池 N 个角色 · 已分配 M 个槽位 │
 ├──────────────────┬───────────────────────────────────────┤
 │ 接受助力角色 (8)  │  世界国皇帝 @9724服      [手动指定 ▾]  │
 │ ────────────────  │  ───────────────────────────────────  │
@@ -222,10 +241,9 @@ localStorage key 建议 `weirdTowerAssistPlan`：
 | `src/utils/weirdTowerShareWindow.js` | 三周周期与**助力窗口**判定（纯逻辑，含尾巴期排除） |
 | `src/utils/weirdTowerSharePlan.js` | 关系模型 + **自动分配** + 校验（纯逻辑，无 Vue 依赖） |
 | `src/stores/weirdTowerAssist.js` | 持久化：关系表 `weirdTowerAssistPlan`（跨周期）+ 本周期执行状态 `weirdTowerAssistRuntime` |
-| `src/components/cards/WeirdTowerShareCard.vue` | 独立卡片：左接受角色列表 / 右 3 槽位 + 自动分配 + 开始助力 + 日志 |
+| `src/components/cards/WeirdTowerShareCard.vue` | 助力界面（`embedded` 属性用于嵌进弹窗）：左接受角色列表 / 右 3 槽位 + 自动分配 + 开始助力 + 日志 |
 | `src/utils/xyzwWebSocket.js` | 注册 `evotower_getshareinfo` / `getsharecode` / `acceptsharebycode` + 3 个响应映射 |
-| `src/components/GameStatus.vue` | 在「日常」分区挂载卡片（紧跟 `WeirdTowerStatus`） |
-| `src/views/BatchDailyTasks.vue` | 怪异塔栏目新增 3 个按钮（1.1 / 1.2 / 1.3） |
+| `src/views/BatchDailyTasks.vue` | 怪异塔栏目 4 个按钮（3 个设置 + **「打开助力界面」**）+ 承载助力的 `n-modal` |
 | `test/weirdTowerShareWindow.test.js` | 10 例：周期轮转、6.5 天边界、尾巴期、周期键、真实抓包对齐 |
 | `test/weirdTowerSharePlan.test.js` | 19 例：追加/覆盖语义、全局唯一、自动分配、错误分流、校验 |
 
