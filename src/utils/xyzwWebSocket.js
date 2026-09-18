@@ -296,6 +296,13 @@ export function registerDefaultCommands(reg) {
     // 活动/任务
     .register("activity_get")
     .register("activity_recyclewarorderrewardclaim")
+    // 逍遥津（限时临时活动）：见 docs/xiaoyaojin-activity-protocol.md
+    .register("activity_warorderget", { actId: 0 })
+    .register("activity_warordertaskclaim", { actId: 0, missionId: 0 })
+    .register("activity_commonbuygoods", { goodsId: 0 })
+    .register("activity_claimsignreward", { activityId: 0, patchDay: 0 })
+    .register("activity_getlotteryinfo")
+    .register("activity_lottery", { times: 1 })
     .register("activity_buystoregoods", {
       activityId: 6,
       goodsIndex: 0,
@@ -1129,7 +1136,16 @@ export class XyzwWebSocketClient {
       club_drawresp: "club_draw",
       // 车辆相关响应映射
       role_gettargetteamresp: "role_gettargetteam",
-      activity_warorderclaimresp: "activity_recyclewarorderrewardclaim",
+      // 战令：回收战令奖励与逍遥津每日任务奖励共用 Activity_WarOrderClaimResp
+      activity_warorderclaimresp: [
+        "activity_warordertaskclaim",
+        "activity_recyclewarorderrewardclaim",
+      ],
+      // 逍遥津（限时临时活动）响应映射
+      activity_warordergetresp: "activity_warorderget",
+      activity_rewardresp: "activity_claimsignreward",
+      activity_getlotteryinforesp: "activity_getlotteryinfo",
+      activity_lotteryresp: "activity_lottery",
       arena_getarearankresp: "arena_getarearank",
       bosstower_gethelprankresp: "bosstower_gethelprank",
       // 功法相关响应映射
@@ -1172,6 +1188,8 @@ export class XyzwWebSocketClient {
         "artifact_exchange",
         "hero_exchange",
         "hero_rebirth",
+        // 逍遥津一次性礼包：成功后服务端回 SyncRewardResp
+        "activity_commonbuygoods",
       ],
     };
 

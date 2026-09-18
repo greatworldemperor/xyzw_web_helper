@@ -783,6 +783,76 @@
                 </n-button>
               </n-space>
             </n-tab-pane>
+            <n-tab-pane name="temporary" tab="临时活动">
+              <n-space vertical :size="8">
+                <n-space align="center" :size="8">
+                  <n-input-number
+                    v-model:value="xiaoyaojinDraws"
+                    class="xiaoyaojin-draws-input"
+                    size="small"
+                    :min="1"
+                    :max="10"
+                    :precision="0"
+                    :show-button="false"
+                    placeholder="抽奖次数"
+                    :disabled="isRunning"
+                  />
+                  <span class="xiaoyaojin-hint">抽奖次数（受抽奖券余额限制）</span>
+                </n-space>
+                <n-space :size="8">
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="xiaoyaojinAll"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    逍遥津一键全套
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="xiaoyaojinDailyTask"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    每日任务奖励
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="xiaoyaojinOneTimeGift"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    一次性奖励
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="xiaoyaojinSignReward"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    7天登录奖励
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="xiaoyaojinLottery"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    抽奖
+                  </n-button>
+                  <n-button
+                    size="small"
+                    type="info"
+                    ghost
+                    :loading="xiaoyaojinInspecting"
+                    @click="inspectXiaoyaojinActivity"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    探测活动实例
+                  </n-button>
+                </n-space>
+                <span class="xiaoyaojin-hint">
+                  逍遥津为限时活动：活动实例 ID（YYMMDD+功能位）由 activity_get 现场探测，
+                  逐账号解析；已领取/未达成均视为正常结束。
+                </span>
+              </n-space>
+            </n-tab-pane>
           </n-tabs>
         </n-card>
       </div>
@@ -3686,6 +3756,7 @@ import {
   createTasksApex,
   createTasksCampChallengeStrategy,
   createTasksXianMaster,
+  createTasksXiaoyaojin,
   resolveDefaultBlackMarketKeys,
 } from "@/utils/batch";
 
@@ -3696,6 +3767,18 @@ const tokenStore = useTokenStore();
 const message = useMessage();
 const dialog = useDialog();
 const weirdTowerMaxClimb = ref(DEFAULT_WEIRD_TOWER_MAX_CLIMB);
+
+// —— 逍遥津（限时临时活动，入口在批量任务底部「临时活动」标签页）——
+// 协议与结论见 docs/xiaoyaojin-activity-protocol.md；纯逻辑见 utils/xiaoyaojinPlan.js
+/** 单账号本次抽奖次数上限（默认 1，与抓包一致；实际还会被抽奖券余额收紧） */
+const xiaoyaojinDraws = ref(1);
+/** 「探测活动实例」按钮的 loading */
+const xiaoyaojinInspecting = ref(false);
+/** 传给任务模块的运行时选项（手工覆盖活动 ID 时填 overrides） */
+const xiaoyaojinOptions = reactive({ draws: 1, overrides: {} });
+watch(xiaoyaojinDraws, (value) => {
+  xiaoyaojinOptions.draws = value;
+});
 
 // —— 怪异塔助力：批量日常页的 3 个按钮（关系表见 docs/weird-tower-share-assist-design.md §3） ——
 const assistPlan = computed(() => normalizeAssistPlan(weirdTowerAssistPlan.value));
@@ -4974,6 +5057,17 @@ const taskGroupDefinitions = [
     name: "monthly",
     label: "月度",
     tasks: ["batchTopUpFish", "batchTopUpArena"],
+  },
+  {
+    name: "temporary",
+    label: "临时活动",
+    tasks: [
+      "xiaoyaojinAll",
+      "xiaoyaojinDailyTask",
+      "xiaoyaojinOneTimeGift",
+      "xiaoyaojinSignReward",
+      "xiaoyaojinLottery",
+    ],
   },
 ];
 
@@ -7590,6 +7684,8 @@ const createTaskDeps = () => ({
   currentSettings,
   helperSettings,
   weirdTowerMaxClimb,
+  // 逍遥津（临时活动）：抽奖次数 + 手工覆盖活动 ID
+  xiaoyaojinOptions,
   // 功法赠送相关
   recipientIdInput,
   recipientInfo,
@@ -7835,6 +7931,60 @@ const {
   batchCampDiagnose,
 } = tasksCampChallenge;
 
+// 逍遥津（临时活动）：模块内部按 activity_get 现场探测活动实例，无需额外参数
+const tasksXiaoyaojin = createTasksXiaoyaojin(createTaskDeps());
+const {
+  xiaoyaojinAll,
+  xiaoyaojinDailyTask,
+  xiaoyaojinOneTimeGift,
+  xiaoyaojinSignReward,
+  xiaoyaojinLottery,
+  inspectXiaoyaojin,
+} = tasksXiaoyaojin;
+
+/** 「探测活动实例」：对第一个选中账号跑一次 activity_get，把探测结果写进日志 */
+const inspectXiaoyaojinActivity = async () => {
+  if (selectedTokens.value.length === 0) {
+    message.warning("请先选择账号");
+    return;
+  }
+  const tokenId = selectedTokens.value[0];
+  const token = tokens.value.find((item) => item.id === tokenId);
+  const tokenName = token?.name || tokenId;
+  xiaoyaojinInspecting.value = true;
+  try {
+    await ensureConnection(tokenId);
+    const plan = await inspectXiaoyaojin(tokenId);
+    if (!plan?.ok) {
+      addLog({
+        time: new Date().toLocaleTimeString(),
+        message: `${tokenName} 逍遥津未探测到：${plan?.reason || "未知原因"}`,
+        type: "warning",
+      });
+      return;
+    }
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message:
+        `${tokenName} 逍遥津活动实例 ${plan.warOrderActivityId}（${plan.source === "manual" ? "手工指定" : `开启于 ${plan.ageDays} 天前`}）；` +
+        `签到 ${plan.ids.signActivityId}（推送中${plan.commonConfirmed.sign ? "已" : "未"}确认）/ ` +
+        `礼包 ${plan.ids.giftGoodsId}（推送中${plan.commonConfirmed.gift ? "已" : "未"}确认）；` +
+        `每日任务待领 ${plan.dailyClaims.filter((i) => i.completed).length} 个 / 未达成 ${plan.dailyClaims.filter((i) => !i.completed).length} 个`,
+      type: "info",
+    });
+  } catch (error) {
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `${tokenName} 探测逍遥津失败: ${error?.message || String(error)}`,
+      type: "error",
+    });
+  } finally {
+    xiaoyaojinInspecting.value = false;
+    tokenStore.closeWebSocketConnection(tokenId);
+    releaseConnectionSlot();
+  }
+};
+
 const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksHangUp(deps),
   ...createTasksBottle(deps),
@@ -7846,6 +7996,7 @@ const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksLegacy(deps),
   ...createTasksFootball(deps),
   ...createTasksCampChallengeStrategy(deps),
+  ...createTasksXiaoyaojin(deps),
 });
 
 const getFlexibleTaskUnavailableReason = (taskId, settings) => {
@@ -9113,6 +9264,18 @@ const stopBatch = () => {
   height: 28px;
   color: #666;
   font-size: 14px;
+}
+
+/* 逍遥津（临时活动）标签页 */
+.xiaoyaojin-draws-input {
+  width: 96px;
+  flex-shrink: 0;
+}
+
+.xiaoyaojin-hint {
+  color: #86909c;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 /* Responsive Design */

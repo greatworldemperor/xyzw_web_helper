@@ -84,6 +84,11 @@ export const availableTasks = [
   { label: "一键领取蟠桃园任务", value: "batchClaimPeachTasks" },
   { label: "一键扫荡灯神", value: "batchGenieSweep" },
   { label: "一键购买梦境商品", value: "batchBuyDreamItems" },
+  { label: "逍遥津一键全套", value: "xiaoyaojinAll" },
+  { label: "逍遥津每日任务奖励", value: "xiaoyaojinDailyTask" },
+  { label: "逍遥津一次性奖励", value: "xiaoyaojinOneTimeGift" },
+  { label: "逍遥津7天登录奖励", value: "xiaoyaojinSignReward" },
+  { label: "逍遥津抽奖", value: "xiaoyaojinLottery" },
 ];
 
 // 月度任务目标
