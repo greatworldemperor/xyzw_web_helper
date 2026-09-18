@@ -43,10 +43,7 @@
     <!-- 怪异塔状态 -->
     <WeirdTowerStatus v-show="activeSection === 'daily'" />
 
-    <!-- 怪异塔助力（接受助力角色 ↔ 助力角色池）：左列表右槽位的两栏布局，需跨满整行 -->
-    <div v-show="activeSection === 'daily'" class="weird-tower-share-group">
-      <WeirdTowerShareCard />
-    </div>
+    <!-- 怪异塔助力已移到「批量日常」页的弹窗（怪异塔栏目「打开助力界面」按钮），此处不再放卡片 -->
 
     <!-- 盐罐机器人状态（提取组件） -->
     <BottleHelperCard v-show="activeSection === 'daily'" />
@@ -386,7 +383,6 @@ import ConsumptionProgressCard from "./cards/ConsumptionProgressCard.vue";
 import RefineHelperCard from "./cards/RefineHelperCard.vue";
 import TowerStatus from "./Tower/TowerStatus.vue";
 import WeirdTowerStatus from "./Tower/WeirdTowerStatus.vue";
-import WeirdTowerShareCard from "./cards/WeirdTowerShareCard.vue";
 import BossTower from "./Tower/BossTower.vue";
 import PeachInfo from "./Club/PeachInfo.vue";
 import PeachInfoV2 from "./Club/PeachInfoV2.vue";
@@ -886,11 +882,7 @@ onUnmounted(() => {
   flex-direction: column;
 }
 
-/* 怪异塔助力：左列表 + 右槽位两栏，同样跨满整行（否则会被塞进单列网格里挤爆） */
-.weird-tower-share-group {
-  grid-column: 1 / -1;
-  width: 100%;
-}
+/* 怪异塔助力已移到「批量日常」页的弹窗，这里不再需要跨行规则 */
 
 .monthly-tasks .description.muted {
   color: var(--text-tertiary);

@@ -616,6 +616,13 @@
                 >
                   选中当前助力角色池（{{ assistPlan.assistPool.length }}）
                 </n-button>
+                <n-button
+                  size="small"
+                  type="primary"
+                  @click="showShareAssistModal = true"
+                >
+                  打开助力界面
+                </n-button>
               </n-space>
             </n-tab-pane>
             <n-tab-pane name="resource" tab="资源">
@@ -3558,6 +3565,20 @@
         </n-button>
       </div>
     </n-modal>
+    <!-- 怪异塔助力界面（怪异塔栏目的「打开助力界面」按钮打开）
+         display-directive="show" 让内容常驻：关掉弹窗不会丢掉执行日志和进行中的状态 -->
+    <n-modal
+      v-model:show="showShareAssistModal"
+      preset="card"
+      title="怪异塔助力"
+      style="width: 1100px; max-width: 94vw"
+      display-directive="show"
+    >
+      <!-- 内容高于视口时整体可滚，避免小屏上弹窗顶出屏幕 -->
+      <div style="max-height: 76vh; overflow: auto">
+        <WeirdTowerShareCard embedded />
+      </div>
+    </n-modal>
   </div>
 </template>
 
@@ -3612,6 +3633,7 @@ import {
   writeAssistPlan,
 } from "@/stores/weirdTowerAssist";
 import { getWeirdTowerCycleKey } from "@/utils/weirdTowerShareWindow.js";
+import WeirdTowerShareCard from "@/components/cards/WeirdTowerShareCard.vue";
 
 // Import batch task modules
 import {
@@ -3677,6 +3699,8 @@ const weirdTowerMaxClimb = ref(DEFAULT_WEIRD_TOWER_MAX_CLIMB);
 
 // —— 怪异塔助力：批量日常页的 3 个按钮（关系表见 docs/weird-tower-share-assist-design.md §3） ——
 const assistPlan = computed(() => normalizeAssistPlan(weirdTowerAssistPlan.value));
+/** 「打开助力界面」弹窗（关掉不销毁内容，执行日志与进行中的状态都保留） */
+const showShareAssistModal = ref(false);
 
 /** token → 稳定身份键（serverId:roleId）；缺 serverId/roleId 时返回 null，无法持久化 */
 const toAssistKey = (token) =>

@@ -1,8 +1,11 @@
 <template>
-  <div class="weird-tower-share-card">
+  <div
+    class="weird-tower-share-card"
+    :class="{ 'is-embedded': embedded }"
+  >
     <div class="wt-head">
       <div class="wt-head-main">
-        <h3>怪异塔助力</h3>
+        <h3 v-if="!embedded">怪异塔助力</h3>
         <p class="wt-head-sub">{{ windowState.reason }}</p>
       </div>
       <n-tag :type="windowTagType" size="small" round>{{ windowTagText }}</n-tag>
@@ -59,7 +62,7 @@
         </div>
         <div v-if="!plan.receivers.length" class="wt-empty">
           还没有接受助力角色。<br />
-          到「批量日常」页面选中角色，再点怪异塔栏目的「设为接受助力角色」。
+          先在左侧勾选角色，再点「怪异塔」栏目里的「设为接受助力角色」。
         </div>
         <n-scrollbar v-else class="wt-scroll">
           <div
@@ -183,6 +186,15 @@ const MAX_CONCURRENT_CONNECTIONS = 2;
 const COMMAND_TIMEOUT_MS = 10000;
 /** 等连接就绪的上限 */
 const CONNECT_TIMEOUT_MS = 12000;
+
+/**
+ * embedded = true：去掉自带的白底 / 阴影 / 内边距，用于嵌进弹窗
+ * （弹窗自带卡片外观，否则会出现"卡片套卡片"）。
+ */
+const props = defineProps({
+  embedded: { type: Boolean, default: false },
+});
+const embedded = computed(() => props.embedded);
 
 const tokenStore = useTokenStore();
 const message = useMessage();
@@ -796,6 +808,23 @@ async function executeAssignments(assignments) {
   color: var(--text-tertiary, #999);
   margin-right: 6px;
   font-variant-numeric: tabular-nums;
+}
+
+/* 嵌入弹窗时：去掉自带卡片外观（弹窗自带），并给滚动区更多高度 */
+.weird-tower-share-card.is-embedded {
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  padding: 0;
+}
+
+.is-embedded .wt-scroll {
+  max-height: 340px;
+}
+
+/* 必须排在 .wt-scroll 之后：同优先级下后者生效 */
+.is-embedded .wt-scroll-logs {
+  max-height: 220px;
 }
 
 @media (max-width: 768px) {
