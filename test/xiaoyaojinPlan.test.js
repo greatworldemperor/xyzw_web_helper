@@ -193,7 +193,11 @@ test("完整计划：自动探测 + 派生同族 ID + 清单汇总", () => {
   const plan = buildXiaoyaojinPlan(
     activityResponse(
       { 2609191: buildWarOrderInfo({ completeOverrides: { [missionId(1)]: 1 } }) },
-      { "26091941": { record: { 26091941: 1 } }, "2609195": { record: { 1: 1789754264 } } },
+      // 真实结构（取自抓包）：外层键 = 活动实例 ID，商品号是礼包 record 里的内层键
+      {
+        "2609194": { record: { 26091941: 1 }, task: {}, isBought: false },
+        "2609195": { record: { 1: 1789754264 }, task: {}, isBought: false },
+      },
     ),
     { now: CAPTURE_NOW },
   );
@@ -202,17 +206,57 @@ test("完整计划：自动探测 + 派生同族 ID + 清单汇总", () => {
   assert.equal(plan.source, "auto");
   assert.equal(plan.warOrderActivityId, "2609191");
   assert.equal(plan.ageDays, 0);
+  assert.equal(plan.ids.giftActivityId, "2609194");
   assert.equal(plan.ids.giftGoodsId, "26091941");
   assert.equal(plan.ids.signActivityId, "2609195");
   assert.deepEqual(
-    { gift: plan.commonConfirmed.gift, sign: plan.commonConfirmed.sign },
-    { gift: true, sign: true },
+    {
+      gift: plan.commonConfirmed.gift,
+      sign: plan.commonConfirmed.sign,
+      giftBought: plan.commonConfirmed.giftBought,
+      signDays: plan.commonConfirmed.signDays,
+    },
+    { gift: true, sign: true, giftBought: true, signDays: [1] },
   );
   assert.deepEqual(plan.commonConfirmed.keys.slice().sort(), [
-    "26091941",
+    "2609194",
     "2609195",
   ]);
   assert.equal(plan.dailyClaims.filter((item) => item.completed).length, 1);
+});
+
+test("commonActivityInfo 嵌套语义：外层按活动 ID 查（写错成 goodsId 会永远查不到）", () => {
+  // 礼包活动已推送但本期未领：外层键仍是 2609194，record 为空
+  const notBought = buildXiaoyaojinPlan(
+    activityResponse(
+      { 2609191: buildWarOrderInfo() },
+      { "2609194": { record: {}, task: {}, isBought: false } },
+    ),
+    { now: CAPTURE_NOW },
+  );
+  assert.equal(notBought.commonConfirmed.gift, true);
+  assert.equal(notBought.commonConfirmed.giftBought, false);
+
+  // 只推送了 goodsId 当作外层键（错误结构）→ 不应被认成「礼包活动已确认」
+  const wrongShape = buildXiaoyaojinPlan(
+    activityResponse(
+      { 2609191: buildWarOrderInfo() },
+      { "26091941": { record: { 26091941: 1 } } },
+    ),
+    { now: CAPTURE_NOW },
+  );
+  assert.equal(wrongShape.commonConfirmed.gift, false);
+  assert.equal(wrongShape.commonConfirmed.giftBought, false);
+
+  // 服务端还没推送任何 commonActivityInfo → 两个确认位为 false，但计划仍成立（照常尝试）
+  const noPush = buildXiaoyaojinPlan(
+    activityResponse({ 2609191: buildWarOrderInfo() }),
+    { now: CAPTURE_NOW },
+  );
+  assert.equal(noPush.ok, true);
+  assert.equal(noPush.commonConfirmed.gift, false);
+  assert.equal(noPush.commonConfirmed.sign, false);
+  assert.deepEqual(noPush.commonConfirmed.signDays, []);
 });
 
 test("完整计划：手工指定活动实例时 source=manual 且优先于自动探测", () => {

@@ -355,6 +355,16 @@ export function buildXiaoyaojinPlan(response, options = {}) {
   const warOrderInfo = warOrderActivityInfo[warOrderActivityId] || null;
   const commonKeys = Object.keys(commonActivityInfo);
 
+  // ⚠️ commonActivityInfo 的**外层键是活动实例 ID**（2609194 / 2609195），
+  // goodsId(26091941) 只是礼包活动自己 record 里的内层键 —— 别拿 goodsId 去查外层，
+  // 实测抓包结构：{"2609194": {"record": {"26091941": 1}, "task": {}, "isBought": false}}
+  const giftRecord = commonActivityInfo[ids.giftActivityId]?.record || {};
+  const signRecord = commonActivityInfo[ids.signActivityId]?.record || {};
+  const recordDays = (record) =>
+    Object.keys(record || {})
+      .map((key) => Number(key))
+      .filter((value) => Number.isFinite(value));
+
   return {
     ok: true,
     source: manualWarOrderId ? "manual" : "auto",
@@ -365,10 +375,14 @@ export function buildXiaoyaojinPlan(response, options = {}) {
     warOrderInfo,
     dailyClaims: listPendingDailyClaims(warOrderInfo),
     passRewards: summarizePassRewards(warOrderInfo),
-    // commonActivityInfo 是服务端在状态变化时推送的分片；命中即为该 ID 正确的强证据
+    // commonActivityInfo 是服务端推送的状态分片；键存在即为「该派生 ID 正确」的强证据
     commonConfirmed: {
-      gift: commonKeys.includes(ids.giftGoodsId),
+      gift: commonKeys.includes(ids.giftActivityId),
       sign: commonKeys.includes(ids.signActivityId),
+      /** 一次性礼包本期是否已领（服务端 record 里已有该商品记录） */
+      giftBought: Number(giftRecord[ids.giftGoodsId]) >= 1,
+      /** 7 天登录已记录的日期序号（1 起） */
+      signDays: recordDays(signRecord),
       keys: commonKeys,
     },
   };

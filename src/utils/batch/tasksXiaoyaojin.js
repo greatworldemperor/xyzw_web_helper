@@ -125,7 +125,13 @@ export function createTasksXiaoyaojin(deps) {
         plan.source === "manual"
           ? "手工指定"
           : `自动探测，开启于 ${plan.ageDays} 天前`
-      }），签到 ${plan.ids.signActivityId} / 礼包 ${plan.ids.giftGoodsId}`,
+      }），签到 ${plan.ids.signActivityId}${
+        plan.commonConfirmed.sign
+          ? `（已记录 ${plan.commonConfirmed.signDays.length} 天）`
+          : ""
+      } / 礼包 ${plan.ids.giftGoodsId}${
+        plan.commonConfirmed.giftBought ? "（本期已领）" : ""
+      }`,
     );
     if (plan.passRewards.pending > 0) {
       log(
@@ -202,6 +208,12 @@ export function createTasksXiaoyaojin(deps) {
 
   /** 2) 一次性奖励：免费礼包 activity_commonbuygoods { goodsId } */
   const claimOneTimeGift = async ({ tokenId, token, plan }) => {
+    // 服务端 record 已记录该商品 → 本期已领，直接跳过（省一次请求 + 一条误导性的失败日志）
+    if (plan.commonConfirmed?.giftBought) {
+      log(token.name, "一次性奖励本期已领取（服务端记录），跳过");
+      return;
+    }
+
     try {
       const response = await tokenStore.sendMessageWithPromise(
         tokenId,

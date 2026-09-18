@@ -7963,13 +7963,23 @@ const inspectXiaoyaojinActivity = async () => {
       });
       return;
     }
+    const giftState = plan.commonConfirmed.giftBought
+      ? "本期已领"
+      : plan.commonConfirmed.gift
+        ? "可领"
+        : "推送中未见（将直接尝试领取）";
     addLog({
       time: new Date().toLocaleTimeString(),
       message:
-        `${tokenName} 逍遥津活动实例 ${plan.warOrderActivityId}（${plan.source === "manual" ? "手工指定" : `开启于 ${plan.ageDays} 天前`}）；` +
-        `签到 ${plan.ids.signActivityId}（推送中${plan.commonConfirmed.sign ? "已" : "未"}确认）/ ` +
-        `礼包 ${plan.ids.giftGoodsId}（推送中${plan.commonConfirmed.gift ? "已" : "未"}确认）；` +
-        `每日任务待领 ${plan.dailyClaims.filter((i) => i.completed).length} 个 / 未达成 ${plan.dailyClaims.filter((i) => !i.completed).length} 个`,
+        `${tokenName} 逍遥津活动实例 ${plan.warOrderActivityId}` +
+        `（${plan.source === "manual" ? "手工指定" : `开启于 ${plan.ageDays} 天前`}）；` +
+        `签到活动 ${plan.ids.signActivityId}` +
+        (plan.commonConfirmed.sign
+          ? `（已记录第 ${plan.commonConfirmed.signDays.join("/") || "?"} 天）`
+          : "（推送中未见，将直接尝试领取）") +
+        `；礼包活动 ${plan.ids.giftActivityId} / 商品 ${plan.ids.giftGoodsId}（${giftState}）；` +
+        `每日任务待领 ${plan.dailyClaims.filter((item) => item.completed).length} 个 / ` +
+        `未达成 ${plan.dailyClaims.filter((item) => !item.completed).length} 个`,
       type: "info",
     });
   } catch (error) {
