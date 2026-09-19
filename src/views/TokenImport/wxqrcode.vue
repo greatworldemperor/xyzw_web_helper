@@ -130,7 +130,7 @@ import {
   DownloadOutline,
 } from "@vicons/ionicons5";
 import { NIcon, useMessage, NButton, NForm, NFormItem, NInput } from "naive-ui";
-import { getTokenId, transformToken, getServerList } from "@/utils/token";
+import { getTokenId, getServerList } from "@/utils/token";
 import useIndexedDB from "@/hooks/useIndexedDB";
 import { g_utils } from "@/utils/bonProtocol";
 import { useTokenStore } from "@/stores/tokenStore";
@@ -212,7 +212,8 @@ const addSelectedRole = async (
     newData.serverId = roleInfo.serverId; // 确保类型一致
     const newBinBuffer = g_utils.encode(newData) as ArrayBuffer;
     const tokenId = getTokenId(newBinBuffer);
-    const roleToken = await transformToken(newBinBuffer);
+    // role token 生命周期很短，导入时不预取：只保存 BIN，token 留空，使用时按需刷新
+    const roleToken = "";
     const roleName = roleInfo.name || `角色_${roleInfo.roleId}`;
 
     // 刷新indexDB数据库token数据 (保存原始bin)

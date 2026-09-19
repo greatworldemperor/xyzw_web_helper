@@ -35,7 +35,9 @@
           <div>
             <strong>角色名称:</strong> {{ role.name || "未命名角色" }}<br />
             <strong>Token:</strong>
-            <span style="word-break: break-all">{{ role.token }}</span><br />
+            <span style="word-break: break-all">{{
+              role.token || "导入不预取，使用时自动刷新"
+            }}</span><br />
             <strong>服务器:</strong> {{ role.server || "未指定" }}<br />
             <strong>角色序号:</strong> {{ role.roleIndex }}
           </div>
