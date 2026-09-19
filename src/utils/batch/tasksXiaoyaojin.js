@@ -23,8 +23,12 @@
 import {
   XIAOYAOJIN_ALL_STEPS,
   XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
+  XIAOYAOJIN_POINTS_ITEM_ID,
   buildXiaoyaojinPlan,
+  listIssuedPassTiers,
   resolveLotteryDraws,
+  resolvePassTierCount,
+  resolvePassTierMissionId,
 } from "../xiaoyaojinPlan.js";
 
 const nowText = () => new Date().toLocaleTimeString();
@@ -229,6 +233,27 @@ export function createTasksXiaoyaojin(deps) {
   };
 
   /**
+   * 读战令积分（道具 5282 的数量；截图右下角那个数）
+   * @returns {number|null} 读不到（字段缺失 / 请求失败）返回 null → 调用方回退全量扫描
+   */
+  const readPoints = async (tokenId, tokenName) => {
+    let roleInfo;
+    try {
+      roleInfo = await sendRoleInfo(tokenId);
+    } catch (error) {
+      log(tokenName, `读取战令积分失败：${errorText(error)}`, "warning");
+      return null;
+    }
+    const role = roleInfo?.role || roleInfo?.data?.role || {};
+    const rawQuantity = role?.items?.[XIAOYAOJIN_POINTS_ITEM_ID]?.quantity;
+    if (rawQuantity === undefined || rawQuantity === null) {
+      return null; // ⚠️ 不能把 undefined 当 0（那会被误判成「0 档」而漏领）
+    }
+    const value = Number(rawQuantity);
+    return Number.isFinite(value) ? value : null;
+  };
+
+  /**
    * 1b) 战令奖励宝箱：activity_warorderrewardclaim { actId } —— 一键领取
    *
    * 服务端一次发完所有当前可领的宝箱（实测两次调用分别给 5283×1 + 10002×400 与 5283×2，
@@ -257,16 +282,54 @@ export function createTasksXiaoyaojin(deps) {
   };
 
   /**
-   * 1c) 战令等级奖励（序号 41+）：**与每日任务共用 `activity_warordertaskclaim` 和 `taskClaimed` 字段**
+   * 1c) 战令等级奖励（档位奖励）
    *
-   * 本地只按「`complete > 0` 且 `taskClaimed !== true`」圈候选，**是否真达标交给服务端裁定**
-   * （未达标返回 700010 / 已领返回 700020）→ 失败只计数、不逐条刷日志。
-   * 逐个试是为了对齐服务端权威判定（`complete` 是进度值，达标阈值在客户端配置里，本地拿不到）。
+   * **主力路径：积分驱动**（master 规则：每 1000 积分领一档）
+   *   积分 = `role.items[5282].quantity`；档 N 的 missionId = `actId` + (46 + N)，即档 1 = `...147`。
+   *   实证：两账号积分都是 3100 → 恰好领了 `147/148/149` 三个连续 ID = 3 档，`150` 是未解锁的第 4 档。
+   *   → 候选 = 档 1..floor(积分/1000) 中未领的，通常只有几次请求（不再盲试 26 个）。
+   *
+   * **兜底路径：全量扫描**（读不到积分时用）
+   *   按 `complete > 0` 且 `taskClaimed !== true` 圈候选，逐个交服务端裁定（慢但不会漏）。
+   *
+   * 两条路径都**不购买任何东西**，失败（未达成/已领/付费轨未解锁）只按错误码汇总计数。
    */
   const claimPassRewards = async ({ tokenId, token, plan }) => {
-    const pendingIds = plan.passRewards?.pendingIds || [];
-    if (pendingIds.length === 0) {
-      log(token.name, "没有待领取的战令等级奖励");
+    const points = await readPoints(tokenId, token.name);
+
+    let candidates;
+    if (points !== null) {
+      const issued = listIssuedPassTiers(plan.warOrderInfo, {
+        actId: plan.warOrderActivityId,
+        points,
+      });
+      candidates = issued.map((item) => ({
+        missionId: item.missionId,
+        label: `${item.tier} 档`,
+      }));
+      const tierCount = resolvePassTierCount(points);
+      const range =
+        tierCount > 0
+          ? `${resolvePassTierMissionId(plan.warOrderActivityId, 1).slice(-3)}~${resolvePassTierMissionId(plan.warOrderActivityId, tierCount).slice(-3)}`
+          : "无";
+      log(
+        token.name,
+        `战令积分 ${points} → 已解锁 ${tierCount} 档（${range}），待领 ${candidates.length} 个（精确模式）`,
+      );
+    } else {
+      candidates = (plan.passRewards?.pendingIds || []).map((id) => ({
+        missionId: id,
+        label: `${String(id).slice(-3)}`,
+      }));
+      log(
+        token.name,
+        `读不到战令积分，改用全量扫描：${candidates.length} 个候选（较慢，且含未解锁的付费轨）`,
+        "warning",
+      );
+    }
+
+    if (candidates.length === 0) {
+      log(token.name, "战令等级奖励没有待领取项");
       return;
     }
 
@@ -274,7 +337,7 @@ export function createTasksXiaoyaojin(deps) {
     let skipped = 0;
     /** 按服务端错误码归类跳过原因，便于看清「这些候选到底为什么不能领」 */
     const skipReasons = new Map();
-    for (const [index, missionId] of pendingIds.entries()) {
+    for (const [index, item] of candidates.entries()) {
       if (shouldStop.value) break;
       try {
         const response = await tokenStore.sendMessageWithPromise(
@@ -282,14 +345,14 @@ export function createTasksXiaoyaojin(deps) {
           "activity_warordertaskclaim",
           {
             actId: Number(plan.warOrderActivityId),
-            missionId: Number(missionId),
+            missionId: Number(item.missionId),
           },
           8000,
         );
         claimed++;
         log(
           token.name,
-          `战令等级奖励 ${String(missionId).slice(-3)} 领取成功（${rewardText(response)}）`,
+          `战令等级奖励 ${item.label} 领取成功（${rewardText(response)}）`,
           "success",
         );
       } catch (error) {
@@ -297,7 +360,7 @@ export function createTasksXiaoyaojin(deps) {
           // 限流不是失败：剩下的下次再领，别把「没领到」记成「已领完」
           log(
             token.name,
-            `触发限流(400340)，战令等级奖励剩余 ${pendingIds.length - index} 个下次再领`,
+            `触发限流(400340)，战令等级奖励剩余 ${candidates.length - index} 个下次再领`,
             "warning",
           );
           break;
@@ -317,7 +380,7 @@ export function createTasksXiaoyaojin(deps) {
       .join("、");
     log(
       token.name,
-      `战令等级奖励：${pendingIds.length} 个候选中成功 ${claimed} 个` +
+      `战令等级奖励：${candidates.length} 个候选中成功 ${claimed} 个` +
         (skipped > 0 ? `，跳过 ${skipped} 个${reasonText ? `：${reasonText}` : ""}` : ""),
     );
   };
