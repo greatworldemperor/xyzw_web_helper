@@ -1016,6 +1016,7 @@ import { transformToken, scheduleAuthUserRequest } from "@/utils/token";
 import { $emit } from "@/stores/events/index.ts";
 import useIndexedDB from "@/hooks/useIndexedDB";
 import { prepareMultiGameLaunch } from "@/utils/gameLauncher";
+import { copyToClipboard } from "@/utils/clubBattleUtils";
 import {
   pruneTokenSelection,
   selectAllTokenIds,
@@ -2005,10 +2006,10 @@ const copyToken = async (token) => {
       message.warning("该角色尚未缓存 Token（首次使用时自动刷新），暂无可复制内容");
       return;
     }
-    await navigator.clipboard.writeText(token.token);
+    await copyToClipboard(token.token);
     message.success("Token已复制到剪贴板");
   } catch (error) {
-    message.error("复制失败");
+    message.error("复制失败: " + (error?.message || "未知错误"));
   }
 };
 

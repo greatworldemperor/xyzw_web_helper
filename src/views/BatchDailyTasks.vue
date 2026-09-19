@@ -3718,6 +3718,7 @@ import {
   writeAssistPlan,
 } from "@/stores/weirdTowerAssist";
 import { getWeirdTowerCycleKey } from "@/utils/weirdTowerShareWindow.js";
+import { copyToClipboard } from "@/utils/clubBattleUtils";
 import WeirdTowerShareCard from "@/components/cards/WeirdTowerShareCard.vue";
 
 // Import batch task modules
@@ -7159,7 +7160,7 @@ watch(autoScrollLog, (newValue) => {
   }
 });
 
-const copyLogs = () => {
+const copyLogs = async () => {
   if (logs.value.length === 0) {
     message.warning("没有可复制的日志");
     return;
@@ -7167,14 +7168,12 @@ const copyLogs = () => {
   const logText = logs.value
     .map((log) => `${log.time} ${log.message}`)
     .join("\n");
-  navigator.clipboard
-    .writeText(logText)
-    .then(() => {
-      message.success("日志已复制到剪贴板");
-    })
-    .catch((err) => {
-      message.error("复制日志失败: " + err.message);
-    });
+  try {
+    await copyToClipboard(logText);
+    message.success("日志已复制到剪贴板");
+  } catch (err) {
+    message.error("复制日志失败: " + (err?.message || "未知错误"));
+  }
 };
 
 const getXianMasterResultText = () => {
@@ -7196,7 +7195,7 @@ const getXianMasterResultText = () => {
 
 const copyXianMasterResult = async () => {
   try {
-    await navigator.clipboard.writeText(getXianMasterResultText());
+    await copyToClipboard(getXianMasterResultText());
     message.success("咸主检测结果已复制到剪贴板");
   } catch (error) {
     message.error(`复制咸主检测结果失败: ${error?.message || "未知错误"}`);

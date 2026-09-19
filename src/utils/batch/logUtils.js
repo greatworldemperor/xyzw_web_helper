@@ -2,6 +2,8 @@
  * 日志管理工具
  */
 
+import { copyToClipboard } from "../clubBattleUtils";
+
 /**
  * 创建日志管理器
  * @param {object} options - 配置选项
@@ -62,7 +64,7 @@ export function createLogManager({ logs, logContainer, autoScrollLog, batchSetti
    * 复制日志
    * @param {function} message - NaiveUI message函数
    */
-  const copyLogs = (message) => {
+  const copyLogs = async (message) => {
     if (logs.value.length === 0) {
       message.warning("没有可复制的日志");
       return;
@@ -70,14 +72,12 @@ export function createLogManager({ logs, logContainer, autoScrollLog, batchSetti
     const logText = logs.value
       .map((log) => `${log.time} ${log.message}`)
       .join("\n");
-    navigator.clipboard
-      .writeText(logText)
-      .then(() => {
-        message.success("日志已复制到剪贴板");
-      })
-      .catch((err) => {
-        message.error("复制日志失败: " + err.message);
-      });
+    try {
+      await copyToClipboard(logText);
+      message.success("日志已复制到剪贴板");
+    } catch (err) {
+      message.error("复制日志失败: " + (err?.message || "未知错误"));
+    }
   };
 
   return {
