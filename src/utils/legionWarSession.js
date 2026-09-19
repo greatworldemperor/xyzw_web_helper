@@ -18,6 +18,9 @@ import {
   roleIdToCid,
   getRole,
   getTeamMemberCids,
+  getTeamLimitTime,
+  isMemberSettled,
+  getUnsettledMembers,
   getActivityWindow,
   summarizeSnapshot,
 } from "./legionWarState";
@@ -293,10 +296,11 @@ export class LegionWarSession {
    * 邀请组队。
    * 服务端会向全场广播 War_InviteJoinTeamResp（ack 为 0），所以只能靠
    * 「自己队伍的 mCodeIds 是否包含目标」来确认。
-   * ⚠️ master 实战观察（2026-09-19）：邀请后队员确认约需 8 秒才真正入队，
-   * 默认等待必须大于它（12s），否则会误报超时并带着未确认队伍登场。
+   * ⚠️ 2026-09-20 修正：mCodeIds 含目标只是「占位」，占位 ≠ 正式入队。
+   *   真正就位 = 在名单中 且 过了准备期（teamLimitTime = 邀请 +8 秒，就位后消失）。
+   *   含未就位成员时**整个队伍无法登场** ⇒ 必须等就位，默认等待放宽到 15 秒。
    */
-  async inviteJoinTeam(targetCodeId, timeoutMs = 12000) {
+  async inviteJoinTeam(targetCodeId, timeoutMs = 15000) {
     this.client.send("war_invitejointeam", {
       battlefieldId: this.battlefieldId,
       targetCodeId,
@@ -304,7 +308,7 @@ export class LegionWarSession {
     const target = Number(targetCodeId);
     const myCid = this.state.roleCodeId;
     const ok = await this.waitForState(
-      (s) => getTeamMemberCids(s, myCid).includes(target),
+      (s) => isMemberSettled(s, myCid, target),
       timeoutMs,
     );
     return {
@@ -312,6 +316,20 @@ export class LegionWarSession {
       members: getTeamMemberCids(this.state, myCid),
       role: getRole(this.state, target),
     };
+  }
+
+  /** 邀请失败原因推断（基于状态，不依赖无法归因的广播错误码） */
+  describeInviteFailure(targetCodeId) {
+    const myCid = this.state.roleCodeId;
+    const members = getTeamMemberCids(this.state, myCid);
+    const role = getRole(this.state, targetCodeId);
+    if (!members.includes(Number(targetCodeId))) {
+      // 常见服务端原因：3000430 不在观战状态 / 3000440 已被邀请 / 3000460 队伍已满
+      return `未进入名单（可能：不在观战状态 / 已被别人邀请 / 对方队伍已满；对方 state=${role?.state || "?"}）`;
+    }
+    const t = getTeamLimitTime(this.state, targetCodeId);
+    if (t !== null) return `仍在准备期（到期 +${Math.max(0, t - Math.floor(Date.now() / 1000))}s）`;
+    return "准备期结束后被移出（未确认入队）";
   }
 
   /* ------------------------------ 查询辅助 ------------------------------ */

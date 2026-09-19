@@ -10,7 +10,7 @@
  * 连接排队、超时重连、日志、停止开关，不重复造轮子。
  */
 import { LegionWarSession, buildLegionWarUrl } from "@/utils/legionWarSession";
-import { getInviteReadiness, getTeamMemberCids } from "@/utils/legionWarState";
+import { getInviteReadiness, getTeamMemberCids, getUnsettledMembers } from "@/utils/legionWarState";
 import * as cfg from "@/utils/saltFieldConfig";
 
 /** 战场连接槽位（与批量主连接的 maxActive 分开限流） */
@@ -533,9 +533,10 @@ export function createTasksSaltField(deps) {
         const inv = await probe.session.inviteJoinTeam(cId);
         const r = inv.role;
         if (inv.ok) {
-          log(`${t} 邀请 cId ${cId} ${r?.name || roleId} ✓（队伍 ${inv.members.length} 人）`, "success");
+          log(`${t} 邀请 cId ${cId} ${r?.name || roleId} ✓ 已就位（队伍 ${inv.members.length} 人）`, "success");
         } else {
-          log(`${t} 邀请 cId ${cId} ${r?.name || roleId} 未确认（队伍 ${inv.members.length} 人）`, "warning");
+          const why = probe.session.describeInviteFailure?.(cId) || "未知原因";
+          log(`${t} 邀请 cId ${cId} ${r?.name || roleId} 未就位：${why}（队伍 ${inv.members.length} 人）`, "warning");
         }
         return inv;
       };
@@ -606,25 +607,34 @@ export function createTasksSaltField(deps) {
           }
           const { roleId, cId } = targets[i];
           const inv = await doInvite(roleId, cId);
-          if (!inv.ok) result.failed.push({ roleId, cId, reason: "邀请未确认（超时）" });
+          if (!inv.ok) {
+            const why = probe.session.describeInviteFailure?.(cId) || "邀请未就位（超时）";
+            result.failed.push({ roleId, cId, reason: why });
+          }
           if (i < targets.length - 1) await sleep(gap);
         }
-        // 必须全部确认入队才能登场（master 2026-09-19：队友未完成确认时登场会失败）
+        // 必须「全员正式就位」才能登场（占位≠就位；含未就位成员时全队无法登场）
         if (targets.length && !shouldStop?.value) {
-          const want = new Set(targets.map((x) => x.cId));
+          const want = targets.map((x) => x.cId);
           result.stage = "confirm";
-          log(`${t} 等待全部邀请确认入队（实战观察约 8 秒/人）…`, "info");
-          const confirmed = await probe.session.waitForState(
-            (s) => [...want].every((c) => getTeamMemberCids(s, myCid).includes(c)),
+          log(`${t} 等待全员正式就位（每人邀请后约 8 秒准备期）…`, "info");
+          const settled = await probe.session.waitForState(
+            (s) => {
+              const u = getUnsettledMembers(s, myCid, want);
+              return u.notInTeam.length === 0 && u.stillPreparing.length === 0;
+            },
             30000,
             300,
           );
-          if (!confirmed) {
-            const have = getTeamMemberCids(probe.session.state, myCid);
-            const missing = [...want].filter((c) => !have.includes(c));
-            throw new Error(`等待邀请确认超时（30s），缺失 cId ${missing.join(",")}——按规则跳过该队伍`);
+          if (!settled) {
+            const u = getUnsettledMembers(probe.session.state, myCid, want);
+            const detail = [
+              u.notInTeam.length ? `未入名单 cId ${u.notInTeam.join(",")}` : "",
+              u.stillPreparing.length ? `仍在准备期 cId ${u.stillPreparing.join(",")}（还需 ${u.readySecLeft}s）` : "",
+            ].filter(Boolean).join("；");
+            throw new Error(`全员就位超时（30s）：${detail}——跳过该队伍`);
           }
-          log(`${t} 全部邀请已确认入队，开始登场`, "success");
+          log(`${t} 全员已正式就位，开始登场`, "success");
         }
         result.expectedMembers = 1 + targets.length;
       } else {

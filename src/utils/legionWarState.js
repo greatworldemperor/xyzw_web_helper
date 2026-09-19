@@ -157,6 +157,56 @@ export function getTeamMemberCids(state, leaderCid) {
   return Array.isArray(team?.mCodeIds) ? team.mCodeIds.map(Number) : [];
 }
 
+/**
+ * 取某队员的「准备期截止时间戳」teamLimitTime（没有/已过准备期返回 null）。
+ * 2026-09-19 首战实锤：邀请响应里该字段 = 邀请时刻 + 8 秒（260 样本中位 8s），
+ * 正式入队后字段消失。
+ */
+export function getTeamLimitTime(state, cid) {
+  const r = getRole(state, cid);
+  const t = Number(r?.teamLimitTime || 0);
+  return t > 0 ? t : null;
+}
+
+/**
+ * 某队员是否已「正式入队」（就位）：
+ *   在队伍名单中 且（无 teamLimitTime 或 已过准备期）
+ * ⚠️ mCodeIds 满员只是「占位」，占位 ≠ 正式入队；含未就位成员时全队无法登场。
+ */
+export function isMemberSettled(
+  state,
+  leaderCid,
+  cid,
+  nowSec = Math.floor(Date.now() / 1000),
+  slackSec = 1,
+) {
+  const inTeam = getTeamMemberCids(state, leaderCid).includes(Number(cid));
+  if (!inTeam) return false;
+  const t = getTeamLimitTime(state, cid);
+  return t === null || nowSec >= t + slackSec;
+}
+
+/**
+ * 队伍里尚未就位的成员（用于登场前判定）：
+ * 返回 { notInTeam: number[], stillPreparing: number[], readySecLeft: number }
+ */
+export function getUnsettledMembers(state, leaderCid, memberCids, nowSec = Math.floor(Date.now() / 1000)) {
+  const members = getTeamMemberCids(state, leaderCid);
+  const notInTeam = [];
+  const stillPreparing = [];
+  let readySecLeft = 0;
+  for (const c of memberCids || []) {
+    const cid = Number(c);
+    if (!members.includes(cid)) { notInTeam.push(cid); continue; }
+    const t = getTeamLimitTime(state, cid);
+    if (t !== null && nowSec < t + 1) {
+      stillPreparing.push(cid);
+      readySecLeft = Math.max(readySecLeft, t + 1 - nowSec);
+    }
+  }
+  return { notInTeam, stillPreparing, readySecLeft };
+}
+
 /** 取某 battle 角色的当前状态（state / position / isOnline / power） */
 export function getRole(state, cid) {
   return state?.roles?.[String(cid)] || null;
