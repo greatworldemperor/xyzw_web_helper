@@ -83,6 +83,11 @@
                 <span class="team-row__dot" :class="statusClass(team)"></span>
                 <span class="team-row__name">{{ team.name }}</span>
                 <n-tag v-if="team.mode === 'wait'" size="tiny" type="info">等待</n-tag>
+                <span
+                  class="team-status"
+                  :class="teamStatus(team).cls"
+                  :title="teamStatusTitle(team)"
+                >{{ teamStatus(team).text }}</span>
                 <span class="chip chip--leader" :title="`roleId ${leaderRoleId(team)}`">
                   队长 cId {{ liveCid(team) ?? "—" }} · {{ leaderName(team) }}
                 </span>
@@ -170,6 +175,17 @@
                 <n-checkbox v-model:checked="autoScrollLog" size="small">自动滚动</n-checkbox>
                 <n-checkbox v-model:checked="filterErrorsOnly" size="small">只看错误</n-checkbox>
                 <n-tag v-if="errorCount > 0" size="small" type="error">{{ errorCount }} 个错误</n-tag>
+                <n-button
+                  size="small"
+                  :type="recording ? 'error' : 'default'"
+                  :ghost="recording"
+                  @click="toggleRecording"
+                >
+                  {{ recording ? `停止录制 (${recordedFrames.length})` : "开始录制" }}
+                </n-button>
+                <n-button size="small" :disabled="recordedFrames.length === 0" @click="downloadRecording">
+                  下载 WSS
+                </n-button>
                 <n-button size="small" @click="logs = []">清空</n-button>
               </div>
             </div>
@@ -343,7 +359,62 @@ const tasks = createTasksSaltField({
   tokenStore,
   addLog,
   message,
+  onWarFrame,
 });
+
+/* ------------------------------ WSS 帧录制 ------------------------------ */
+// 录战场 WS 收发帧（含全部 war_* 命令、服务端广播），下载为 jsonl 供协议研究
+const MAX_RECORDED = 8000;
+const recording = ref(false);
+const recordedFrames = ref([]);
+
+function onWarFrame(meta, frame) {
+  if (!recording.value) return;
+  recordedFrames.value.push({
+    ts: new Date().toISOString(),
+    dir: frame?.dir,
+    team: meta?.teamName,
+    legionId: meta?.legionId,
+    battlefieldId: meta?.battlefieldId,
+    cmd: frame?.cmd,
+    seq: frame?.seq,
+    ack: frame?.ack,
+    code: frame?.code,
+    error: frame?.error,
+    body: frame?.body,
+  });
+  if (recordedFrames.value.length > MAX_RECORDED) {
+    recordedFrames.value.splice(0, recordedFrames.value.length - MAX_RECORDED);
+  }
+}
+
+const toggleRecording = () => {
+  recording.value = !recording.value;
+  if (recording.value) {
+    recordedFrames.value = [];
+    addLog({ time: new Date().toLocaleTimeString(), message: "WSS 录制已开始（战场 WS 收发帧，心跳除外）", type: "info" });
+  } else {
+    addLog({ time: new Date().toLocaleTimeString(), message: `WSS 录制已停止，共 ${recordedFrames.value.length} 帧，可点「下载」保存`, type: "info" });
+  }
+};
+
+const downloadRecording = () => {
+  if (recordedFrames.value.length === 0) {
+    message?.warning?.("还没有录到任何帧");
+    return;
+  }
+  const dropBytes = (k, v) => (v instanceof Uint8Array ? `<bytes:${v.length}>` : v);
+  const lines = recordedFrames.value.map((r) => JSON.stringify(r, dropBytes));
+  const blob = new Blob([lines.join("\n") + "\n"], { type: "application/x-ndjson" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `saltfield-wss-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.jsonl`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+  addLog({ time: new Date().toLocaleTimeString(), message: `已下载 ${recordedFrames.value.length} 帧录制数据`, type: "success" });
+};
 
 /* ------------------------------ 派生 ------------------------------ */
 const reloadFromStorage = () => {
@@ -663,6 +734,7 @@ const runTeam = async (team) => {
           ...(liveByTeam.value[team.id] || {}),
           myCid: liveByTeam.value[team.id]?.myCid ?? null,
           teamMembers: r.teamMembers,
+          lastRun: r,
         },
       };
     }
@@ -679,11 +751,52 @@ const runAll = async () => {
   try {
     const results = await tasks.runSaltFieldTeams(null);
     lastRound.value = { ok: results.filter((r) => r.ok).length, total: results.length };
+    // 每队执行结果回写，供状态标签展示
+    liveByTeam.value = { ...liveByTeam.value };
+    for (const r of results) {
+      liveByTeam.value[r.teamId] = {
+        ...(liveByTeam.value[r.teamId] || {}),
+        lastRun: r,
+      };
+    }
     progressPercent.value = 100;
   } finally {
     runningTeamId.value = null;
     runningTeamLabel.value = "";
   }
+};
+
+/** 队伍状态标签：来自最近一次执行结果 + 战场状态快照（2026-09-16） */
+const teamStatus = (team) => {
+  if (runningTeamId.value === team.id) return { text: "执行中…", cls: "st--running" };
+  const run = liveByTeam.value[team.id]?.lastRun;
+  if (!run) return { text: "未执行", cls: "st--idle" };
+  if (run.error && !run.ok) return { text: "失败: " + String(run.error).slice(0, 16), cls: "st--err" };
+  const fs = run.finalState || {};
+  const leader = fs.leaderState;
+  if (leader && leader !== "watching") return { text: "已登场", cls: "st--ok" };
+  if ((fs.teamMembers?.length || 0) > 1) return { text: "已组队·未登场", cls: "st--team" };
+  const now = Math.floor(Date.now() / 1000);
+  const reviving = Object.values(fs.roles || {}).some((r) => Number(r.reviveTime || 0) > now);
+  if (reviving) return { text: "等待复活", cls: "st--wait" };
+  if (run.mode === "wait") return { text: "等待队员就位", cls: "st--wait" };
+  return { text: "未组队", cls: "st--wait" };
+};
+
+/** 悬停详情：各队员战场状态（含复活时间） */
+const teamStatusTitle = (team) => {
+  const run = liveByTeam.value[team.id]?.lastRun;
+  if (!run) return "尚未执行";
+  const fs = run.finalState || {};
+  const parts = [`队长 state=${fs.leaderState ?? "?"}`, `队伍 [${(fs.teamMembers || []).join(",")}]`];
+  for (const [cid, r] of Object.entries(fs.roles || {})) {
+    const extra = Number(r.reviveTime || 0) > Math.floor(Date.now() / 1000)
+      ? `（复活 ${new Date(Number(r.reviveTime) * 1000).toLocaleTimeString()}）`
+      : "";
+    parts.push(`cId ${cid}: ${r.state}${extra}`);
+  }
+  if (run.error) parts.push(`error=${run.error}`);
+  return parts.join("\n");
 };
 
 /** 批量机动补齐：本俱乐部内去重，先到先得 */
@@ -947,6 +1060,19 @@ onMounted(() => {
   font-weight: 500;
   min-width: 52px;
 }
+.team-status {
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.st--idle { background: #f2f3f5; color: #86909c; }
+.st--wait { background: #fff7e8; color: #d25f00; }
+.st--running { background: #e8f3ff; color: #2080f0; }
+.st--ok { background: #e8ffea; color: #00b42a; }
+.st--team { background: #e8f3ff; color: #2080f0; }
+.st--err { background: #ffece8; color: #f53f3f; }
 .chip {
   font-size: 12px;
   padding: 3px 8px;

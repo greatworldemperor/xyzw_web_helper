@@ -85,6 +85,8 @@ export function createTasksSaltField(deps) {
     tokenStore,
     addLog,
     message,
+    /** 战场 WS 帧录制钩子（页面注入）：(meta, {dir, cmd, ...}) => void */
+    onWarFrame = null,
   } = deps;
 
   const settings = () => cfg.getSettings();
@@ -284,12 +286,46 @@ export function createTasksSaltField(deps) {
       releaseBattlefieldSlot();
       throw new Error("Token 为空且自动刷新失败，请重新导入 BIN");
     }
+    const frameMeta = () => ({
+      teamId: team.id,
+      teamName: team.name,
+      legionId,
+      leaderTokenId: tokenId,
+      battlefieldId: info.battlefieldId,
+    });
     const session = new LegionWarSession({
       url: buildLegionWarUrl(freshToken.token, info.sid),
       battlefieldId: info.battlefieldId,
       heartbeatMs: 5000,
       onTimeout: (label) => logPrefix && log(`${t} 等待 ${label} 超时`, "warning"),
+      // 帧录制：recv 侧（含服务端广播与命令响应）
+      onFrame: (msg) => {
+        if (typeof onWarFrame !== "function") return;
+        try {
+          onWarFrame(frameMeta(), {
+            dir: "recv",
+            cmd: msg?.cmd || "?",
+            seq: msg?.seq,
+            ack: msg?.ack,
+            code: msg?.code,
+            error: msg?.error,
+            body: msg?.rawData,
+          });
+        } catch {
+          /* 录制失败不影响执行 */
+        }
+      },
     });
+    // 帧录制：send 侧（布阵/邀请/登场/快照轮询等）
+    if (typeof onWarFrame === "function") {
+      session.client.onSendFrame = (raw) => {
+        try {
+          onWarFrame(frameMeta(), { dir: "send", ...raw });
+        } catch {
+          /* ignore */
+        }
+      };
+    }
 
     try {
       await session.init();
@@ -689,6 +725,33 @@ export function createTasksSaltField(deps) {
         } else {
           log(`${t} 校验通过：${result.teamMembers.length} 人 [${result.teamMembers.join(",")}]`, "success");
         }
+      }
+
+      // 战场状态快照：供页面展示队伍状态（已登场/已组队/未组队/等待复活）与实战数据采集
+      try {
+        const st = probe.session.state;
+        const watchCids = [myCid, ...new Set([...(result.invited || []), ...targets.map((x) => x.cId)])];
+        const roles = {};
+        for (const c of watchCids) {
+          const r = st.roles?.[String(c)];
+          if (r) {
+            roles[c] = {
+              state: r.state,
+              position: r.position,
+              isOnline: r.isOnline,
+              dieTime: r.dieTime,
+              reviveTime: r.reviveTime,
+            };
+          }
+        }
+        result.finalState = {
+          myCid,
+          leaderState: st.roles?.[String(myCid)]?.state || null,
+          teamMembers: probe.session.teamMemberCids(myCid),
+          roles,
+        };
+      } catch {
+        /* 快照失败不影响结果 */
       }
     } catch (e) {
       result.error = e?.message || String(e);

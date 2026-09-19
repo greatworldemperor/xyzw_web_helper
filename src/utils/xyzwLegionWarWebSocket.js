@@ -544,9 +544,22 @@ export function registerDefaultCommands(reg) {
            })
          }
  
-         // 编码并发送
-         const bin = this.registry.encodePacket(raw)
-         this.socket?.send(bin)
+        // 编码并发送
+        const bin = this.registry.encodePacket(raw)
+        this.socket?.send(bin)
+        // 外部帧录制钩子（心跳不录）：body 已解码为业务对象，解不出时为 undefined
+        if (raw && raw.cmd !== 'war_ping' && typeof this.onSendFrame === 'function') {
+          try {
+            this.onSendFrame({
+              cmd: raw.cmd,
+              hint: raw.hint ?? 0,
+              ack: raw.ack ?? 0,
+              seq: raw.seq ?? 0,
+              time: raw.time,
+              body: this.decodeBodyForLog(raw.body) ?? undefined,
+            })
+          } catch (e) { /* 录制失败不影响发送 */ }
+        }
          if (this.showMsg || task.cmd === "heart_beat") {
            wsLogger.wsMessage('local', task.cmd, false)
            if (this.showMsg) {
