@@ -10,7 +10,7 @@
  * 连接排队、超时重连、日志、停止开关，不重复造轮子。
  */
 import { LegionWarSession, buildLegionWarUrl } from "@/utils/legionWarSession";
-import { getInviteReadiness } from "@/utils/legionWarState";
+import { getInviteReadiness, getTeamMemberCids } from "@/utils/legionWarState";
 import * as cfg from "@/utils/saltFieldConfig";
 
 /** 战场连接槽位（与批量主连接的 maxActive 分开限流） */
@@ -574,6 +574,23 @@ export function createTasksSaltField(deps) {
           const inv = await doInvite(roleId, cId);
           if (!inv.ok) result.failed.push({ roleId, cId, reason: "邀请未确认（超时）" });
           if (i < targets.length - 1) await sleep(gap);
+        }
+        // 等待邀请确认补齐（master 实战观察：确认约 8 秒；邀请超时≠失败，
+        // mCodeIds 可能稍后才补上——登场前最多再等 9 秒）
+        if (targets.length && !shouldStop?.value) {
+          const want = new Set(targets.map((x) => x.cId));
+          const confirmed = await probe.session.waitForState(
+            (s) => [...want].every((c) => getTeamMemberCids(s, myCid).includes(c)),
+            9000,
+            300,
+          );
+          if (!confirmed) {
+            const have = getTeamMemberCids(probe.session.state, myCid);
+            const missing = [...want].filter((c) => !have.includes(c));
+            log(`${t} 部分邀请 9 秒内未确认（cId ${missing.join(",")}），按现有进度登场`, "warning");
+          } else {
+            log(`${t} 全部邀请已确认入队`, "success");
+          }
         }
         result.expectedMembers = 1 + targets.length;
       } else {

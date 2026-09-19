@@ -282,8 +282,10 @@ export class LegionWarSession {
    * 邀请组队。
    * 服务端会向全场广播 War_InviteJoinTeamResp（ack 为 0），所以只能靠
    * 「自己队伍的 mCodeIds 是否包含目标」来确认。
+   * ⚠️ master 实战观察（2026-09-19）：邀请后队员确认约需 8 秒才真正入队，
+   * 默认等待必须大于它（12s），否则会误报超时并带着未确认队伍登场。
    */
-  async inviteJoinTeam(targetCodeId, timeoutMs = 6000) {
+  async inviteJoinTeam(targetCodeId, timeoutMs = 12000) {
     this.client.send("war_invitejointeam", {
       battlefieldId: this.battlefieldId,
       targetCodeId,
