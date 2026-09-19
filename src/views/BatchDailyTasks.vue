@@ -7977,7 +7977,7 @@ const inspectXiaoyaojinActivity = async () => {
   xiaoyaojinInspecting.value = true;
   try {
     await ensureConnection(tokenId);
-    const plan = await inspectXiaoyaojin(tokenId);
+    const plan = await inspectXiaoyaojin(tokenId, tokenName);
     if (!plan?.ok) {
       addLog({
         time: new Date().toLocaleTimeString(),
@@ -8003,10 +8003,27 @@ const inspectXiaoyaojinActivity = async () => {
         `；礼包活动 ${plan.ids.giftActivityId} / 商品 ${plan.ids.giftGoodsId}（${giftState}）；` +
         `每日任务待领 ${plan.dailyClaims.filter((item) => item.completed).length} 个 / ` +
         `未达成 ${plan.dailyClaims.filter((item) => !item.completed).length} 个；` +
-        `战令等级奖励可领 ${plan.passRewards.pending} 个` +
-        `（已解锁 ${plan.passRewards.unlocked}/${plan.passRewards.total}）`,
+        `战令候选条目 ${plan.passRewards.pending} 个（complete>0，含未解锁档）`,
       type: "info",
     });
+
+    // 战令档位进度：积分 / 可达档数 / 已领哪些 / 下一档还差多少（纯读，与 UI 显示一致）
+    const tiers = plan.passTiers;
+    if (tiers && tiers.points !== null) {
+      addLog({
+        time: new Date().toLocaleTimeString(),
+        message:
+          `${tokenName} 战令：积分 ${tiers.points} → 可达 ${tiers.reachable} 档；` +
+          `已领档 ${tiers.claimedTiers.length > 0 ? tiers.claimedTiers.join("/") : "无"}` +
+          (tiers.pendingTiers.length > 0
+            ? `；待领档 ${tiers.pendingTiers.map((item) => item.tier).join("/")}`
+            : "") +
+          (tiers.nextTier
+            ? `；下一档 ${tiers.nextTier.tier}（${tiers.nextTier.missionId.slice(-3)}）还差 ${tiers.nextTier.pointsNeeded} 分`
+            : "；已到最高档"),
+        type: tiers.pendingTiers.length > 0 ? "success" : "info",
+      });
+    }
   } catch (error) {
     addLog({
       time: new Date().toLocaleTimeString(),

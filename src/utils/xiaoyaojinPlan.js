@@ -46,27 +46,90 @@ export const XIAOYAOJIN_GIFT_GOODS_SUFFIX = "1";
 export const XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID = 5283;
 
 /**
- * 战令「积分」道具 ID（master 截图右下角那个数）
+ * 战令「积分」道具 ID（= master 截图右下角那个数）
  *
- * ⚠️ **结论已修正（2026-09-19 16:57）**：不能用它算档数来自动筛选候选。
- * - 两份抓包里 `role.items[5282]` **都是 3100**（每日任务 +300 / 档位奖励 +400 给的道具）
- * - 但**两个账号各领了 4 个档位奖励**（`141/147/148/149`）→ 若积分真是 3100 就只能领 3 档 → 自相矛盾
- * - 说明 **5282 ≠ 档位积分解锁口径**（它只是奖励物品），或「领取」不只领档位
- * → 该常量仅用于**日志展示**，**绝不用于筛选候选**（筛选一律用 `complete > 0 && !taskClaimed` + 服务端裁定）
+ * 实证（2026-09-19）：`role.items[5282].quantity` 与 UI 上看得见的**总积分完全一致**（两账号都是 3100），
+ * 每日任务给 +300 / 档位奖励给 +400；`3100 = 3×1000 + 100` ↔ UI 第 4 档进度 `100/1000`。
+ * 注意：积分**不在** `warOrderActivityInfo` 里（那 13 个字段没有积分，`itemNum` 恒为 0）→ 只能从背包读。
  */
 export const XIAOYAOJIN_POINTS_ITEM_ID = 5282;
 
-/** 每多少积分解锁一档（master 口述：3100 分 → 3 档 + 第 4 档 100/1000）——仅供日志估算 */
+/** 每多少积分解锁一档（master：3100 分 → 3 档 + 第 4 档 100/1000） */
 export const XIAOYAOJIN_POINTS_PER_TIER = 1000;
 
 /**
- * 积分 → 已解锁档数（`floor(积分/1000)`；非法/非正数 → 0）。**仅用于日志/估算，不用于筛选候选。**
+ * 档位 → missionId 序号偏移：**档 1 = 序号 47**（missionId = `actId` + (46 + 档号)）
+ *
+ * 实证：UI 上 3100 分 = **3 档已领**，而抓包里 `taskClaimed` 恰好多出 `147 / 148 / 149` 三个连续 ID
+ * → 档1=147、档2=148、档3=149、档4=150（`150` 在 3100 分时未领 = 第 4 档还没到）✓
+ * ⚠️ 别把抓包里那 4 次领取全当档位：`141` 属于**另一类**奖励（`complete:4000`，与档位组的 21/1 不同量级），
+ * 它是客户端在同一次「领取」里顺带发的第 4 条命令。
  */
+export const XIAOYAOJIN_PASS_TIER_OFFSET = 46;
+
+/** 档位号上界（序号到 73 → 档 27；再往上服务端的 `complete` 里没有条目） */
+export const XIAOYAOJIN_PASS_TIER_MAX = 27;
+
+/** 积分 → 已解锁（可达）档数：`floor(积分/1000)`；非法/非正数 → 0 */
 export function resolvePassTierCount(points) {
   const value = Number(points);
   return Number.isFinite(value) && value > 0
     ? Math.floor(value / XIAOYAOJIN_POINTS_PER_TIER)
     : 0;
+}
+
+/** 档号 → missionId（档 1 → `${actId}47`） */
+export function resolvePassTierMissionId(actId, tier) {
+  const seq = XIAOYAOJIN_PASS_TIER_OFFSET + Number(tier);
+  return `${toText(actId)}${String(seq).padStart(2, "0")}`;
+}
+
+/**
+ * 把「战令档位」读成人类可读的进度摘要（**纯读，不发请求**）
+ *
+ * @param {object} warOrderInfo `warOrderActivityInfo[actId]`
+ * @param {{actId:string, points:number}} options
+ * @returns {{points:number|null, reachable:number, tiers:Array<{tier:number,missionId:string,claimed:boolean}>,
+ *            claimedTiers:number[], pendingTiers:object[], nextTier:object|null}}
+ *
+ * 例（真实数据：积分 3100）→ reachable 3、三档全 claimed、nextTier = {tier:4, missionId:'260919150', pointsNeeded:900}
+ * 其中 `pointsNeeded = 4×1000 - 3100 = 900` ↔ UI 上「第 4 档 100/1000」
+ */
+export function describePassTiers(warOrderInfo, options = {}) {
+  const actId = toText(options.actId);
+  // ⚠️ `Number(null) === 0`：null/undefined/"" 必须视为「读不到积分」，否则会把「未知」显示成「积分 0」
+  const rawPoints = options.points;
+  const hasPoints =
+    rawPoints !== null && rawPoints !== undefined && rawPoints !== "";
+  const points =
+    hasPoints && Number.isFinite(Number(rawPoints)) ? Number(rawPoints) : null;
+  const reachable = points === null ? 0 : resolvePassTierCount(points);
+  const reachableSafe = Math.min(reachable, XIAOYAOJIN_PASS_TIER_MAX);
+
+  const { taskClaimed } = readClaimMaps(warOrderInfo);
+
+  const tiers = [];
+  for (let tier = 1; tier <= reachableSafe; tier += 1) {
+    const missionId = resolvePassTierMissionId(actId, tier);
+    tiers.push({ tier, missionId, claimed: taskClaimed[missionId] === true });
+  }
+
+  const claimedTiers = tiers
+    .filter((item) => item.claimed)
+    .map((item) => item.tier);
+  const pendingTiers = tiers.filter((item) => !item.claimed);
+
+  let nextTier = null;
+  const nextTierNo = reachableSafe + 1;
+  if (nextTierNo <= XIAOYAOJIN_PASS_TIER_MAX && points !== null) {
+    nextTier = {
+      tier: nextTierNo,
+      missionId: resolvePassTierMissionId(actId, nextTierNo),
+      pointsNeeded: nextTierNo * XIAOYAOJIN_POINTS_PER_TIER - points,
+    };
+  }
+
+  return { points, reachable, tiers, claimedTiers, pendingTiers, nextTier };
 }
 
 /**

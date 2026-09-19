@@ -25,8 +25,8 @@ import {
   XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
   XIAOYAOJIN_POINTS_ITEM_ID,
   buildXiaoyaojinPlan,
+  describePassTiers,
   resolveLotteryDraws,
-  resolvePassTierCount,
 } from "../xiaoyaojinPlan.js";
 
 const nowText = () => new Date().toLocaleTimeString();
@@ -296,10 +296,24 @@ export function createTasksXiaoyaojin(deps) {
    */
   const claimPassRewards = async ({ tokenId, token, plan }) => {
     const points = await readPoints(tokenId, token.name);
-    if (points !== null) {
+    // 先把「积分 / 可达档数 / 已领档 / 下一档还差多少」读出来打进日志（纯读，不发写请求）
+    const tiers = describePassTiers(plan.warOrderInfo, {
+      actId: plan.warOrderActivityId,
+      points,
+    });
+    if (tiers.points !== null) {
+      const claimedText =
+        tiers.claimedTiers.length > 0 ? tiers.claimedTiers.join("/") : "无";
+      const pendingText =
+        tiers.pendingTiers.length > 0
+          ? `待领 ${tiers.pendingTiers.map((item) => item.tier).join("/")}；`
+          : "";
+      const nextText = tiers.nextTier
+        ? `下一档 ${tiers.nextTier.tier}（${tiers.nextTier.missionId.slice(-3)}）还差 ${tiers.nextTier.pointsNeeded} 分`
+        : "已到最高档";
       log(
         token.name,
-        `战令积分 ${points}（按 1000/档 估算约 ${resolvePassTierCount(points)} 档；实际档位以服务端裁定为准）`,
+        `战令积分 ${tiers.points} → 可达 ${tiers.reachable} 档；已领 ${claimedText}；${pendingText}${nextText}`,
       );
     }
 
@@ -596,12 +610,22 @@ export function createTasksXiaoyaojin(deps) {
     xiaoyaojinOneTimeGift,
     xiaoyaojinSignReward,
     xiaoyaojinLottery,
-    // 供界面「探测活动实例」预览用
-    inspectXiaoyaojin: async (tokenId) =>
-      buildXiaoyaojinPlan(
+    // 供界面「探测活动实例」预览用：把战令档位进度也读出来（纯读）
+    inspectXiaoyaojin: async (tokenId, tokenName = "") => {
+      const plan = buildXiaoyaojinPlan(
         await tokenStore.sendMessageWithPromise(tokenId, "activity_get", {}, 8000),
         { overrides: readOptions().overrides || {} },
-      ),
+      );
+      if (!plan.ok) return plan;
+      const points = await readPoints(tokenId, tokenName);
+      return {
+        ...plan,
+        passTiers: describePassTiers(plan.warOrderInfo, {
+          actId: plan.warOrderActivityId,
+          points,
+        }),
+      };
+    },
   };
 }
 

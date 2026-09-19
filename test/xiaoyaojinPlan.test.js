@@ -12,6 +12,7 @@ import {
   buildXiaoyaojinPlan,
   beijingDayStart,
   deriveXiaoyaojinIds,
+  describePassTiers,
   getActivityDateHead,
   isDailyMissionId,
   listPendingDailyClaims,
@@ -19,6 +20,7 @@ import {
   parseActivityDateHead,
   resolveLotteryDraws,
   resolvePassTierCount,
+  resolvePassTierMissionId,
   resolveXiaoyaojinActivityId,
   summarizePassRewards,
 } from "../src/utils/xiaoyaojinPlan.js";
@@ -478,42 +480,73 @@ test("档位积分的估算函数：3100 分 → 3 档（**仅供日志显示，
   assert.equal(XIAOYAOJIN_POINTS_ITEM_ID, 5282);
 });
 
-test("★ 档位 ID 不可本地推导 —— 全量扫描必须覆盖客户端实际会领的那 4 个（不漏领不变式）", () => {
-  // 抓包实证：4 档时客户端依次发 `141 / 147 / 148 / 149`。
-  // 这 4 个 **不连续**（141 直接跳到 147），所以「档 N = actId+(46+N)」这类公式是错的；
-  // 且 5282 两账号都是 3100（按 1000/档只该 3 档）却领了 4 个 → 积分口径也不能用来算候选。
-  const observedTierIds = [
-    "260919141",
-    "260919147",
-    "260919148",
-    "260919149",
-  ];
+test("★ 档位进度可读：积分 / 可达档数 / 已领哪些 / 下一档还差多少（与 UI 完全一致）", () => {
+  // 真实最终状态：积分 3100、档 1/2/3（= …147/…148/…149）已领
+  const finalState = {
+    complete: { 260919147: 21, 260919148: 21, 260919149: 21, 260919150: 1 },
+    taskClaimed: {
+      260919141: true, // 注意：141 不是档位（另一类奖励）
+      260919147: true,
+      260919148: true,
+      260919149: true,
+    },
+  };
+  const actId = "2609191";
 
-  // 不连续性本身就是「不能改成公式推导」的原因
-  assert.equal(observedTierIds[1].slice(-3), "147");
-  assert.notEqual(observedTierIds[1].slice(-3), "142");
-
-  // ★ 关键不变式：在这些 ID 尚未领取时，全量扫描的候选必须把它们**全部**包含进来
-  const initial = { complete: {}, taskClaimed: {} };
-  const overrides = {};
-  observedTierIds.forEach((id) => {
-    overrides[id] = 4000; // 随便给个 >0 的进度值
+  const summary = describePassTiers(finalState, { actId, points: 3100 });
+  assert.equal(summary.points, 3100);
+  assert.equal(summary.reachable, 3); // floor(3100/1000)
+  assert.deepEqual(summary.claimedTiers, [1, 2, 3]);
+  assert.deepEqual(summary.pendingTiers, []);
+  // 3100 分 → 第 4 档进度 100/1000 → **还差 900 分**（截图 `100/1000` 的算术等价）
+  assert.deepEqual(summary.nextTier, {
+    tier: 4,
+    missionId: "260919150",
+    pointsNeeded: 900,
   });
-  const pending = listPendingPassRewards({ complete: overrides, taskClaimed: {} });
-  observedTierIds.forEach((id) =>
-    assert.equal(pending.includes(id), true, `候选必须包含 ${id}`),
+
+  // 档号 → missionId：档1=147、档4=150（与抓包里客户端实发的 ID 对上）
+  assert.equal(resolvePassTierMissionId(actId, 1), "260919147");
+  assert.equal(resolvePassTierMissionId(actId, 2), "260919148");
+  assert.equal(resolvePassTierMissionId(actId, 3), "260919149");
+  assert.equal(resolvePassTierMissionId(actId, 4), "260919150");
+  // 抓包里客户端在第 4 档尚未解锁时**没有**发 150，只发了 147/148/149（+非档位的 141）
+  assert.equal(summary.pendingTiers.some((item) => item.missionId === "260919150"), false);
+
+  // 有档未领时 → pendingTiers 列出，且 claimedTiers 只含已领的
+  const partial = {
+    complete: finalState.complete,
+    taskClaimed: { 260919147: true },
+  };
+  const partialSummary = describePassTiers(partial, { actId, points: 3100 });
+  assert.deepEqual(partialSummary.claimedTiers, [1]);
+  assert.deepEqual(
+    partialSummary.pendingTiers.map((item) => item.tier),
+    [2, 3],
   );
 
-  // 都领过之后（真实最终状态）→ 候选里不应再出现它们
-  const claimed = {};
-  observedTierIds.forEach((id) => {
-    claimed[id] = true;
+  // 积分不足 1000 → 0 档可达，下一档还是档 1（还差 100 分）
+  const low = describePassTiers(partial, { actId, points: 900 });
+  assert.equal(low.reachable, 0);
+  assert.deepEqual(low.nextTier, {
+    tier: 1,
+    missionId: "260919147",
+    pointsNeeded: 100,
   });
-  const after = listPendingPassRewards({ complete: overrides, taskClaimed: claimed });
-  observedTierIds.forEach((id) =>
-    assert.equal(after.includes(id), false, `${id} 已领，不该再进候选`),
-  );
-  assert.deepEqual(initial, { complete: {}, taskClaimed: {} });
+
+  // 读不到积分 → points=null、可达 0，不抛异常
+  const unknown = describePassTiers(partial, { actId, points: null });
+  assert.equal(unknown.points, null);
+  assert.equal(unknown.reachable, 0);
+  assert.deepEqual(unknown.tiers, []);
+  assert.deepEqual(unknown.nextTier, null);
+
+  // 档号上界：超大积分不会无限枚举
+  const huge = describePassTiers(partial, { actId, points: 999999 });
+  assert.equal(huge.tiers.length, 27);
+  assert.equal(huge.tiers[26].missionId, "260919173");
+  assert.equal(huge.nextTier, null); // 已到最高档
+  assert.deepEqual(describePassTiers(null, { actId, points: 3100 }).claimedTiers, []);
 });
 
 test("非法输入不抛异常", () => {
