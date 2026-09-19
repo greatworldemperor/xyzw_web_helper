@@ -46,57 +46,27 @@ export const XIAOYAOJIN_GIFT_GOODS_SUFFIX = "1";
 export const XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID = 5283;
 
 /**
- * 战令「积分」道具 ID（= master 截图右下角的那个数）
+ * 战令「积分」道具 ID（master 截图右下角那个数）
  *
- * 实证（2026-09-19）：两份抓包结束时 `role.items[5282].quantity` **都是 3100**，与 master 截图的 3100 一致；
- * 每日任务给 +300、档位奖励给 +400；`3100 = 3×1000 + 100` ↔ 截图进度条 `100/1000`（第 4 档进行中）。
- * 注意：积分**不在** `warOrderActivityInfo` 里（那 13 个字段没有积分，`itemNum` 恒为 0）→ 只能从背包读。
+ * ⚠️ **结论已修正（2026-09-19 16:57）**：不能用它算档数来自动筛选候选。
+ * - 两份抓包里 `role.items[5282]` **都是 3100**（每日任务 +300 / 档位奖励 +400 给的道具）
+ * - 但**两个账号各领了 4 个档位奖励**（`141/147/148/149`）→ 若积分真是 3100 就只能领 3 档 → 自相矛盾
+ * - 说明 **5282 ≠ 档位积分解锁口径**（它只是奖励物品），或「领取」不只领档位
+ * → 该常量仅用于**日志展示**，**绝不用于筛选候选**（筛选一律用 `complete > 0 && !taskClaimed` + 服务端裁定）
  */
 export const XIAOYAOJIN_POINTS_ITEM_ID = 5282;
 
-/** 每多少积分解锁一档（master 口述 + 截图算术：3100 分 → 3 档 + 第 4 档 100/1000） */
+/** 每多少积分解锁一档（master 口述：3100 分 → 3 档 + 第 4 档 100/1000）——仅供日志估算 */
 export const XIAOYAOJIN_POINTS_PER_TIER = 1000;
 
 /**
- * 档位 → missionId 序号偏移：**档 1 = 序号 47**（missionId = `actId` + (46 + 档位)）
- *
- * 实证：两个账号都恰好领了 `147 / 148 / 149` 三个连续 ID = 3 档（与 3100 分吻合），
- * 而 `150` 是还没解锁的第 4 档。141~146 属于另一类奖励（值 4000/0，与档位组不同），不在本序列里。
+ * 积分 → 已解锁档数（`floor(积分/1000)`；非法/非正数 → 0）。**仅用于日志/估算，不用于筛选候选。**
  */
-export const XIAOYAOJIN_PASS_TIER_OFFSET = 46;
-
-/** 积分 → 已解锁档数（`floor(积分/1000)`；非法/非正数 → 0） */
 export function resolvePassTierCount(points) {
   const value = Number(points);
   return Number.isFinite(value) && value > 0
     ? Math.floor(value / XIAOYAOJIN_POINTS_PER_TIER)
     : 0;
-}
-
-/** 档位 → missionId（档 1 → `${actId}47`） */
-export function resolvePassTierMissionId(actId, tier) {
-  const seq = XIAOYAOJIN_PASS_TIER_OFFSET + Number(tier);
-  return `${toText(actId)}${String(seq).padStart(2, "0")}`;
-}
-
-/**
- * 精确候选：已解锁档位里「还没领」的那些（积分驱动，替代盲目全量扫描）
- *
- * @returns {Array<{tier:number, missionId:string}>}
- */
-export function listIssuedPassTiers(warOrderInfo, options = {}) {
-  const actId = toText(options.actId);
-  if (!actId) return [];
-
-  const { taskClaimed } = readClaimMaps(warOrderInfo);
-  const total = resolvePassTierCount(options.points);
-  const pending = [];
-  for (let tier = 1; tier <= total; tier += 1) {
-    const missionId = resolvePassTierMissionId(actId, tier);
-    if (taskClaimed[missionId] === true) continue;
-    pending.push({ tier, missionId });
-  }
-  return pending;
 }
 
 /**

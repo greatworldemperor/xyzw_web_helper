@@ -25,10 +25,8 @@ import {
   XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
   XIAOYAOJIN_POINTS_ITEM_ID,
   buildXiaoyaojinPlan,
-  listIssuedPassTiers,
   resolveLotteryDraws,
   resolvePassTierCount,
-  resolvePassTierMissionId,
 } from "../xiaoyaojinPlan.js";
 
 const nowText = () => new Date().toLocaleTimeString();
@@ -282,54 +280,32 @@ export function createTasksXiaoyaojin(deps) {
   };
 
   /**
-   * 1c) 战令等级奖励（档位奖励）
+   * 1c) 战令档位奖励 —— **全量扫描候选 + 服务端裁定**
    *
-   * **主力路径：积分驱动**（master 规则：每 1000 积分领一档）
-   *   积分 = `role.items[5282].quantity`；档 N 的 missionId = `actId` + (46 + N)，即档 1 = `...147`。
-   *   实证：两账号积分都是 3100 → 恰好领了 `147/148/149` 三个连续 ID = 3 档，`150` 是未解锁的第 4 档。
-   *   → 候选 = 档 1..floor(积分/1000) 中未领的，通常只有几次请求（不再盲试 26 个）。
+   * ⚠️ master 澄清（2026-09-19 16:57）：游戏里的「领取」按钮是**一次性把当前积分能抵达的档位全领**，
+   * 客户端实现为「一个档位发一条 `activity_warordertaskclaim`（按 missionId 升序）」。
    *
-   * **兜底路径：全量扫描**（读不到积分时用）
-   *   按 `complete > 0` 且 `taskClaimed !== true` 圈候选，逐个交服务端裁定（慢但不会漏）。
+   * 但**档位 ID 无法本地推导**：两个抓包账号在 4 档时，客户端实际发的 4 个 ID 是
+   * `141 / 147 / 148 / 149`（**不连续**，141 直接跳到 147），既不是连续序列、也与 `5282` 积分口径对不上
+   * （5282 两账号都是 3100，按 1000/档只该 3 档，实际却领了 4 个）。
+   * → 所以候选只能是 `complete > 0 && taskClaimed !== true` 的全集（约 26 个），
+   *   逐个交给服务端裁定（未达标 `700010` / 已领 `700020`），失败按错误码汇总。
+   *   代价是每账号约 13 秒，换来的是**不漏领**（这正是「把能领的全领了」要的效果）。
    *
-   * 两条路径都**不购买任何东西**，失败（未达成/已领/付费轨未解锁）只按错误码汇总计数。
+   * 积分（5282）只写进日志供对照，**不参与筛选**。
    */
   const claimPassRewards = async ({ tokenId, token, plan }) => {
     const points = await readPoints(tokenId, token.name);
-
-    let candidates;
     if (points !== null) {
-      const issued = listIssuedPassTiers(plan.warOrderInfo, {
-        actId: plan.warOrderActivityId,
-        points,
-      });
-      candidates = issued.map((item) => ({
-        missionId: item.missionId,
-        label: `${item.tier} 档`,
-      }));
-      const tierCount = resolvePassTierCount(points);
-      const range =
-        tierCount > 0
-          ? `${resolvePassTierMissionId(plan.warOrderActivityId, 1).slice(-3)}~${resolvePassTierMissionId(plan.warOrderActivityId, tierCount).slice(-3)}`
-          : "无";
       log(
         token.name,
-        `战令积分 ${points} → 已解锁 ${tierCount} 档（${range}），待领 ${candidates.length} 个（精确模式）`,
-      );
-    } else {
-      candidates = (plan.passRewards?.pendingIds || []).map((id) => ({
-        missionId: id,
-        label: `${String(id).slice(-3)}`,
-      }));
-      log(
-        token.name,
-        `读不到战令积分，改用全量扫描：${candidates.length} 个候选（较慢，且含未解锁的付费轨）`,
-        "warning",
+        `战令积分 ${points}（按 1000/档 估算约 ${resolvePassTierCount(points)} 档；实际档位以服务端裁定为准）`,
       );
     }
 
+    const candidates = plan.passRewards?.pendingIds || [];
     if (candidates.length === 0) {
-      log(token.name, "战令等级奖励没有待领取项");
+      log(token.name, "战令档位奖励没有待领取项");
       return;
     }
 
@@ -337,7 +313,7 @@ export function createTasksXiaoyaojin(deps) {
     let skipped = 0;
     /** 按服务端错误码归类跳过原因，便于看清「这些候选到底为什么不能领」 */
     const skipReasons = new Map();
-    for (const [index, item] of candidates.entries()) {
+    for (const [index, missionId] of candidates.entries()) {
       if (shouldStop.value) break;
       try {
         const response = await tokenStore.sendMessageWithPromise(
@@ -345,14 +321,14 @@ export function createTasksXiaoyaojin(deps) {
           "activity_warordertaskclaim",
           {
             actId: Number(plan.warOrderActivityId),
-            missionId: Number(item.missionId),
+            missionId: Number(missionId),
           },
           8000,
         );
         claimed++;
         log(
           token.name,
-          `战令等级奖励 ${item.label} 领取成功（${rewardText(response)}）`,
+          `战令档位奖励 ${String(missionId).slice(-3)} 领取成功（${rewardText(response)}）`,
           "success",
         );
       } catch (error) {
@@ -360,7 +336,7 @@ export function createTasksXiaoyaojin(deps) {
           // 限流不是失败：剩下的下次再领，别把「没领到」记成「已领完」
           log(
             token.name,
-            `触发限流(400340)，战令等级奖励剩余 ${candidates.length - index} 个下次再领`,
+            `触发限流(400340)，战令档位奖励剩余 ${candidates.length - index} 个下次再领`,
             "warning",
           );
           break;
@@ -380,8 +356,10 @@ export function createTasksXiaoyaojin(deps) {
       .join("、");
     log(
       token.name,
-      `战令等级奖励：${candidates.length} 个候选中成功 ${claimed} 个` +
-        (skipped > 0 ? `，跳过 ${skipped} 个${reasonText ? `：${reasonText}` : ""}` : ""),
+      `战令档位奖励：${candidates.length} 个候选中成功 ${claimed} 个` +
+        (skipped > 0
+          ? `，跳过 ${skipped} 个${reasonText ? `：${reasonText}` : ""}`
+          : ""),
     );
   };
 
