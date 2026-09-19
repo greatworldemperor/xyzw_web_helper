@@ -5498,10 +5498,14 @@ const importConfig = async ({ file }) => {
         if (Array.isArray(importData.tokens)) {
           importData.tokens.forEach((token) => {
             // Check if token already exists
+            // 注意：BIN 导入的角色 token 字段为空（角色 Token 使用时才按需刷新），
+            // 空字符串之间不能参与「相同 token」去重判断，否则会互相误判
             const exists = gameTokens.value.some(
-              (t) => t.token === token.token || t.id === token.id,
+              (t) =>
+                t.id === token.id ||
+                (!!token.token && t.token === token.token),
             );
-            if (!exists && token.token) {
+            if (!exists) {
               // Add new token directly to gameTokens (useLocalStorage)
               gameTokens.value.push({
                 id:

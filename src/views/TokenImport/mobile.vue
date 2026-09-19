@@ -148,6 +148,9 @@
       </div>
 
       <div class="form-actions">
+        <div class="import-hint">
+          角色 Token 不会在导入时获取（生命周期很短），只保存 BIN 数据；首次使用时会自动刷新。
+        </div>
         <n-button
           type="primary"
           size="large"
@@ -222,7 +225,7 @@ import {
   requestMobileVerificationCode,
 } from "@/utils/hortorLogin";
 import { decodeServerRoleId, formatImportedRoleName } from "@/utils/serverRole";
-import { getServerList, getTokenId, transformToken } from "@/utils/token";
+import { getServerList, getTokenId } from "@/utils/token";
 
 interface ServerRole {
   name?: string;
@@ -440,7 +443,9 @@ const addSelectedRole = async (
   try {
     const roleBin = createRoleBin(roleInfo.serverId);
     const tokenId = getTokenId(roleBin);
-    const roleToken = await transformToken(roleBin);
+    // role token 生命周期很短，导入时不预取（同一账号往往整批导入，逐个换取还容易触发限流）：
+    // 只保存 BIN 到 IndexedDB，token 留空，等真正要用的时候再按需刷新
+    const roleToken = "";
     const saved = await storeArrayBuffer(tokenId, roleBin, {
       importMethod: "mobile",
       roleId: String(roleInfo.roleId),
@@ -646,6 +651,12 @@ onUnmounted(() => {
 .form-actions {
   display: grid;
   gap: var(--spacing-sm, 8px);
+}
+
+.import-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-tertiary, #888);
 }
 
 @media (max-width: 560px) {

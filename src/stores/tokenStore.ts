@@ -16,6 +16,11 @@ import {
   scheduleAuthUserRequest,
 } from "@/utils/token";
 import {
+  hasRefreshSource as hasTokenRefreshSource,
+  isBinBackedToken,
+  shouldRefreshTokenOnDemand,
+} from "@/utils/tokenRefreshPolicy.js";
+import {
   is400340Error,
   isRateLimitError,
   RATE_LIMIT_RETRY_DELAY_MS,
@@ -68,6 +73,12 @@ declare interface TokenRefreshResult {
 declare interface TokenRefreshOptions {
   ignoreCooldown?: boolean;
   notifyFailure?: boolean;
+  /**
+   * 由调用方自己负责重连时置 true。
+   * 用于「建连前的按需刷新」：刷新成功后沿用当前这次连接流程继续，
+   * 避免刷新逻辑内部再触发一次 selectToken 重连。
+   */
+  skipReconnect?: boolean;
 }
 
 declare type WebCtx = Record<string, Partial<WebSocketConnection>>;
@@ -463,6 +474,58 @@ export const useTokenStore = defineStore("tokens", () => {
     });
   };
 
+  // 用导入时保存的来源（URL 源地址 / IndexedDB 中的 BIN）重新换取一份 role token
+  // 这是唯一一处真正去「刷 token」的实现，连接前的按需刷新与失败自动刷新共用它
+  const resolveRefreshedToken = async (gameToken: any): Promise<string> => {
+    if (gameToken.importMethod === "url" && gameToken.sourceUrl) {
+      // URL形式token刷新
+      const token = await scheduleAuthUserRequest(async () => {
+        const response = await fetch(gameToken.sourceUrl);
+        if (!response.ok) {
+          throw new Error(`Token刷新接口请求失败: ${response.status}`);
+        }
+        const data = await response.json();
+        if (!validateEncryptedToken(data.token)) {
+          throw new Error("刷新接口返回的Token不是有效的加密Token");
+        }
+        return data.token;
+      });
+      return token;
+    }
+
+    if (isBinBackedToken(gameToken)) {
+      // Bin形式token刷新
+      let userToken: ArrayBuffer | null = await getArrayBuffer(gameToken.id);
+      let usedOldKey = false;
+
+      if (!userToken) {
+        const tokenByName = await getArrayBuffer(gameToken.name);
+        if (tokenByName) {
+          userToken = tokenByName;
+          usedOldKey = true;
+        }
+      }
+
+      if (!userToken) {
+        throw new Error("未找到BIN数据");
+      }
+
+      const token = await transformToken(userToken);
+      if (!validateEncryptedToken(token)) {
+        throw new Error("BIN转换结果不是有效的加密Token");
+      }
+      if (usedOldKey) {
+        const saved = await storeArrayBuffer(gameToken.id, userToken);
+        if (saved) {
+          await deleteArrayBuffer(gameToken.name);
+        }
+      }
+      return token;
+    }
+
+    throw new Error("未找到可用的Token刷新来源");
+  };
+
   // 执行一次Token刷新，并返回失败是否可重试的原因
   const attemptTokenRefreshWithResult = async (
     tokenId: string,
@@ -496,62 +559,10 @@ export const useTokenStore = defineStore("tokens", () => {
     let failureReason = "未找到可用的Token刷新来源";
 
     try {
-      if (gameToken.importMethod === "url" && gameToken.sourceUrl) {
-        // URL形式token刷新
-        const token = await scheduleAuthUserRequest(async () => {
-          const response = await fetch(gameToken.sourceUrl!);
-          if (response.ok) {
-            const data = await response.json();
-            if (validateEncryptedToken(data.token)) {
-              return data.token;
-            }
-            failureReason = "刷新接口返回的Token不是有效的加密Token";
-          } else {
-            failureReason = `Token刷新接口请求失败: ${response.status}`;
-          }
-          return null;
-        });
-        if (token) {
-          updateToken(tokenId, { ...gameToken, token });
-          wsLogger.info(`从URL获取token成功: ${gameToken.name}`);
-          refreshSuccess = true;
-        }
-      } else if (
-        gameToken.importMethod === "bin" ||
-        gameToken.importMethod === "wxQrcode" ||
-        gameToken.importMethod === "mobile"
-      ) {
-        // Bin形式token刷新
-        let userToken: ArrayBuffer | null = await getArrayBuffer(tokenId);
-        let usedOldKey = false;
-
-        if (!userToken) {
-          const tokenByName = await getArrayBuffer(gameToken.name);
-          if (tokenByName) {
-            userToken = tokenByName;
-            usedOldKey = true;
-          }
-        }
-
-        if (userToken) {
-          const token = await transformToken(userToken);
-          if (!validateEncryptedToken(token)) {
-            throw new Error("BIN转换结果不是有效的加密Token");
-          }
-          updateToken(tokenId, { ...gameToken, token });
-          if (usedOldKey) {
-            const saved = await storeArrayBuffer(tokenId, userToken);
-            if (saved) {
-              await deleteArrayBuffer(gameToken.name);
-            }
-          }
-          refreshSuccess = true;
-        } else {
-          failureReason = "未找到BIN数据";
-          wsLogger.error(`Token刷新失败: ${failureReason} [${tokenId}]`);
-        }
-      }
-    } catch (error) {
+      const token = await resolveRefreshedToken(gameToken);
+      updateToken(tokenId, { ...gameToken, token });
+      refreshSuccess = true;
+    } catch (error: any) {
       failureReason = error instanceof Error ? error.message : String(error);
       wsLogger.error(`Token刷新过程出错 [${tokenId}]:`, error);
     }
@@ -561,9 +572,10 @@ export const useTokenStore = defineStore("tokens", () => {
 
       const currentPath = router.currentRoute.value.path;
       const shouldReconnect =
-        forceReconnect ||
-        currentPath === "/tokens" ||
-        currentPath === "/admin/game-features";
+        !options.skipReconnect &&
+        (forceReconnect ||
+          currentPath === "/tokens" ||
+          currentPath === "/admin/game-features");
 
       if (shouldReconnect) {
         wsLogger.info(`触发自动重连 [${tokenId}]`);
@@ -583,6 +595,37 @@ export const useTokenStore = defineStore("tokens", () => {
         reportTokenRefreshFailure(tokenId, failureReason);
       }
       return { success: false, retryable, reason: failureReason };
+    }
+  };
+
+  /**
+   * 按需刷新（导入时不预取 role token 的配套逻辑）：
+   * BIN 导入只保存 BIN + 空 token，第一次真正要建连时如果 token 为空 / 无效 / 过期，
+   * 就用保存的 BIN（或 URL 源地址）换一份新的。
+   *
+   * 返回可用的 token 字符串；token 已可用或没有可刷新来源时返回 null，
+   * 由原有逻辑决定后续（手动 token 仍然走「Token无效」报错）。
+   */
+  const ensureTokenAvailable = async (
+    tokenId: string,
+  ): Promise<string | null> => {
+    const gameToken = gameTokens.value.find((t) => t.id === tokenId);
+    if (!gameToken) return null;
+
+    // 已有可用 token，或该 token 没有可刷新来源（如手动导入）：直接交给原有逻辑
+    if (!shouldRefreshTokenOnDemand(gameToken)) return null;
+
+    wsLogger.info(`Token 为空或已失效，按需刷新 [${tokenId}]`);
+    try {
+      const token = await resolveRefreshedToken(gameToken);
+      updateToken(tokenId, { token });
+      wsLogger.info(`按需刷新成功 [${tokenId}]`);
+      return token;
+    } catch (error: any) {
+      const reason = error instanceof Error ? error.message : String(error);
+      wsLogger.error(`按需刷新失败 [${tokenId}]: ${reason}`);
+      reportTokenRefreshFailure(tokenId, reason);
+      return null;
     }
   };
 
@@ -906,15 +949,31 @@ export const useTokenStore = defineStore("tokens", () => {
       }
 
       // 5. 解析token
-      const parseResult = parseBase64Token(base64Token);
+      // BIN 导入时不再预取 role token（生命周期很短），首次建连前若为空/无效/过期，先按需刷新
+      let effectiveToken = base64Token;
+      let refreshAttempted = false;
+      if (!customWsUrl && !validateToken(effectiveToken)) {
+        const currentToken = gameTokens.value.find((t) => t.id === tokenId);
+        refreshAttempted = !!currentToken && hasTokenRefreshSource(currentToken);
+        const refreshed = await ensureTokenAvailable(tokenId);
+        if (refreshed) {
+          effectiveToken = refreshed;
+        }
+      }
+
+      const parseResult = parseBase64Token(effectiveToken);
       let actualToken;
       if (parseResult.success) {
         actualToken = parseResult.data.actualToken;
       } else {
-        if (validateToken(base64Token)) {
-          actualToken = base64Token;
+        if (validateToken(effectiveToken)) {
+          actualToken = effectiveToken;
         } else {
-          throw new Error(`Token无效: ${parseResult.error}`);
+          throw new Error(
+            refreshAttempted
+              ? "Token 为空或已失效，且自动刷新失败，请重新导入 BIN"
+              : `Token无效: ${parseResult.error}`,
+          );
         }
       }
       // 6. 构建WebSocket URL
@@ -1892,6 +1951,7 @@ export const useTokenStore = defineStore("tokens", () => {
     selectToken,
     attemptTokenRefresh,
     attemptTokenRefreshWithResult,
+    ensureTokenAvailable,
 
     // Base64解析方法
     parseBase64Token,

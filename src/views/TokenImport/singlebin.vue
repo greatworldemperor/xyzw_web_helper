@@ -18,7 +18,9 @@
         <div>
           <strong>角色名称:</strong> {{ role.name || "未命名角色" }}<br />
           <strong>Token:</strong>
-          <span style="word-break: break-all">{{ role.token }}</span><br />
+          <span style="word-break: break-all">{{
+            role.token || "导入不预取，使用时自动刷新"
+          }}</span><br />
           <strong>服务器:</strong> {{ role.server || "未指定" }}
         </div>
       </a-list-item>
@@ -40,6 +42,9 @@
     </n-collapse>
 
     <div class="form-actions">
+      <div class="import-hint">
+        角色 Token 不会在导入时获取（生命周期很短），只保存 BIN 数据；首次使用时会自动刷新。
+      </div>
       <n-button type="primary" size="large" block :loading="isImporting" @click="handleImport">
         <template #icon>
           <n-icon>
@@ -74,7 +79,7 @@ import {
 
 import PQueue from "p-queue";
 import useIndexedDB from "@/hooks/useIndexedDB";
-import { getTokenId, transformToken } from "@/utils/token";
+import { getTokenId } from "@/utils/token";
 
 const $emit = defineEmits(["cancel", "ok"]);
 
@@ -155,7 +160,8 @@ const uploadBin = (binFile: File) => {
 
       const serverId = serverNumber + 27 + roleIndex * 1000000;
       const tokenId = getTokenId(userToken);
-      const roleToken = await transformToken(userToken);
+      // role token 生命周期很短，导入时不预取：只保存 BIN，token 留空，使用时按需刷新
+      const roleToken = "";
       const roleName = roleMeta.roleName || binFile.name.split(".")?.[0] || "";
       // 刷新indexDB数据库token数据
       const saved = await storeArrayBuffer(tokenId, userToken);
@@ -241,6 +247,12 @@ const handleImport = async () => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.import-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-tertiary, #888);
 }
 
 .dropzone-content {

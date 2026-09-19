@@ -302,7 +302,7 @@ const userMenuOptions = [
 const handleTokenRefreshFailure = ({ tokenName, reason }) => {
   dialog.error({
     title: "Token自动刷新失败",
-    content: `账号“${tokenName}”的连接已超时，自动刷新Token失败：${reason}`,
+    content: `账号“${tokenName}”自动刷新Token失败：${reason}`,
     positiveText: "知道了",
   });
 };

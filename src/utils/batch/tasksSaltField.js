@@ -94,6 +94,16 @@ export function createTasksSaltField(deps) {
     toArray(tokenStore?.gameTokens).find((t) => String(t.id) === String(tokenId)) ||
     null;
 
+  /**
+   * 取「最新」的 token 对象：优先读 tokenStore。
+   * role token 生命周期很短，BIN 导入时不会预取，只在建立连接时按需刷新，
+   * 所以传进来的旧引用上 token 字段可能还是空的。
+   */
+  const findFreshToken = (tokenId) =>
+    toArray(tokenStore?.gameTokens).find((t) => String(t.id) === String(tokenId)) ||
+    findToken(tokenId) ||
+    null;
+
   const log = (text, type = "info") =>
     addLog?.({ time: new Date().toLocaleTimeString(), message: text, type });
 
@@ -267,8 +277,15 @@ export function createTasksSaltField(deps) {
     }
 
     await waitBattlefieldSlot();
+    // role token 可能是「连接时才按需刷新」出来的：必须重新取一次最新值，
+    // 不能用 ensureConnection 之前的旧引用（那时 token 字段还是空的）
+    const freshToken = findFreshToken(tokenId) || token;
+    if (!freshToken.token) {
+      releaseBattlefieldSlot();
+      throw new Error("Token 为空且自动刷新失败，请重新导入 BIN");
+    }
     const session = new LegionWarSession({
-      url: buildLegionWarUrl(token.token, info.sid),
+      url: buildLegionWarUrl(freshToken.token, info.sid),
       battlefieldId: info.battlefieldId,
       heartbeatMs: 5000,
       onTimeout: (label) => logPrefix && log(`${t} 等待 ${label} 超时`, "warning"),

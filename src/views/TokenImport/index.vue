@@ -381,7 +381,11 @@
             <template #default>
               <div class="token-display">
                 <span class="token-label">Token:</span>
-                <code class="token-value">{{ maskToken(token.token) }}</code>
+                <code class="token-value">{{
+                  token.token
+                    ? maskToken(token.token)
+                    : "未缓存（首次使用时自动刷新）"
+                }}</code>
               </div>
 
               <!-- 备注信息 -->
@@ -1997,6 +2001,10 @@ const saveEdit = async () => {
 
 const copyToken = async (token) => {
   try {
+    if (!token.token) {
+      message.warning("该角色尚未缓存 Token（首次使用时自动刷新），暂无可复制内容");
+      return;
+    }
     await navigator.clipboard.writeText(token.token);
     message.success("Token已复制到剪贴板");
   } catch (error) {
@@ -2558,7 +2566,7 @@ const handleRateLimitWaiting = (data) => {
 const handleTokenRefreshFailure = ({ tokenName, reason }) => {
   dialog.error({
     title: "Token自动刷新失败",
-    content: `账号“${tokenName}”的连接已超时，自动刷新Token失败：${reason}`,
+    content: `账号“${tokenName}”自动刷新Token失败：${reason}`,
     positiveText: "知道了",
   });
 };

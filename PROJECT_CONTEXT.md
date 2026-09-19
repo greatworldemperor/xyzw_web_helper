@@ -65,6 +65,7 @@ H5 方法
 - Token 分组使用 `tokenKeys` 持久化 `serverId:roleId` 稳定身份键；界面需要的当前 `token.id` 由 Store 运行时解析，所有导入入口都必须保留 `serverId` 和 `roleId`。
 - Token 导入、Base64 解析、校验、选择、更新和删除。
 - 自动 Token 刷新：URL、BIN、微信扫码和手机号登录来源均由 `attemptTokenRefresh()` 统一处理；后三者从 IndexedDB 中读取登录 bin，刷新结果必须是包含有效 `roleToken` 的 JSON 加密 Token。
+- 按需刷新（角色 Token 生命周期很短）：BIN / 微信扫码 / 手机号登录 / 配置导入等入口不再在导入时逐个换取 `roleToken`（同一账号整批导入还会触发 `authuser` 限流），只落库 BIN 并把 `token` 字段留空；首次建立连接前若 token 为空/无效/过期，由 `ensureTokenAvailable()` 用同一套 `resolveRefreshedToken()` 逻辑换取一份新的。判定规则见 [src/utils/tokenRefreshPolicy.js](src/utils/tokenRefreshPolicy.js)（含单测 `test/tokenRefreshPolicy.test.js`）。因此「token 字段为空」是合法状态，不能用空字符串参与去重，也不能拿建连前的旧 token 引用去拼战场连接地址（盐场 `buildLegionWarUrl` 两处均已改为重新取值）。
 - WebSocket 连接状态、连接锁、跨标签页连接协调。
 - 角色信息、军团信息、活动、塔、队伍、战斗版本和学习状态等 `gameData`。
 - 消息处理、事件分发、任务运行状态和部分连接池逻辑。

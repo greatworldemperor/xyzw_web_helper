@@ -47,6 +47,9 @@
     </a-list>
 
     <div class="form-actions">
+      <div class="import-hint">
+        角色 Token 不会在导入时获取（生命周期很短），只保存 BIN 数据；首次使用时会自动刷新。
+      </div>
       <n-button type="primary" size="large" block :loading="isImporting" @click="handleImport">
         <template #icon>
           <n-icon>
@@ -79,7 +82,7 @@ import {
 
 import PQueue from "p-queue";
 import useIndexedDB from "@/hooks/useIndexedDB";
-import { getTokenId, transformToken, getServerList } from "@/utils/token";
+import { getTokenId, getServerList } from "@/utils/token";
 import { g_utils } from "@/utils/bonProtocol";
 
 const $emit = defineEmits(["cancel", "ok"]);
@@ -140,7 +143,9 @@ const addSelectedRole = async (
     newData.serverId = roleInfo.serverId; // 确保类型一致
     const newBinBuffer = g_utils.encode(newData) as ArrayBuffer;
     const tokenId = getTokenId(newBinBuffer);
-    const roleToken = await transformToken(newBinBuffer);
+    // role token 生命周期很短，导入时不预取：
+    // 这里只保存 BIN（IndexedDB），token 留空，等真正要用的时候再按需刷新
+    const roleToken = "";
     const roleName = roleInfo.name || `角色_${roleInfo.roleId}`;
 
     // 刷新indexDB数据库token数据 (保存原始bin)
@@ -337,6 +342,12 @@ const handleImport = async () => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.import-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-tertiary, #888);
 }
 
 .dropzone-content {

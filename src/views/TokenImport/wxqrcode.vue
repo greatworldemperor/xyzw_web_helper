@@ -7,7 +7,8 @@
         <li>点击下方按钮获取微信登录二维码</li>
         <li>使用微信扫码并确认登录</li>
         <li>
-          系统将获取<strong color="red">该微信下所有角色</strong>的Token信息
+          系统将获取<strong color="red">该微信下所有角色</strong>并保存其 BIN 数据
+          （角色 Token 生命周期很短，不在此处预取，使用时自动刷新）
         </li>
       </ol>
     </div>
@@ -80,7 +81,9 @@
           <div>
             <strong>角色名称:</strong> {{ role.name || "未命名角色" }}<br />
             <strong>Token:</strong>
-            <span style="word-break: break-all">{{ role.token }}</span><br />
+            <span style="word-break: break-all">{{
+              role.token || "导入不预取，使用时自动刷新"
+            }}</span><br />
             <strong>服务器:</strong> {{ role.server || "未指定" }}<br />
             <strong>角色序号:</strong> {{ role.roleIndex }}
           </div>
@@ -93,6 +96,9 @@
 
     <!-- 操作按钮 -->
     <div class="form-actions">
+      <div class="import-hint">
+        角色 Token 不会在导入时获取（生命周期很短），只保存 BIN 数据；首次使用时会自动刷新。
+      </div>
       <n-button type="primary" size="large" block :loading="isImporting" @click="handleImport">
         <template #icon>
           <n-icon>

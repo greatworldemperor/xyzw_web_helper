@@ -145,8 +145,13 @@ export const useLegionWarStore = defineStore("legionWar", () => {
       battlefieldId.value = getbattlefield.info.battlefieldId;
 
       // 2. 建立战场专用连接
+      // 注意：role token 可能是在上面建连时才按需刷新出来的，这里必须取最新值
+      const warToken = tokenStore.selectedToken?.token;
+      if (!warToken) {
+        throw new Error("Token 为空且自动刷新失败，请重新导入该账号的 BIN");
+      }
       session = new LegionWarSession({
-        url: buildLegionWarUrl(tokenStore.selectedToken.token, getbattlefield.info.sid),
+        url: buildLegionWarUrl(warToken, getbattlefield.info.sid),
         battlefieldId: battlefieldId.value,
         heartbeatMs: 5000,
         onFrame: (msg) => {
