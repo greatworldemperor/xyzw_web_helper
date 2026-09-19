@@ -297,6 +297,8 @@ export function createTasksSaltField(deps) {
       url: buildLegionWarUrl(freshToken.token, info.sid),
       battlefieldId: info.battlefieldId,
       heartbeatMs: 5000,
+      // 自身 roleId：身份（cId）由 roleMap 反查确定，避免广播帧污染
+      ownerRoleId: Number(role?.roleId) || 0,
       onTimeout: (label) => logPrefix && log(`${t} 等待 ${label} 超时`, "warning"),
       // 帧录制：recv 侧（含服务端广播与命令响应）
       onFrame: (msg) => {

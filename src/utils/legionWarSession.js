@@ -45,8 +45,18 @@ export class LegionWarSession {
    * @param {function} [options.onUpdate]   状态变化回调 (state)
    * @param {function} [options.onTimeout]  等待超时回调 (label, timeoutMs)
    */
-  constructor({ url, battlefieldId, heartbeatMs = 5000, onFrame, onUpdate, onTimeout } = {}) {
+  constructor({
+    url,
+    battlefieldId,
+    heartbeatMs = 5000,
+    onFrame,
+    onUpdate,
+    onTimeout,
+    /** 本连接队长的角色 roleId：用于从 roleMap 反查自身 cId（身份不跟随广播帧） */
+    ownerRoleId = 0,
+  } = {}) {
     this.battlefieldId = battlefieldId;
+    this.ownerRoleId = Number(ownerRoleId) || 0;
     this.onFrame = onFrame || null;
     this.onUpdate = onUpdate || null;
     this.onTimeout = onTimeout || null;
@@ -174,7 +184,8 @@ export class LegionWarSession {
     // 战场数据统一走 rawData（= bon.decode(body)）
     if (msg?.rawData !== undefined) {
       const before = this.state.updatedAt;
-      applyBattlefieldFrame(this.state, msg.rawData);
+      // 传入自身 roleId：身份（roleCodeId）由 roleMap 反查得到，广播帧无法污染
+      applyBattlefieldFrame(this.state, msg.rawData, this.ownerRoleId);
       if (this.state.updatedAt !== before && this.onUpdate) {
         this.onUpdate(this.state);
       }

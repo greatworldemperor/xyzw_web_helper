@@ -84,20 +84,19 @@ function mergeKeyedTable(target, patch) {
  * @param {object} body  外层信封的 body（即 msg.rawData）
  * @returns {object} state
  */
-export function applyBattlefieldFrame(state, body) {
+export function applyBattlefieldFrame(state, body, ownerRoleId = 0) {
   if (!isPlainObject(body)) return state;
 
   if (body.battlefieldId) state.battlefieldId = body.battlefieldId;
-  // ⚠️ roleCodeId 是「本连接自身」的语义，只在首次（enter 快照）时设置。
-  // 之后所有广播帧（notify/resp，别人的 roleCodeId）不得覆盖——
-  // 09-19 首战 8 支队 confirm 超时的根因：广播帧把 state.roleCodeId 污染成
-  // 别人的 cId → getTeamMemberCids 读到别人队伍（"未确认（队伍 5 人）"）→ 判定全错。
-  if (
-    (state.roleCodeId === null || state.roleCodeId === undefined) &&
-    body.roleCodeId !== undefined &&
-    body.roleCodeId !== null
-  ) {
-    state.roleCodeId = Number(body.roleCodeId);
+  // ⚠️ roleCodeId 是「本连接自身」的语义，绝不能跟随广播帧的 body.roleCodeId
+  // （广播帧里那是别人的 cId：实测每条连接涉及 15~182 个不同 cId，且首帧也未必是自己的）。
+  // 正确判据：用「自己的 roleId」在 roleMap（本俱乐部 roleId→cId）里反查自己的 cId。
+  // roleMap 只在全量快照帧带（增量广播不带）→ 身份永不漂移。
+  const roleMapSnapshot = isPlainObject(body.roleMap) ? body.roleMap : null;
+  if (ownerRoleId && roleMapSnapshot) {
+    const entry = roleMapSnapshot[String(ownerRoleId)];
+    const cid = entry ? Number(entry.cId) : NaN;
+    if (Number.isFinite(cid) && cid > 0) state.roleCodeId = cid;
   }
 
   // roleMap：全量快照里带，增量帧不带。整份替换（它是本连接所属俱乐部的完整映射）
