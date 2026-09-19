@@ -419,6 +419,38 @@ export function createTasksSaltField(deps) {
 
   /* -------------------- ③ 执行单支队伍 -------------------- */
 
+  /** 登场重试窗口：失败每 1 秒重试，超过仍未成功则抛错（调用方跳过该队伍，master 规则） */
+  const DEPLOY_RETRY_WINDOW_MS = 30000;
+
+  /**
+   * 登场（带重试）：war_setbattleteam 在队友未完成入队确认时会失败，
+   * 失败后每隔 1 秒重试；等待太久说明出问题了，抛错跳过该队伍。
+   */
+  const deployWithRetry = async (probe, lineup, t) => {
+    const startedAt = Date.now();
+    for (;;) {
+      if (shouldStop?.value) throw new Error("已手动停止（登场阶段）");
+      const dp = await probe.session.deploy({
+        battleTeam: lineup.battleTeam,
+        lordWeaponId: lineup.lordWeaponId,
+        petUId: lineup.petUId,
+      }, 10000);
+      if (dp.ok) {
+        const pos = dp.role?.position || {};
+        log(`${t} 登场完成 ${dp.role?.state || "?"}(${pos.x ?? "?"}, ${pos.y ?? "?"})`, "success");
+        return dp;
+      }
+      if (Date.now() - startedAt > DEPLOY_RETRY_WINDOW_MS) {
+        throw new Error(
+          `登场重试 ${DEPLOY_RETRY_WINDOW_MS / 1000}s 仍未成功（最后状态 ${dp.role?.state || "watching"}）——跳过该队伍`,
+        );
+      }
+      log(`${t} 登场未确认（${dp.role?.state || "watching"}），1 秒后重试`, "warning");
+      await sleep(1000);
+    }
+  };
+
+
   /**
    * 一支队伍的完整流程：进战场 → 选阵容 → 组队 → 登场 → 校验。
    *
@@ -575,22 +607,22 @@ export function createTasksSaltField(deps) {
           if (!inv.ok) result.failed.push({ roleId, cId, reason: "邀请未确认（超时）" });
           if (i < targets.length - 1) await sleep(gap);
         }
-        // 等待邀请确认补齐（master 实战观察：确认约 8 秒；邀请超时≠失败，
-        // mCodeIds 可能稍后才补上——登场前最多再等 9 秒）
+        // 必须全部确认入队才能登场（master 2026-09-19：队友未完成确认时登场会失败）
         if (targets.length && !shouldStop?.value) {
           const want = new Set(targets.map((x) => x.cId));
+          result.stage = "confirm";
+          log(`${t} 等待全部邀请确认入队（实战观察约 8 秒/人）…`, "info");
           const confirmed = await probe.session.waitForState(
             (s) => [...want].every((c) => getTeamMemberCids(s, myCid).includes(c)),
-            9000,
+            30000,
             300,
           );
           if (!confirmed) {
             const have = getTeamMemberCids(probe.session.state, myCid);
             const missing = [...want].filter((c) => !have.includes(c));
-            log(`${t} 部分邀请 9 秒内未确认（cId ${missing.join(",")}），按现有进度登场`, "warning");
-          } else {
-            log(`${t} 全部邀请已确认入队`, "success");
+            throw new Error(`等待邀请确认超时（30s），缺失 cId ${missing.join(",")}——按规则跳过该队伍`);
           }
+          log(`${t} 全部邀请已确认入队，开始登场`, "success");
         }
         result.expectedMembers = 1 + targets.length;
       } else {
@@ -705,20 +737,10 @@ export function createTasksSaltField(deps) {
         }
       }
 
-      // 4) 登场
+      // 4) 登场（失败每 1 秒重试，窗口超时则抛错跳过该队伍）
       result.stage = "deploy";
-      const dp = await probe.session.deploy({
-        battleTeam: lineup.battleTeam,
-        lordWeaponId: lineup.lordWeaponId,
-        petUId: lineup.petUId,
-      });
+      await deployWithRetry(probe, lineup, t);
       result.teamMembers = probe.session.teamMemberCids(myCid);
-      if (dp.ok) {
-        const pos = dp.role?.position || {};
-        log(`${t} 登场完成 ${dp.role?.state || "?"}(${pos.x ?? "?"}, ${pos.y ?? "?"})`, "success");
-      } else {
-        log(`${t} 登场未确认（角色仍是 ${dp.role?.state || "watching"}）`, "warning");
-      }
 
       // 5) 校验
       result.stage = "verify";
