@@ -31,12 +31,13 @@ const expectedAutomationFiles = [
   "multi-game-sync-bridge.js?v=20260915.2",
 ];
 
-function executeBootstrap(boot) {
+function executeBootstrap(boot, { search = "" } = {}) {
   const messages = [];
   const loadedScripts = [];
   const splash = { style: {}, textContent: "" };
   const binToolClasses = new Set();
   const binTool = {
+    dataset: {},
     classList: {
       add(...names) {
         names.forEach((name) => binToolClasses.add(name));
@@ -53,7 +54,28 @@ function executeBootstrap(boot) {
       binToolClasses.add("minimized");
     },
   };
+  // 上号器面板由 sh1.js 异步挂载：boot 完成后才可能出现。
+  let accountToolMounted = false;
+  const observers = [];
+  class FakeMutationObserver {
+    constructor(callback) {
+      this.callback = callback;
+      observers.push(this);
+    }
+    observe(target, options) {
+      this.target = target;
+      this.options = options;
+    }
+    disconnect() {
+      this.disconnected = true;
+    }
+    trigger() {
+      if (this.disconnected) return;
+      this.callback([]);
+    }
+  }
   const document = {
+    documentElement: { nodeType: 1 },
     head: {
       appendChild(script) {
         loadedScripts.push(script.src);
@@ -65,8 +87,8 @@ function executeBootstrap(boot) {
     },
     getElementById(id) {
       if (id === "splash") return splash;
-      if (id === "binTool") return binTool;
-      if (id === "minimizeBtn") return minimizeBtn;
+      if (id === "binTool") return accountToolMounted ? binTool : null;
+      if (id === "minimizeBtn") return accountToolMounted ? minimizeBtn : null;
       return null;
     },
   };
@@ -78,7 +100,7 @@ function executeBootstrap(boot) {
       return boot([...loadedScripts], { binTool });
     },
     document,
-    location: { origin: "https://helper.example" },
+    location: { origin: "https://helper.example", search },
     parent: {
       postMessage(payload, origin) {
         messages.push({ payload, origin });
@@ -86,15 +108,35 @@ function executeBootstrap(boot) {
     },
   };
   window.window = window;
+  const unrefTimeout = (callback, delay) => {
+    const timer = setTimeout(callback, delay);
+    timer.unref?.();
+    return timer;
+  };
 
   vm.runInNewContext(bootstrapScript, {
     document,
     Error,
+    MutationObserver: FakeMutationObserver,
     Promise,
     queueMicrotask,
+    setTimeout: unrefTimeout,
+    URLSearchParams,
     window,
   });
-  return { binTool, loadedScripts, messages, minimizeBtn, splash, window };
+  return {
+    binTool,
+    mountAccountTool() {
+      accountToolMounted = true;
+      observers.forEach((observer) => observer.trigger());
+    },
+    loadedScripts,
+    messages,
+    minimizeBtn,
+    observers,
+    splash,
+    window,
+  };
 }
 
 const flushBootstrap = () => new Promise((resolve) => setImmediate(resolve));
@@ -149,18 +191,55 @@ test("multi-game bootstrap waits for boot completion before reporting ready", as
   });
 });
 
-test("multi-game bootstrap uses the native button to minimize the account tool", async () => {
-  let minimizedAtBoot = false;
-  const { binTool, minimizeBtn } = executeBootstrap((_scripts, state) => {
-    minimizedAtBoot = state.binTool.classList.contains("minimized");
+test("multi-game bootstrap folds the account tool as soon as sh1 mounts it", async () => {
+  let minimizedBeforeMount = false;
+  const env = executeBootstrap((_scripts, state) => {
+    minimizedBeforeMount = state.binTool.classList.contains("minimized");
     return Promise.resolve();
   });
+  const { binTool, minimizeBtn, observers } = env;
 
   await flushBootstrap();
 
+  // 面板尚未挂载：不应误点，且已开始监听 DOM 变化。
+  assert.equal(minimizeBtn.clickCount, 0);
+  assert.equal(minimizedBeforeMount, false);
+  assert.ok(observers.length >= 1);
+  assert.equal(observers[0].options.subtree, true);
+
+  // 面板挂载 → 立刻用面板自带按钮折叠，并打上标记（避免重复折叠 / 供 CSS 显示）。
+  env.mountAccountTool();
   assert.equal(minimizeBtn.clickCount, 1);
-  assert.equal(minimizedAtBoot, true);
   assert.equal(binTool.classList.contains("minimized"), true);
+  assert.equal(binTool.dataset.mgAutoCollapsed, "1");
+  assert.equal(observers[0].disconnected, true);
+
+  // 用户手动展开后再次触发 DOM 变化，不会把面板重新折叠回去。
+  binTool.classList.add("expanded");
+  env.mountAccountTool();
+  assert.equal(minimizeBtn.clickCount, 1);
+});
+
+test("multi-game bootstrap folds the account tool when it is already mounted", async () => {
+  const env = executeBootstrap(() => Promise.resolve());
+  env.mountAccountTool();
+  await flushBootstrap();
+
+  assert.equal(env.minimizeBtn.clickCount, 1);
+  assert.equal(env.binTool.classList.contains("minimized"), true);
+});
+
+test("multi-game bootstrap leaves the account tool alone when bin-tool=show", async () => {
+  const env = executeBootstrap(() => Promise.resolve(), {
+    search: "?scope=mg-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&bin_id=a&bin-tool=show",
+  });
+  await flushBootstrap();
+  env.mountAccountTool();
+
+  assert.equal(env.minimizeBtn.clickCount, 0);
+  assert.equal(env.binTool.classList.contains("minimized"), false);
+  assert.equal(env.binTool.dataset.mgAutoCollapsed, undefined);
+  assert.equal(env.observers.length, 0);
 });
 
 test("multi-game bootstrap reports boot rejection as fatal", async () => {

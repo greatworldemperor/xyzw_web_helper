@@ -25,6 +25,17 @@
     <meta name="x5-page-mode" content="app" />
     <link rel="stylesheet" type="text/css" href="style-mobile.1777a.css" />
     <link rel="icon" href="favicon.8de18.ico" />
+    <style>
+      /* 上号器面板（#binTool）承担 BIN 注入登录，多开窗口里必须保留它运行，
+         但用不到它的界面：出现即自动折叠，折叠完成后彻底隐藏。
+         需要手动操作上号器时，在窗口地址追加 bin-tool=show 即可恢复显示。 */
+      #binTool:not([data-mg-auto-collapsed="1"]) {
+        visibility: hidden !important;
+      }
+      #binTool[data-mg-auto-collapsed="1"] {
+        display: none !important;
+      }
+    </style>
   </head>
   <body>
     <canvas
@@ -81,9 +92,39 @@
           );
         };
 
+        // 上号器面板在多开窗口里只承担 BIN 注入，界面本身用不上；但它由 sh1.js
+        // （用户脚本运行时）异步挂载，静态时序上点不到按钮，所以监听 DOM，
+        // 等它一出现就折叠（保留 DOM 与登录注入逻辑，仅让界面不可见）。
+        // 需要手动操作上号器时，在窗口地址追加 bin-tool=show。
+        const accountToolVisible =
+          new URLSearchParams(window.location.search).get("bin-tool") ===
+          "show";
+        const autoCollapseAccountTool = () => {
+          if (accountToolVisible) return;
+          const collapse = () => {
+            const panel = document.getElementById("binTool");
+            if (!panel) return false;
+            if (panel.dataset.mgAutoCollapsed === "1") return true;
+            panel.dataset.mgAutoCollapsed = "1";
+            const minimizeButton = document.getElementById("minimizeBtn");
+            if (minimizeButton) minimizeButton.click();
+            else panel.classList.add("minimized");
+            return true;
+          };
+          if (collapse()) return;
+          const observer = new MutationObserver(() => {
+            if (collapse()) observer.disconnect();
+          });
+          observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+          });
+          setTimeout(() => observer.disconnect(), 60000);
+        };
+
         (async () => {
+          autoCollapseAccountTool();
           for (const src of runtime) await loadScript(src);
-          document.getElementById("minimizeBtn")?.click();
           window.HtmlIsLoaded = true;
           document.getElementById("splash").style.display = "none";
           if (window.__pushResearchSh1Ready) await window.__pushResearchSh1Ready;
