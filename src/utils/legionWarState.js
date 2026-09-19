@@ -88,7 +88,15 @@ export function applyBattlefieldFrame(state, body) {
   if (!isPlainObject(body)) return state;
 
   if (body.battlefieldId) state.battlefieldId = body.battlefieldId;
-  if (body.roleCodeId !== undefined && body.roleCodeId !== null) {
+  // ⚠️ roleCodeId 是「本连接自身」的语义，只在首次（enter 快照）时设置。
+  // 之后所有广播帧（notify/resp，别人的 roleCodeId）不得覆盖——
+  // 09-19 首战 8 支队 confirm 超时的根因：广播帧把 state.roleCodeId 污染成
+  // 别人的 cId → getTeamMemberCids 读到别人队伍（"未确认（队伍 5 人）"）→ 判定全错。
+  if (
+    (state.roleCodeId === null || state.roleCodeId === undefined) &&
+    body.roleCodeId !== undefined &&
+    body.roleCodeId !== null
+  ) {
     state.roleCodeId = Number(body.roleCodeId);
   }
 
