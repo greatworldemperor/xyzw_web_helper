@@ -401,6 +401,69 @@ test("一键全套的步骤顺序是协议约束：先等级奖励、后一键�
   assert.equal(Object.isFrozen(XIAOYAOJIN_ALL_STEPS), true);
 });
 
+test("真实初始快照（some_new_data1 首帧）：本地圈出 26 个等级候选，但实际只有 4 个可领", () => {
+  // 08:23:33 首帧 = 进入界面后、任何领取动作之前的原始状态
+  const initial = {
+    complete: {
+      260919101: 38,
+      260919102: 0,
+      260919103: 3,
+      260919104: 13,
+      260919105: 1,
+      260919106: 3,
+      260919141: 4000,
+      260919142: 4000,
+      260919143: 4000,
+      260919144: 0,
+      260919145: 0,
+      260919146: 0,
+      260919147: 21,
+      260919148: 21,
+      260919149: 21,
+      ...Object.fromEntries(
+        Array.from({ length: 20 }, (_, i) => [`2609191${50 + i}`, 1]),
+      ),
+      260919170: 0,
+      260919171: 0,
+      260919172: 0,
+      260919173: 0,
+    },
+    taskClaimed: {
+      260919101: true,
+      260919102: false,
+      260919103: true,
+      260919104: false,
+      260919105: false,
+      260919106: true,
+    },
+    rewardClaimed: {},
+  };
+
+  // 每日任务候选 3 个（104/105 有进度，102 是 0），其中能领的 2 个
+  const daily = listPendingDailyClaims(initial);
+  assert.deepEqual(
+    daily.map((item) => item.missionId.slice(-3)),
+    ["102", "104", "105"],
+  );
+  assert.equal(daily.filter((item) => item.completed).length, 2);
+
+  // 等级奖励候选 26 个：141/142/143 + 147/148/149 + 150~169（144~146、170~173 的 complete=0 被排除）
+  const pass = listPendingPassRewards(initial);
+  assert.equal(pass.length, 26);
+  assert.deepEqual(summarizePassRewards(initial), {
+    total: 33,
+    unlocked: 26,
+    pending: 26,
+    pendingIds: pass,
+  });
+
+  // ⚠️ 这 26 个里 master 实际只领到 4 个（141/147/148/149）——142/143 与 150~169 的 complete 同样 >0 却领不到，
+  //    证明「本地无法判定可领性」，只能逐个交服务端裁定（错误码分类就是为了看清这一点）
+  const actuallyClaimable = ["260919141", "260919147", "260919148", "260919149"];
+  assert.equal(actuallyClaimable.every((id) => pass.includes(id)), true);
+  assert.equal(pass.length - actuallyClaimable.length, 22);
+});
+
 test("非法输入不抛异常", () => {
   assert.equal(buildXiaoyaojinPlan(null).ok, false);
   assert.equal(buildXiaoyaojinPlan(undefined).ok, false);
