@@ -58,6 +58,24 @@ export const XIAOYAOJIN_DAILY_MISSION_SUFFIX_MAX = 30;
 export const XIAOYAOJIN_DEFAULT_DRAWS = 1;
 export const XIAOYAOJIN_MAX_DRAWS = 10;
 
+/**
+ * 「一键全套」的步骤顺序 —— ⚠️ **这是协议约束，不是偏好，别顺手调换**
+ *
+ * 1. `passRewards`（逐个领战令等级奖励）**必须在** `passChest` 之前：
+ *    一键宝箱 `activity_warorderrewardclaim` 的可领集合**取决于等级奖励是否已领**。
+ *    09-19 两份抓包对比实证 —— 账号A「先宝箱后等级」需要调两次才拿全（1221 → 1222/1223），
+ *    账号B「先等级后宝箱」一次就拿全 1221+1222+1223。
+ * 2. `oneTimeGift`（礼包）与 `passChest`（宝箱）都产抽奖券 5283，**都必须在 `lottery` 之前**。
+ */
+export const XIAOYAOJIN_ALL_STEPS = Object.freeze([
+  "dailyTask",
+  "passRewards",
+  "passChest",
+  "oneTimeGift",
+  "signReward",
+  "lottery",
+]);
+
 const toText = (value) =>
   value === null || value === undefined ? "" : String(value).trim();
 

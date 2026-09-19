@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  XIAOYAOJIN_ALL_STEPS,
   XIAOYAOJIN_DEFAULT_DRAWS,
   XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
   XIAOYAOJIN_MAX_ACTIVITY_AGE_DAYS,
@@ -374,6 +375,30 @@ test("抽奖次数：受配置与抽奖券余额双重约束", () => {
   assert.equal(resolveLotteryDraws({}).draws, XIAOYAOJIN_DEFAULT_DRAWS);
   assert.equal(resolveLotteryDraws({ requested: 999, ticketCount: 100 }).draws, XIAOYAOJIN_MAX_DRAWS);
   assert.equal(resolveLotteryDraws({ requested: 0, ticketCount: 100 }).draws, 1);
+});
+
+test("一键全套的步骤顺序是协议约束：先等级奖励、后一键宝箱；券类步骤都在抽奖前", () => {
+  const steps = [...XIAOYAOJIN_ALL_STEPS];
+  const at = (id) => steps.indexOf(id);
+
+  // 09-19 双账号抓包对比实证：宝箱可领集合取决于等级奖励是否已领
+  assert.ok(at("passRewards") < at("passChest"), "等级奖励必须在宝箱之前");
+  // 宝箱与礼包都产抽奖券 5283
+  assert.ok(at("passChest") < at("lottery"), "宝箱必须在抽奖之前");
+  assert.ok(at("oneTimeGift") < at("lottery"), "礼包必须在抽奖之前");
+  // 抽奖排最后（用券的都在它前面）
+  assert.equal(steps[steps.length - 1], "lottery");
+  // 步骤集合固定为这 6 步
+  assert.deepEqual([...steps].sort(), [
+    "dailyTask",
+    "lottery",
+    "oneTimeGift",
+    "passChest",
+    "passRewards",
+    "signReward",
+  ]);
+  // 冻结：防止运行时被就地改序
+  assert.equal(Object.isFrozen(XIAOYAOJIN_ALL_STEPS), true);
 });
 
 test("非法输入不抛异常", () => {

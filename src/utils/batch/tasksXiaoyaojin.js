@@ -21,6 +21,7 @@
  * - 已领取 / 未达成 / 活动未开 都算「正常结束」，不记错误、不打断其他账号。
  */
 import {
+  XIAOYAOJIN_ALL_STEPS,
   XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
   buildXiaoyaojinPlan,
   resolveLotteryDraws,
@@ -271,6 +272,8 @@ export function createTasksXiaoyaojin(deps) {
 
     let claimed = 0;
     let skipped = 0;
+    /** 按服务端错误码归类跳过原因，便于看清「这些候选到底为什么不能领」 */
+    const skipReasons = new Map();
     for (const [index, missionId] of pendingIds.entries()) {
       if (shouldStop.value) break;
       try {
@@ -299,16 +302,23 @@ export function createTasksXiaoyaojin(deps) {
           );
           break;
         }
-        // 未达成 / 已领取 / 不可领 → 正常跳过
+        // 未达成 / 已领取 / 不可领 → 正常跳过（按码归类）
         skipped++;
+        const code = Number.isFinite(Number(error?.code))
+          ? Number(error.code)
+          : "无码";
+        skipReasons.set(code, (skipReasons.get(code) || 0) + 1);
       }
       // 节奏比默认稍慢：这段是连续多帧，贴近真人点击间隔（约 1~2s/次）
       await sleep(Math.max(500, actionDelay()));
     }
+    const reasonText = [...skipReasons.entries()]
+      .map(([code, count]) => `${count} 个(${code})`)
+      .join("、");
     log(
       token.name,
       `战令等级奖励：${pendingIds.length} 个候选中成功 ${claimed} 个` +
-        (skipped > 0 ? `，${skipped} 个未达成/不可领已跳过` : ""),
+        (skipped > 0 ? `，跳过 ${skipped} 个${reasonText ? `：${reasonText}` : ""}` : ""),
     );
   };
 
@@ -520,21 +530,11 @@ export function createTasksXiaoyaojin(deps) {
   };
 
   /**
-   * 一键全套：每日任务 → 战令宝箱 → 战令等级奖励 → 一次性礼包 → 7 天登录 → 抽奖
-   * （战令宝箱与等级奖励都会产抽奖券 5283，所以必须排在抽奖之前）
+   * 一键全套：顺序由 `XIAOYAOJIN_ALL_STEPS` 定义（**协议约束**，回归测试锁住了
+   * 「先等级奖励后宝箱」「礼包/宝箱都在抽奖前」，详见该常量注释）
    */
   const xiaoyaojinAll = () =>
-    runXiaoyaojin(
-      [
-        "dailyTask",
-        "passChest",
-        "passRewards",
-        "oneTimeGift",
-        "signReward",
-        "lottery",
-      ],
-      "逍遥津一键全套",
-    );
+    runXiaoyaojin(XIAOYAOJIN_ALL_STEPS, "逍遥津一键全套");
   const xiaoyaojinDailyTask = () =>
     runXiaoyaojin(["dailyTask"], "逍遥津每日任务奖励");
   const xiaoyaojinPassChest = () =>
