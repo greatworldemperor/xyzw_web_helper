@@ -40,10 +40,14 @@ YYMMDD + 功能位
 
 战令内部 ID = 战令实例 ID + 2 位序号：
 
-| 序号段 | 含义 | 出现在 |
-| --- | --- | --- |
-| `01`~`30` | 每日任务（本期 01~06 共 6 个） | `taskClaimed`（全量 6 键） |
-| `41`+ | 战令等级奖励（本期 41~73 共 33 级） | `rewardClaimed` / `complete` |
+| 序号段 | 含义 | 领取命令 | 已领标记 |
+| --- | --- | --- | --- |
+| `01`~`30` | 每日任务（本期 01~06 共 6 个） | `activity_warordertaskclaim {actId, missionId}` | `taskClaimed[missionId] === true` |
+| `41`+ | 战令等级奖励（本期 41~73 共 33 条） | **同一个命令**（09-19 第二次抓包实证） | **同样在 `taskClaimed`** |
+| — | 战令奖励宝箱（另一套） | `activity_warorderrewardclaim {actId}`（一键） | `rewardClaimed[4位奖励ID]` |
+
+⚠️ 三处都写进 `complete`：它是**进度数值**（`101:41 / 141:4000 / 150:2 / 144:0`），**不是布尔**。
+达标阈值在客户端配置里，本地拿不到 → 「是否可领」只能靠服务端裁定（见 §5.3）。
 
 抓包第一节 `Activity_WarOrderGetResp`（`activity_warorderget {actId}`）：
 
@@ -106,11 +110,11 @@ commonActivityInfo = {
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/utils/xiaoyaojinPlan.js` | 纯逻辑：活动实例探测（7 位 YYMMDD 键 + 存活窗口取最新）、同族 ID 派生、每日任务清单、战令等级统计、抽奖次数约束。**可被 node 测试直接导入** |
-| `src/utils/batch/tasksXiaoyaojin.js` | 批量任务：5 个入口（全套/每日任务/一次性礼包/7 天登录/抽奖）+ `inspectXiaoyaojin` 预览 |
-| `src/utils/xyzwWebSocket.js` | 注册 6 条新命令 + 响应映射（`syncrewardresp` 增 `activity_commonbuygoods`） |
+| `src/utils/xiaoyaojinPlan.js` | 纯逻辑：活动实例探测（7 位 YYMMDD 键 + 存活窗口取最新）、同族 ID 派生、每日任务清单、**战令等级奖励候选**、抽奖次数约束。**可被 node 测试直接导入** |
+| `src/utils/batch/tasksXiaoyaojin.js` | 批量任务：7 个入口（全套/每日任务/战令宝箱/战令等级奖励/一次性礼包/7 天登录/抽奖）+ `inspectXiaoyaojin` 预览 |
+| `src/utils/xyzwWebSocket.js` | 注册 7 条命令 + 响应映射（`activity_warorderclaimresp` 一响应四命令、`syncrewardresp` 增 `activity_commonbuygoods`） |
 | `src/views/BatchDailyTasks.vue` | 批量任务页底部「临时活动」标签页；任务分组 / 自由模板分组同步 |
-| `test/xiaoyaojinPlan.test.js` | 16 例回归（含真实抓包快照） |
+| `test/xiaoyaojinPlan.test.js` | 18 例回归（含两份真实抓包快照） |
 
 ### 关键实现选择
 
@@ -122,12 +126,77 @@ commonActivityInfo = {
   缺签补签的天数语义未知 → **本工具不代为补签**。
 - **幂等重跑**：已领取 / 已购买 / 未达成 都归入 info 级日志，不记 error、不打断其它账号。
   一次性礼包更进一层：`commonActivityInfo[礼包活动ID].record[goodsId] >= 1` 时**直接跳过**（连请求都不发）。
-- **战令等级奖励（41+）不在这次范围**：日志里给出「还有 N 个可领」的提示，需在游戏内领取。
+- **战令等级奖励逐个试（41+）**：本地只圈 `complete > 0` 且 `taskClaimed !== true` 的候选，
+  **是否真达标交给服务端裁定**（未达标 `700010` / 已领 `700020`）→ 失败只计数、汇总一行，不刷屏。
+  间隔用 `max(500ms, actionDelay)`，贴近真人点击节奏。
+- **「一键全套」顺序**：每日任务 → 战令宝箱 → 战令等级奖励 → 一次性礼包 → 签到 → 抽奖
+  （宝箱与等级奖励都产抽奖券 5283，**必须在抽奖之前**）。
+
+## 5. 第二次抓包（`some_new_data.jsonl`，2026-09-19 16:20，账号 momo @9724服）
+
+`verify_roundtrip.mjs --dir send` → **SEND 24/24 精确，0 失败**。这一份补上了战令奖励的完整链路。
+
+### 5.1 新增命令 `activity_warorderrewardclaim { actId }`
+
+- 响应同样是 `Activity_WarOrderClaimResp`（所以一个响应名现在对应 **4** 个请求命令）
+- 是**一键领取**：实测两次调用分别给 `5283×1 + 10002×400` 与 `5283×2`（数量随当下可领宝箱数变化）
+- 它写的是 **`rewardClaimed`**，键是 **4 位奖励 ID**（`{"1221":1,"1222":1,"1223":1}`），与 `complete` 里的 9 位 missionId **毫无对应关系**
+- **产抽奖券**，所以应排在抽奖之前
+
+### 5.2 纠正：战令等级奖励用的是**同一个** `activity_warordertaskclaim`
+
+```
+activity_warordertaskclaim { actId:2609191, missionId:260919141 }  → 成功，5282 ×400
+activity_warordertaskclaim { actId:2609191, missionId:260919147 }  → 成功，5282 ×400
+activity_warordertaskclaim { actId:2609191, missionId:260919148 }  → 成功，5282 ×400
+activity_warordertaskclaim { actId:2609191, missionId:260919149 }  → 成功，5282 ×400
+```
+
+**每日任务（序号 01~30）与战令等级奖励（序号 41+）共用同一个命令、同一个 `taskClaimed` 字段**，
+只靠 missionId 末两位区分。`taskClaimed=true` 的完整集合 = `[101,103,104,105,106] ∪ [141,147,148,149]`。
+
+### 5.3 纠正：`complete[key]` 是**进度数值**，不是布尔标记
+
+```
+101:41   102:0   103:3   104:13  105:2   106:3      ← 每日任务进度
+141:4000 142:4000 143:4000 144:0 145:0 146:0        ← 战令奖励条目
+147:21   148:21  149:21
+150:2 … 169:2                                        ← 50~69
+170:0 … 173:0
+```
+
+- v1 假设 `>=1` 就是「可领」→ 对 10x 段侥幸成立（当天 `101:1` 就能领），但**对 41+ 段不成立**：
+  `142/143` 与已领的 `141` 同为 4000，`150~169` 为 2，`144~146/170~173` 为 0
+- 真正的「是否达标 / 是否可领」阈值在**客户端配置**里（我们拿不到）→ 实现改为
+  「`complete > 0` 圈候选 + 服务端裁定」
+- ⚠️ 另一个 v1 的错：用 `rewardClaimed` 判等级奖励是否已领。`rewardClaimed` 是 5.1 那套**另一套奖励**，
+  键长 4 位，永远匹配不上 9 位 missionId → 会把**已领的 `141`（`complete:4000`）当成可领**。
+  正确判据是 `taskClaimed[missionId] === true`。
+
+### 5.4 `lotteryInfo.lotteryNum` = **累计抽奖次数**
+
+```
+getlotteryinfo      → {lotteryNum:1, fragProgress:1}     ← 本次已抽过 1 次
+lottery ×1          → {lotteryNum:2, fragProgress:2}
+lottery ×1          → {lotteryNum:3, fragProgress:3}
+lottery ×1          → {lotteryNum:4, fragProgress:4}
+```
+
+- 递增语义 = **已抽总次数**（不是剩余次数），`fragProgress` 同步
+- 首次抓包（凌晨那个账号）该字段**整个缺失** = 值为 0 被 BON 省略 → 与「尚未抽过」自洽
+- 抽奖券消耗再次确认：`5283: 2 → 1 → null`（每次 −1）
+
+### 5.5 顺带的确认
+
+- 每日任务奖励固定 `5282 ×300`（10x 段）；等级奖励 `5282 ×400`（41+ 段）
+- 抽奖产物：`type 2 itemId 0`（金砖类）、`itemId 1022`、金币等，另有 `lotteryPackIdList` 回执
+- `discount_getdiscountinfo {}` 与逍遥津无关（折扣商店），忽略
 
 ### 已知缺口
 
 - `activity_warorderget` 已注册但批量流程未使用（`activity_get` 已含完整 `warOrderActivityInfo`）；
   保留注册是为了后续「只刷战令」的轻量调用。
-- 战令等级奖励的领取命令**未抓到**（`rewardClaimed` 全空），要自动化需补抓一次点领取的包。
-- 抽奖券 5283 之外的抽奖成本（是否还扣 5282 逍遥币）未验证 —— 抓包只有 1 次抽奖，
-  且 `times>1` 的整包调用未验证，故实现只逐次发 `times:1`。
+- `rewardClaimed` 的 4 位奖励 ID（1221/1222/1223）**语义未知**（疑似按等级解锁的宝箱档位），
+  但由于服务端提供一键领取，实现无需知道档位细节 —— 直接调 `activity_warorderrewardclaim` 即可。
+- 抽奖券 5283 之外的抽奖成本（是否还扣 5282）未验证；`times>1` 的整包调用未验证 → 实现只逐次发 `times:1`。
+- `complete` 的达标阈值在客户端配置里，本地不猜；「战令等级奖励」因此逐个试（候选多时较慢）。

@@ -127,6 +127,8 @@ export const flexibleTaskGroups = [
     tasks: [
       batchTask("xiaoyaojinAll", "逍遥津一键全套"),
       batchTask("xiaoyaojinDailyTask", "逍遥津每日任务奖励"),
+      batchTask("xiaoyaojinPassChest", "逍遥津战令奖励宝箱"),
+      batchTask("xiaoyaojinPassRewards", "逍遥津战令等级奖励"),
       batchTask("xiaoyaojinOneTimeGift", "逍遥津一次性奖励"),
       batchTask("xiaoyaojinSignReward", "逍遥津7天登录奖励"),
       batchTask("xiaoyaojinLottery", "逍遥津抽奖"),

@@ -12,6 +12,7 @@ import {
   getActivityDateHead,
   isDailyMissionId,
   listPendingDailyClaims,
+  listPendingPassRewards,
   parseActivityDateHead,
   resolveLotteryDraws,
   resolveXiaoyaojinActivityId,
@@ -169,24 +170,89 @@ test("待领取每日任务：只取未领取项，并标出是否达成", () =>
   assert.equal(after.filter((item) => item.completed).length, 0);
 });
 
-test("战令等级奖励统计：已解锁未领取的数量（本工具不处理，仅提示）", () => {
-  assert.deepEqual(summarizePassRewards(buildWarOrderInfo()), {
-    total: 33,
-    pending: 0,
-  });
+test("战令等级奖励：以 taskClaimed 判已领，complete 是进度值不是布尔（真实抓包快照）", () => {
+  // 09-19 16:20 抓包（some_new_data.jsonl，账号 momo @9724服）的原始状态
+  const info = {
+    purchased: false,
+    purchased2: false,
+    purchased3: false,
+    unlockClaimed: false,
+    itemNum: 0,
+    // 完整的原始 complete：只有部分条目 >0，144~146 / 170~173 为 0
+    complete: {
+      260919101: 41,
+      260919102: 0,
+      260919103: 3,
+      260919104: 13,
+      260919105: 2,
+      260919106: 3,
+      260919141: 4000,
+      260919142: 4000,
+      260919143: 4000,
+      260919144: 0,
+      260919145: 0,
+      260919146: 0,
+      260919147: 21,
+      260919148: 21,
+      260919149: 21,
+      ...Object.fromEntries(
+        Array.from({ length: 20 }, (_, i) => [`2609191${50 + i}`, 2]),
+      ),
+      260919170: 0,
+      260919171: 0,
+      260919172: 0,
+      260919173: 0,
+    },
+    taskClaimed: {
+      260919101: true,
+      260919102: false,
+      260919103: true,
+      260919104: true,
+      260919105: true,
+      260919106: true,
+      260919141: true,
+      260919147: true,
+      260919148: true,
+      260919149: true,
+    },
+    // ⚠️ 另一套奖励（4 位 ID），由 activity_warorderrewardclaim 领取，**不能**用来判等级奖励是否已领
+    rewardClaimed: { 1221: 1, 1222: 1, 1223: 1 },
+  };
 
-  // 抽奖后的快照：complete[150..169] = 1（序号 50~69 已解锁），rewardClaimed 仍为空 → 20 个可领
-  const unlocked = {};
-  for (let i = 50; i <= 69; i++) unlocked[missionId(i)] = 1;
-  assert.deepEqual(
-    summarizePassRewards(buildWarOrderInfo({ completeOverrides: unlocked })),
-    { total: 33, pending: 20 },
+  const pending = listPendingPassRewards(info);
+  assert.equal(pending.length, 22); // 142/143 + 150~169
+  assert.deepEqual(pending.slice(0, 3), [
+    "260919142",
+    "260919143",
+    "260919150",
+  ]);
+  // 已领的 141/147/148/149 与 progress=0 的 144~146、170~173 都必须在候选外
+  ["260919141", "260919147", "260919148", "260919149", "260919144", "260919170"].forEach(
+    (id) => assert.equal(pending.includes(id), false, `不应包含 ${id}`),
   );
 
-  // 已领取（服务端用 2 位序号作键）也要算进去
-  const info = buildWarOrderInfo({ completeOverrides: unlocked });
-  info.rewardClaimed = { "50": 1 };
-  assert.equal(summarizePassRewards(info).pending, 19);
+  assert.deepEqual(summarizePassRewards(info), {
+    total: 33,
+    unlocked: 26,
+    pending: 22,
+    pendingIds: pending,
+  });
+
+  // 反面用例：旧实现用 rewardClaimed 判已领，会把已领的 141 当成「可领」（rewardClaimed 里根本没有 9 位键）
+  assert.equal(Object.keys(info.rewardClaimed).some((k) => k.length === 9), false);
+});
+
+test("战令等级奖励：全部未解锁 / 空对象都不产生候选", () => {
+  assert.deepEqual(summarizePassRewards(buildWarOrderInfo()), {
+    total: 33,
+    unlocked: 0,
+    pending: 0,
+    pendingIds: [],
+  });
+  assert.deepEqual(listPendingPassRewards(null), []);
+  assert.deepEqual(listPendingPassRewards({}), []);
+  // 7 位活动实例 ID 本身不是 9 位 missionId → 不能混进候选
+  assert.deepEqual(listPendingPassRewards({ complete: { 2609191: 5 } }), []);
 });
 
 test("完整计划：自动探测 + 派生同族 ID + 清单汇总", () => {
@@ -317,7 +383,12 @@ test("非法输入不抛异常", () => {
   assert.equal(resolveXiaoyaojinActivityId(null), null);
   assert.equal(resolveXiaoyaojinActivityId("x"), null);
   assert.deepEqual(listPendingDailyClaims(null), []);
-  assert.deepEqual(summarizePassRewards(undefined), { total: 0, pending: 0 });
+  assert.deepEqual(summarizePassRewards(undefined), {
+    total: 0,
+    unlocked: 0,
+    pending: 0,
+    pendingIds: [],
+  });
   assert.equal(deriveXiaoyaojinIds("").warOrderActivityId, "1");
 });
 

@@ -4,11 +4,16 @@
  * 协议：见 `docs/xiaoyaojin-activity-protocol.md`（2026-09-18 抓包，SEND 15/15 逐字节精确复现）
  * 纯逻辑：`src/utils/xiaoyaojinPlan.js`（活动实例探测 / 奖励清单推导，有回归测试）
  *
- * 覆盖 master 指定的 4 件事：
- *   1. 每日任务奖励   activity_warordertaskclaim { actId, missionId }
- *   2. 一次性奖励     activity_commonbuygoods { goodsId }        （免费礼包，掉落抽奖券 5283）
- *   3. 7 天登录奖励   activity_claimsignreward { activityId, patchDay: 0 }
- *   4. 抽奖           activity_getlotteryinfo → activity_lottery { times: 1 } × N
+ * 覆盖 master 指定的 4 件事 + 09-19 新抓包补上的战令奖励：
+ *   1. 每日任务奖励     activity_warordertaskclaim { actId, missionId }   （序号 01~30）
+ *   1b. 战令奖励宝箱    activity_warorderrewardclaim { actId }            （一键，产抽奖券）
+ *   1c. 战令等级奖励    activity_warordertaskclaim { actId, missionId }   （序号 41+，**同一个命令**）
+ *   2. 一次性奖励       activity_commonbuygoods { goodsId }               （免费礼包，产抽奖券 5283）
+ *   3. 7 天登录奖励     activity_claimsignreward { activityId, patchDay: 0 }
+ *   4. 抽奖             activity_getlotteryinfo → activity_lottery { times: 1 } × N
+ *
+ * ⚠️ 每日任务与战令等级奖励**共用** `activity_warordertaskclaim` 与 `taskClaimed` 字段，
+ * 靠 missionId 末两位序号区分（01~30 每日任务，41+ 等级奖励）。
  *
  * 设计要点：
  * - 全部 ID 都从 `activity_get` 现场探测（不写死活动 ID），逐账号独立解析；
@@ -36,6 +41,13 @@ const isAlreadyDoneError = (error) =>
 /** 活动未开 / ID 无效：提示为主，不算失败 */
 const isInactiveError = (error) =>
   /未开启|未开始|已结束|活动不存在|无效的ID/.test(errorText(error));
+
+/** 「本次没有可领取的」：一键领取类命令的正常空结果 */
+const isNothingToClaimError = (error) =>
+  /没有可领取|无可领取/.test(errorText(error));
+
+/** 服务端限流（沿用项目通用码）：不是失败，是「这次别连发了」 */
+const isRateLimitError = (error) => Number(error?.code) === 400340;
 
 /** 奖励字段 → 可读文案 */
 const rewardText = (response) => {
@@ -136,7 +148,7 @@ export function createTasksXiaoyaojin(deps) {
     if (plan.passRewards.pending > 0) {
       log(
         tokenName,
-        `另有战令等级奖励 ${plan.passRewards.pending} 个可领（不在本次范围，需在游戏内领取）`,
+        `战令等级奖励可领 ${plan.passRewards.pending} 个（已解锁 ${plan.passRewards.unlocked}/${plan.passRewards.total}）`,
       );
     }
     return plan;
@@ -185,9 +197,18 @@ export function createTasksXiaoyaojin(deps) {
           "success",
         );
       } catch (error) {
+        if (isRateLimitError(error)) {
+          // ⚠️ 不能 `continue`（会跳过末尾的 sleep，变成连发）→ 直接结束本步
+          log(
+            token.name,
+            `触发限流(400340)，每日任务剩余 ${claimable.length - claimable.indexOf(item) - 1} 个下次再领`,
+            "warning",
+          );
+          break;
+        }
         if (isAlreadyDoneError(error)) {
           log(token.name, `每日任务 ${String(item.missionId).slice(-2)} 已领取过，跳过`);
-        } else if (isInactiveError(error)) {
+        } else if (isInactiveError(error) || isRateLimitError(error)) {
           log(
             token.name,
             `每日任务 ${String(item.missionId).slice(-2)} 领取失败：${errorText(error)}`,
@@ -204,6 +225,91 @@ export function createTasksXiaoyaojin(deps) {
       }
       await sleep();
     }
+  };
+
+  /**
+   * 1b) 战令奖励宝箱：activity_warorderrewardclaim { actId } —— 一键领取
+   *
+   * 服务端一次发完所有当前可领的宝箱（实测两次调用分别给 5283×1 + 10002×400 与 5283×2，
+   * 落在 `rewardClaimed` 的 4 位奖励 ID 上）。**产抽奖券 5283**，所以排在抽奖之前。
+   */
+  const claimPassChest = async ({ tokenId, token, plan }) => {
+    try {
+      const response = await tokenStore.sendMessageWithPromise(
+        tokenId,
+        "activity_warorderrewardclaim",
+        { actId: Number(plan.warOrderActivityId) },
+        8000,
+      );
+      log(token.name, `战令奖励宝箱领取成功（${rewardText(response)}）`, "success");
+    } catch (error) {
+      if (isAlreadyDoneError(error) || isNothingToClaimError(error)) {
+        log(token.name, "战令奖励宝箱暂无可领，跳过");
+      } else if (isInactiveError(error) || isRateLimitError(error)) {
+        log(token.name, `战令奖励宝箱领取失败：${errorText(error)}`, "warning");
+      } else {
+        log(token.name, `战令奖励宝箱领取失败：${errorText(error)}`, "error");
+        tokenStatus.value[tokenId] = "failed";
+      }
+    }
+    await sleep();
+  };
+
+  /**
+   * 1c) 战令等级奖励（序号 41+）：**与每日任务共用 `activity_warordertaskclaim` 和 `taskClaimed` 字段**
+   *
+   * 本地只按「`complete > 0` 且 `taskClaimed !== true`」圈候选，**是否真达标交给服务端裁定**
+   * （未达标返回 700010 / 已领返回 700020）→ 失败只计数、不逐条刷日志。
+   * 逐个试是为了对齐服务端权威判定（`complete` 是进度值，达标阈值在客户端配置里，本地拿不到）。
+   */
+  const claimPassRewards = async ({ tokenId, token, plan }) => {
+    const pendingIds = plan.passRewards?.pendingIds || [];
+    if (pendingIds.length === 0) {
+      log(token.name, "没有待领取的战令等级奖励");
+      return;
+    }
+
+    let claimed = 0;
+    let skipped = 0;
+    for (const [index, missionId] of pendingIds.entries()) {
+      if (shouldStop.value) break;
+      try {
+        const response = await tokenStore.sendMessageWithPromise(
+          tokenId,
+          "activity_warordertaskclaim",
+          {
+            actId: Number(plan.warOrderActivityId),
+            missionId: Number(missionId),
+          },
+          8000,
+        );
+        claimed++;
+        log(
+          token.name,
+          `战令等级奖励 ${String(missionId).slice(-3)} 领取成功（${rewardText(response)}）`,
+          "success",
+        );
+      } catch (error) {
+        if (isRateLimitError(error)) {
+          // 限流不是失败：剩下的下次再领，别把「没领到」记成「已领完」
+          log(
+            token.name,
+            `触发限流(400340)，战令等级奖励剩余 ${pendingIds.length - index} 个下次再领`,
+            "warning",
+          );
+          break;
+        }
+        // 未达成 / 已领取 / 不可领 → 正常跳过
+        skipped++;
+      }
+      // 节奏比默认稍慢：这段是连续多帧，贴近真人点击间隔（约 1~2s/次）
+      await sleep(Math.max(500, actionDelay()));
+    }
+    log(
+      token.name,
+      `战令等级奖励：${pendingIds.length} 个候选中成功 ${claimed} 个` +
+        (skipped > 0 ? `，${skipped} 个未达成/不可领已跳过` : ""),
+    );
   };
 
   /** 2) 一次性奖励：免费礼包 activity_commonbuygoods { goodsId } */
@@ -225,7 +331,7 @@ export function createTasksXiaoyaojin(deps) {
     } catch (error) {
       if (isAlreadyDoneError(error)) {
         log(token.name, "一次性奖励本期已领取，跳过");
-      } else if (isInactiveError(error)) {
+      } else if (isInactiveError(error) || isRateLimitError(error)) {
         log(token.name, `一次性奖励领取失败：${errorText(error)}`, "warning");
       } else {
         log(token.name, `一次性奖励领取失败：${errorText(error)}`, "error");
@@ -252,7 +358,7 @@ export function createTasksXiaoyaojin(deps) {
     } catch (error) {
       if (isAlreadyDoneError(error)) {
         log(token.name, "7 天登录奖励今天已领取，跳过");
-      } else if (isInactiveError(error)) {
+      } else if (isInactiveError(error) || isRateLimitError(error)) {
         log(token.name, `7 天登录奖励领取失败：${errorText(error)}`, "warning");
       } else {
         log(token.name, `7 天登录奖励领取失败：${errorText(error)}`, "error");
@@ -330,6 +436,8 @@ export function createTasksXiaoyaojin(deps) {
 
   const STEPS = {
     dailyTask: claimDailyTasks,
+    passChest: claimPassChest,
+    passRewards: claimPassRewards,
     oneTimeGift: claimOneTimeGift,
     signReward: claimSignReward,
     lottery: runLottery,
@@ -411,14 +519,28 @@ export function createTasksXiaoyaojin(deps) {
     message.success(`${title}结束`);
   };
 
-  /** 一键全套：每日任务 → 一次性礼包 → 7 天登录 → 抽奖 */
+  /**
+   * 一键全套：每日任务 → 战令宝箱 → 战令等级奖励 → 一次性礼包 → 7 天登录 → 抽奖
+   * （战令宝箱与等级奖励都会产抽奖券 5283，所以必须排在抽奖之前）
+   */
   const xiaoyaojinAll = () =>
     runXiaoyaojin(
-      ["dailyTask", "oneTimeGift", "signReward", "lottery"],
+      [
+        "dailyTask",
+        "passChest",
+        "passRewards",
+        "oneTimeGift",
+        "signReward",
+        "lottery",
+      ],
       "逍遥津一键全套",
     );
   const xiaoyaojinDailyTask = () =>
     runXiaoyaojin(["dailyTask"], "逍遥津每日任务奖励");
+  const xiaoyaojinPassChest = () =>
+    runXiaoyaojin(["passChest"], "逍遥津战令奖励宝箱");
+  const xiaoyaojinPassRewards = () =>
+    runXiaoyaojin(["passRewards"], "逍遥津战令等级奖励");
   const xiaoyaojinOneTimeGift = () =>
     runXiaoyaojin(["oneTimeGift"], "逍遥津一次性奖励");
   const xiaoyaojinSignReward = () =>
@@ -428,6 +550,8 @@ export function createTasksXiaoyaojin(deps) {
   return {
     xiaoyaojinAll,
     xiaoyaojinDailyTask,
+    xiaoyaojinPassChest,
+    xiaoyaojinPassRewards,
     xiaoyaojinOneTimeGift,
     xiaoyaojinSignReward,
     xiaoyaojinLottery,

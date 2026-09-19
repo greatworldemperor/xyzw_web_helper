@@ -299,6 +299,7 @@ export function registerDefaultCommands(reg) {
     // 逍遥津（限时临时活动）：见 docs/xiaoyaojin-activity-protocol.md
     .register("activity_warorderget", { actId: 0 })
     .register("activity_warordertaskclaim", { actId: 0, missionId: 0 })
+    .register("activity_warorderrewardclaim", { actId: 0 })
     .register("activity_commonbuygoods", { goodsId: 0 })
     .register("activity_claimsignreward", { activityId: 0, patchDay: 0 })
     .register("activity_getlotteryinfo")
@@ -1136,9 +1137,11 @@ export class XyzwWebSocketClient {
       club_drawresp: "club_draw",
       // 车辆相关响应映射
       role_gettargetteamresp: "role_gettargetteam",
-      // 战令：回收战令奖励与逍遥津每日任务奖励共用 Activity_WarOrderClaimResp
+      // 战令：三个命令都回 Activity_WarOrderClaimResp
+      // （逍遥津每日任务 / 战令等级奖励 / 战令奖励宝箱 / 回收战令奖励）
       activity_warorderclaimresp: [
         "activity_warordertaskclaim",
+        "activity_warorderrewardclaim",
         "activity_recyclewarorderrewardclaim",
       ],
       // 逍遥津（限时临时活动）响应映射

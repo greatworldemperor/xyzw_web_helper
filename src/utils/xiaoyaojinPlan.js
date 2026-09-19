@@ -207,19 +207,15 @@ export function pickActivityRoot(response) {
 
 /**
  * 列出「待领取」的每日任务（含未达成项，调用方按 completed 自行过滤）
+ *
+ * ⚠️ `complete[missionId]` 是**进度数值**而不是布尔标记（实测 `101:41 / 103:3 / 104:13 / 105:2 / 106:3`，
+ * 未达成的 `102:0`）→ 用 `> 0` 判「有进度」。真正的「是否达标」由服务端裁定
+ * （未达成会返回 `700010 任务未达成完成条件`，按 info 跳过即可），本地不猜阈值。
+ *
  * @returns {Array<{missionId:string, completed:boolean, claimed:boolean}>}
  */
 export function listPendingDailyClaims(warOrderInfo) {
-  if (!warOrderInfo || typeof warOrderInfo !== "object") return [];
-
-  const complete =
-    warOrderInfo.complete && typeof warOrderInfo.complete === "object"
-      ? warOrderInfo.complete
-      : {};
-  const taskClaimed =
-    warOrderInfo.taskClaimed && typeof warOrderInfo.taskClaimed === "object"
-      ? warOrderInfo.taskClaimed
-      : {};
+  const { complete, taskClaimed } = readClaimMaps(warOrderInfo);
 
   const missionIds = new Set();
   Object.keys(taskClaimed).forEach((id) => missionIds.add(id));
@@ -232,42 +228,65 @@ export function listPendingDailyClaims(warOrderInfo) {
     .sort()
     .map((missionId) => ({
       missionId,
-      completed: Number(complete[missionId]) >= 1,
+      completed: Number(complete[missionId]) > 0,
       claimed: taskClaimed[missionId] === true,
     }))
     .filter((item) => !item.claimed);
 }
 
+/** 战令内部 ID：9 位 = 7 位活动实例 ID + 2 位序号 */
+const PASS_MISSION_ID_RE = /^\d{9}$/;
+
+const readClaimMaps = (warOrderInfo) => {
+  const info = warOrderInfo && typeof warOrderInfo === "object" ? warOrderInfo : {};
+  return {
+    complete:
+      info.complete && typeof info.complete === "object" ? info.complete : {},
+    taskClaimed:
+      info.taskClaimed && typeof info.taskClaimed === "object"
+        ? info.taskClaimed
+        : {},
+  };
+};
+
 /**
- * 战令等级奖励 ID（序号 41+）与未领取数量——本工具不处理，仅供日志提示
+ * 列出「待领取」的战令等级奖励（序号 41+，与每日任务共用 `taskClaimed` 字段）
+ *
+ * ⚠️ 判定「已领」必须看 **`taskClaimed`**，不能看 `rewardClaimed` ——
+ * `rewardClaimed` 是**另一套奖励**（4 位奖励 ID，如 `{"1221":1,"1222":1}`，
+ * 由 `activity_warorderrewardclaim` 一键领取），与 `complete` 里的 9 位 missionId 完全不对应。
+ * v1 曾用 `rewardClaimed` 判定 → 会把 `141`（`complete:4000` 且 `taskClaimed:true`）误算成「可领」。
+ *
+ * @returns {string[]} 待尝试领取的 missionId（升序）
+ */
+export function listPendingPassRewards(warOrderInfo) {
+  const { complete, taskClaimed } = readClaimMaps(warOrderInfo);
+
+  return Object.keys(complete)
+    .filter(
+      (id) => PASS_MISSION_ID_RE.test(id) && !isDailyMissionId(id),
+    )
+    .filter((id) => Number(complete[id]) > 0)
+    .filter((id) => taskClaimed[id] !== true)
+    .sort();
+}
+
+/**
+ * 战令等级奖励统计（total = 全部等级条目；unlocked = complete>0；pending = 未领取）
  */
 export function summarizePassRewards(warOrderInfo) {
-  if (!warOrderInfo || typeof warOrderInfo !== "object") {
-    return { total: 0, pending: 0 };
-  }
-  const complete =
-    warOrderInfo.complete && typeof warOrderInfo.complete === "object"
-      ? warOrderInfo.complete
-      : {};
-  const rewardClaimed =
-    warOrderInfo.rewardClaimed && typeof warOrderInfo.rewardClaimed === "object"
-      ? warOrderInfo.rewardClaimed
-      : {};
-
+  const { complete } = readClaimMaps(warOrderInfo);
+  const pendingIds = listPendingPassRewards(warOrderInfo);
   const ids = Object.keys(complete).filter(
-    (id) => getMissionSuffix(id) !== null && !isDailyMissionId(id),
+    (id) => PASS_MISSION_ID_RE.test(id) && !isDailyMissionId(id),
   );
-  const pending = ids.filter((id) => {
-    const unlocked = Number(complete[id]) >= 1;
-    const claimed =
-      Number(rewardClaimed[id]) >= 1 ||
-      rewardClaimed[id] === true ||
-      Number(rewardClaimed[String(getMissionSuffix(id))]) >= 1 ||
-      rewardClaimed[String(getMissionSuffix(id))] === true;
-    return unlocked && !claimed;
-  });
 
-  return { total: ids.length, pending: pending.length };
+  return {
+    total: ids.length,
+    unlocked: ids.filter((id) => Number(complete[id]) > 0).length,
+    pending: pendingIds.length,
+    pendingIds,
+  };
 }
 
 /**

@@ -817,6 +817,20 @@
                   </n-button>
                   <n-button
                     size="small"
+                    @click="xiaoyaojinPassChest"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    战令奖励宝箱
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="xiaoyaojinPassRewards"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    战令等级奖励
+                  </n-button>
+                  <n-button
+                    size="small"
                     @click="xiaoyaojinOneTimeGift"
                     :disabled="isRunning || selectedTokens.length === 0"
                   >
@@ -849,7 +863,8 @@
                 </n-space>
                 <span class="xiaoyaojin-hint">
                   逍遥津为限时活动：活动实例 ID（YYMMDD+功能位）由 activity_get 现场探测，
-                  逐账号解析；已领取/未达成均视为正常结束。
+                  逐账号解析；已领取/未达成均视为正常结束。「战令等级奖励」本地按
+                  complete&gt;0 且未领取圈候选、逐个交给服务端裁定（候选多时较慢）。
                 </span>
               </n-space>
             </n-tab-pane>
@@ -5064,6 +5079,8 @@ const taskGroupDefinitions = [
     tasks: [
       "xiaoyaojinAll",
       "xiaoyaojinDailyTask",
+      "xiaoyaojinPassChest",
+      "xiaoyaojinPassRewards",
       "xiaoyaojinOneTimeGift",
       "xiaoyaojinSignReward",
       "xiaoyaojinLottery",
@@ -7940,6 +7957,8 @@ const tasksXiaoyaojin = createTasksXiaoyaojin(createTaskDeps());
 const {
   xiaoyaojinAll,
   xiaoyaojinDailyTask,
+  xiaoyaojinPassChest,
+  xiaoyaojinPassRewards,
   xiaoyaojinOneTimeGift,
   xiaoyaojinSignReward,
   xiaoyaojinLottery,
@@ -7983,7 +8002,9 @@ const inspectXiaoyaojinActivity = async () => {
           : "（推送中未见，将直接尝试领取）") +
         `；礼包活动 ${plan.ids.giftActivityId} / 商品 ${plan.ids.giftGoodsId}（${giftState}）；` +
         `每日任务待领 ${plan.dailyClaims.filter((item) => item.completed).length} 个 / ` +
-        `未达成 ${plan.dailyClaims.filter((item) => !item.completed).length} 个`,
+        `未达成 ${plan.dailyClaims.filter((item) => !item.completed).length} 个；` +
+        `战令等级奖励可领 ${plan.passRewards.pending} 个` +
+        `（已解锁 ${plan.passRewards.unlocked}/${plan.passRewards.total}）`,
       type: "info",
     });
   } catch (error) {

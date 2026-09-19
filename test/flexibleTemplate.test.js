@@ -81,6 +81,8 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     // 临时活动（逍遥津）
     "xiaoyaojinAll",
     "xiaoyaojinDailyTask",
+    "xiaoyaojinPassChest",
+    "xiaoyaojinPassRewards",
     "xiaoyaojinOneTimeGift",
     "xiaoyaojinSignReward",
     "xiaoyaojinLottery",
