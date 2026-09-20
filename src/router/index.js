@@ -133,6 +133,15 @@ const my_routes = [
         }
       },
       {
+        path: 'pantao-auto',
+        name: 'PantaoAuto',
+        component: () => import('@/views/PantaoAuto.vue'),
+        meta: {
+          title: '自动蟠桃',
+          requiresToken: true
+        }
+      },
+      {
         path: 'PushingLevels',
         name: 'PushingLevels',
         component: () => import('@/views/PushingLevels.vue'),

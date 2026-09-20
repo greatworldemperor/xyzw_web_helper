@@ -102,6 +102,12 @@
             </n-icon>
             <span>自动盐场</span>
           </router-link>
+          <router-link to="/admin/pantao-auto" class="nav-item" active-class="active">
+            <n-icon>
+              <Flash />
+            </n-icon>
+            <span>自动蟠桃</span>
+          </router-link>
         </div>
 
         <div class="nav-user">
