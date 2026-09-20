@@ -88,6 +88,31 @@
           <span class="field-hint">覆写 WS 上报 platformExt（mix 口径选 wx；mix 本身不是合法值）</span>
         </div>
         <div class="field switch-field">
+          <span class="field-label">首帧改写</span>
+          <n-switch v-model:value="frameSpoofEnabled" @update:value="persistFrameSpoof" />
+          <span class="field-hint">{{
+            frameSpoofEnabled
+              ? `role_getroleinfo → platformExt:${frameSpoofExt}${frameSpoofObserveOnly ? "（只观察）" : ""}，重载后生效`
+              : "关闭（帧内容原样发出，仍是 h5 口径）"
+          }}</span>
+        </div>
+        <div v-if="frameSpoofEnabled" class="field switch-field">
+          <span class="field-label">只观察</span>
+          <n-switch v-model:value="frameSpoofObserveOnly" @update:value="persistFrameSpoof" />
+          <span class="field-hint">只记录命中的帧与字段现值，不改字节（先确认字段确实在帧里）</span>
+        </div>
+        <div v-if="frameSpoofEnabled" class="field switch-field">
+          <span class="field-label">上报口径</span>
+          <n-select
+            v-model:value="frameSpoofExt"
+            :options="frameSpoofExtOptions"
+            size="small"
+            style="width: 160px"
+            @update:value="persistFrameSpoof"
+          />
+          <span class="field-hint">{{ frameSpoofClientVersion }}</span>
+        </div>
+        <div class="field switch-field">
           <span class="field-label">自动滚动</span>
           <n-switch v-model:value="autoScroll" />
         </div>
@@ -103,6 +128,10 @@
         </n-button>
         <n-tag :type="accountActionType" size="small">{{ accountActionStatus }}</n-tag>
         <n-tag type="success" size="small">只读观测模式</n-tag>
+        <n-button size="small" secondary :disabled="!runtimeReady || busy" @click="readFrameSpoofStatus">
+          读取改写状态
+        </n-button>
+        <n-tag size="small" :type="frameSpoofTagType">{{ frameSpoofStatus }}</n-tag>
         <n-button size="small" secondary :disabled="!logs.length || busy" @click="downloadLogs('all')">
           <template #icon><n-icon><Download /></n-icon></template>
           下载全部
@@ -257,6 +286,96 @@ function persistSpoof() {
     message.info(`平台伪装已保存（${spoofTarget.value}）：点击「重载运行时」后生效`);
   } else {
     message.info("平台伪装已关闭：重载运行时后恢复 h5web 口径");
+  }
+}
+
+/**
+ * 首帧口径改写（first-frame-spoof.js）：直接改 WS 帧字节里的 platformExt / clientVersion，
+ * 用于验证「3000070 是不是按这个上报口径拦战斗类动作」。与平台伪装（改 window.PLATFORM）互不冲突：
+ * 网页能登录的只有 h5/h5web，所以「想上 mix 口径」只能改帧，不能改全局。
+ */
+const FRAME_SPOOF_LS_KEY = "xyzwFrameSpoof";
+const frameSpoofEnabled = ref(false);
+const frameSpoofObserveOnly = ref(false);
+const frameSpoofExt = ref("mix");
+const frameSpoofExtOptions = [
+  { label: "mix（真实客户端）", value: "mix" },
+  { label: "h5web", value: "h5web" },
+  { label: "h5（网页默认）", value: "h5" },
+];
+const frameSpoofStatus = ref("未读取");
+const frameSpoofClientVersion = computed(() =>
+  frameSpoofExt.value === "mix"
+    ? "clientVersion: 2.21.2-fa918e1997301834-wx"
+    : "clientVersion: 1.89.8-wx（保持原值）"
+);
+const frameSpoofTagType = computed(() => {
+  if (frameSpoofStatus.value.startsWith("已安装")) return "success";
+  if (frameSpoofStatus.value === "未读取") return "default";
+  return "warning";
+});
+(function initFrameSpoofConfig() {
+  try {
+    const raw = localStorage.getItem(FRAME_SPOOF_LS_KEY);
+    if (!raw) return;
+    const cfg = JSON.parse(raw);
+    if (!cfg || typeof cfg !== "object") return;
+    frameSpoofEnabled.value = cfg.enabled === true;
+    frameSpoofObserveOnly.value = cfg.observeOnly === true;
+    const rule = Array.isArray(cfg.rules) ? cfg.rules[0] : null;
+    const ext = rule && rule.fields ? rule.fields.platformExt : null;
+    if (ext === "mix" || ext === "h5" || ext === "h5web") frameSpoofExt.value = ext;
+  } catch (error) {}
+})();
+function persistFrameSpoof() {
+  try {
+    localStorage.setItem(
+      FRAME_SPOOF_LS_KEY,
+      JSON.stringify({
+        enabled: frameSpoofEnabled.value,
+        observeOnly: frameSpoofObserveOnly.value,
+        rules: [
+          {
+            cmd: "role_getroleinfo",
+            fields: {
+              platformExt: frameSpoofExt.value,
+              clientVersion:
+                frameSpoofExt.value === "mix" ? "2.21.2-fa918e1997301834-wx" : "1.89.8-wx",
+            },
+          },
+        ],
+      })
+    );
+  } catch (error) {}
+  message.info(
+    frameSpoofEnabled.value
+      ? `首帧改写已保存（platformExt=${frameSpoofExt.value}）：重载运行时后生效`
+      : "首帧改写已关闭：重载运行时后恢复原口径"
+  );
+}
+/** 从同源 iframe 里读改写脚本的运行统计与命中记录 */
+function readFrameSpoofStatus() {
+  try {
+    const api = gameFrame.value && gameFrame.value.contentWindow
+      ? gameFrame.value.contentWindow.__xyzwFrameSpoof
+      : null;
+    if (!api) {
+      frameSpoofStatus.value = "运行时未加载改写脚本";
+      return;
+    }
+    const s = api.stats || {};
+    frameSpoofStatus.value =
+      `已安装=${api.applied && api.applied.active === true}` +
+      ` 观察=${api.applied && api.applied.observeOnly === true}` +
+      ` 帧=${s.frames || 0} 命中=${s.matched || 0} 改写=${s.patched || 0}`;
+    let added = 0;
+    for (const record of api.records || []) {
+      appendLog({ source: "iframe", event: "frame-spoof", at: record.at, payload: record });
+      added++;
+    }
+    if (added) message.success(`已导入 ${added} 条改写记录到日志`);
+  } catch (error) {
+    frameSpoofStatus.value = `读取失败：${(error && error.message) || error}`;
   }
 }
 

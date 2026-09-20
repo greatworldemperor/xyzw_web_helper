@@ -59,6 +59,41 @@
         </span>
       </div>
 
+      <div
+        v-if="frames.length"
+        class="platform-spoof-controls"
+        role="group"
+        aria-label="批量运行时首帧口径改写"
+      >
+        <span class="platform-spoof-label">首帧改写</span>
+        <button
+          class="platform-spoof-button"
+          :class="{ 'is-enabled': multiGameFrameSpoofEnabled }"
+          type="button"
+          :aria-pressed="multiGameFrameSpoofEnabled"
+          @click="toggleMultiGameFrameSpoof"
+        >
+          {{ multiGameFrameSpoofEnabled ? "已开启" : "已关闭" }}
+        </button>
+        <button
+          class="platform-spoof-button"
+          :class="{ 'is-enabled': multiGameFrameSpoofObserveOnly }"
+          type="button"
+          :aria-pressed="multiGameFrameSpoofObserveOnly"
+          :disabled="!multiGameFrameSpoofEnabled"
+          @click="toggleMultiGameFrameSpoofObserve"
+        >
+          只观察
+        </button>
+        <span class="platform-spoof-hint">
+          {{
+            multiGameFrameSpoofEnabled
+              ? `role_getroleinfo → platformExt:mix / clientVersion:2.21.2…${multiGameFrameSpoofObserveOnly ? "（只记录不改字节）" : ""}，重载后生效`
+              : "关闭（帧内容原样发出；改帧用于验证 3000070 是否按上报口径拦截）"
+          }}
+        </span>
+      </div>
+
       <div class="automation-actions" role="group" aria-label="自动盐场批量操作">
         <span class="selection-count">已选 {{ selectedScopes.size }} 个</span>
         <button
@@ -462,6 +497,7 @@ import {
   buildMultiGameFrameSrc,
   closeMultiGameSession,
   moveMultiGameSession,
+  MULTI_GAME_FRAME_SPOOF_KEY,
   MULTI_GAME_PLATFORM_SPOOF_KEY,
   MULTI_GAME_SYNC_GROUP_ORDER_KEY,
   MULTI_GAME_SYNC_LEGACY_GROUPS_KEY,
@@ -492,6 +528,10 @@ const multiGameSpoofTargetOptions = [
   { label: "h5（推荐）", value: "h5" },
   { label: "h5web（原始）", value: "h5web" },
 ];
+// 首帧口径改写：直接改 WS 帧字节里的 platformExt/clientVersion（3000070 归因验证）。
+// 与平台伪装是两条独立的路：网页能登录的只有 h5/h5web，想上 mix 口径只能改帧。
+const multiGameFrameSpoofEnabled = ref(false);
+const multiGameFrameSpoofObserveOnly = ref(false);
 const launch = ref(readLaunchSafely());
 const gameStrip = ref(null);
 const movingFrame = ref(false);
@@ -653,7 +693,56 @@ function toggleMultiGameSpoof() {
   persistMultiGameSpoof();
 }
 
+function initMultiGameFrameSpoof() {
+  try {
+    const raw = window.localStorage.getItem(MULTI_GAME_FRAME_SPOOF_KEY);
+    const config = raw ? JSON.parse(raw) : null;
+    if (!config || typeof config !== "object") return;
+    multiGameFrameSpoofEnabled.value = config.enabled === true;
+    multiGameFrameSpoofObserveOnly.value = config.observeOnly === true;
+  } catch {}
+}
+
+function persistMultiGameFrameSpoof() {
+  const serialized = JSON.stringify({
+    enabled: multiGameFrameSpoofEnabled.value,
+    observeOnly: multiGameFrameSpoofObserveOnly.value,
+    rules: [
+      {
+        cmd: "role_getroleinfo",
+        fields: {
+          platformExt: "mix",
+          clientVersion: "2.21.2-fa918e1997301834-wx",
+        },
+      },
+    ],
+  });
+  try {
+    window.localStorage.setItem(MULTI_GAME_FRAME_SPOOF_KEY, serialized);
+    for (const session of launch.value?.sessions || []) {
+      window.localStorage.setItem(
+        `multi-game:${session.scopeId}:${MULTI_GAME_FRAME_SPOOF_KEY}`,
+        serialized,
+      );
+    }
+  } catch (error) {
+    console.error("Unable to persist MultiGame frame spoof config:", error);
+  }
+}
+
+function toggleMultiGameFrameSpoof() {
+  multiGameFrameSpoofEnabled.value = !multiGameFrameSpoofEnabled.value;
+  if (!multiGameFrameSpoofEnabled.value) multiGameFrameSpoofObserveOnly.value = false;
+  persistMultiGameFrameSpoof();
+}
+
+function toggleMultiGameFrameSpoofObserve() {
+  multiGameFrameSpoofObserveOnly.value = !multiGameFrameSpoofObserveOnly.value;
+  persistMultiGameFrameSpoof();
+}
+
 initMultiGameSpoof();
+initMultiGameFrameSpoof();
 
 /**
  * 同步分组 = Token 管理里的分组 ∩ 本次已打开窗口所在的账号。

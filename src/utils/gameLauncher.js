@@ -2,6 +2,8 @@ import lz4 from "lz4js";
 
 export const MULTI_GAME_ACTIVE_LAUNCH_KEY = "multi-game_active_launch_v1";
 export const MULTI_GAME_PLATFORM_SPOOF_KEY = "xyzwMultiGamePlatformSpoof";
+// 首帧口径改写（public/game/first-frame-spoof.js）：改 WS 帧里的 platformExt/clientVersion
+export const MULTI_GAME_FRAME_SPOOF_KEY = "xyzwMultiGameFrameSpoof";
 export const MULTI_GAME_TOKEN_GROUPS_KEY = "multiGameTokenGroups";
 // 同步模式：none | group | global
 export const MULTI_GAME_SYNC_MODE_KEY = "multiGameSyncMode";
@@ -312,6 +314,13 @@ export async function prepareMultiGameLaunch({
   } catch {
     platformSpoofConfig = null;
   }
+  let frameSpoofConfig = null;
+  try {
+    const rawConfig = localStorage.getItem(MULTI_GAME_FRAME_SPOOF_KEY);
+    frameSpoofConfig = typeof rawConfig === "string" ? rawConfig : null;
+  } catch {
+    frameSpoofConfig = null;
+  }
   const launchId = `launch-${uuidHex(randomUUID)}`;
   const prepared = await Promise.all(
     tokens.map(async (token) => {
@@ -393,6 +402,12 @@ export async function prepareMultiGameLaunch({
       localEntries.push([
         `${prefix}${MULTI_GAME_PLATFORM_SPOOF_KEY}`,
         platformSpoofConfig,
+      ]);
+    }
+    if (frameSpoofConfig !== null) {
+      localEntries.push([
+        `${prefix}${MULTI_GAME_FRAME_SPOOF_KEY}`,
+        frameSpoofConfig,
       ]);
     }
     sessions.push({

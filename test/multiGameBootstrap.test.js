@@ -19,6 +19,7 @@ const expectedRuntimeFiles = [
   "src/settings.da7ef.js",
   "game-defines.a175e.js",
   "platform-spoof.js?v=20260916.2",
+  "first-frame-spoof.js?v=20260921.1",
   "main.2a00e.js",
   "cocos2d-js-min.a5841.js",
   "xh.js",
