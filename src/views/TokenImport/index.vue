@@ -1592,7 +1592,7 @@ function toggleServerSelection(serverNumbers, force) {
   const label = targets.length === 1 ? `${targets[0]}服` : `${targets.length} 个服`;
   message.success(
     shouldSelect
-      ? `已选中 ${label} 的 ${ids.length} 个角色`
+      ? `已选中 ${label}的 ${ids.length} 个角色`
       : `已取消选中 ${label}（${ids.length} 个角色）`,
   );
 }
