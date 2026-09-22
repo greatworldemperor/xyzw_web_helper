@@ -199,6 +199,83 @@
             <n-button size="small" @click="showGroupManageModal = true">
               分组管理
             </n-button>
+            <n-popover
+              v-model:show="showServerSelectPopover"
+              trigger="click"
+              placement="bottom-end"
+              :width="300"
+              :disabled="isOpeningMultiGame"
+            >
+              <template #trigger>
+                <n-button
+                  size="small"
+                  :type="hasServerSelection ? 'primary' : 'default'"
+                  :disabled="isOpeningMultiGame"
+                  title="输入服务器号，整服选中该服下的全部角色"
+                >
+                  <template #icon>
+                    <n-icon>
+                      <Server />
+                    </n-icon>
+                  </template>
+                  按服务器选中
+                </n-button>
+              </template>
+
+              <div class="server-select-panel">
+                <div class="server-select-input-row">
+                  <n-input
+                    v-model:value="serverSelectInput"
+                    size="small"
+                    placeholder="如 650，支持部分匹配"
+                    clearable
+                    @keyup.enter="applyServerSelectInput(true)"
+                  />
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="applyServerSelectInput(true)"
+                  >
+                    选中
+                  </n-button>
+                  <n-button size="small" @click="applyServerSelectInput(false)">
+                    取消
+                  </n-button>
+                </div>
+                <div class="server-select-hint">{{ serverSelectHint }}</div>
+
+                <n-divider style="margin: 8px 0" />
+
+                <div
+                  v-if="serverSelectVisibleOptions.length === 0"
+                  class="server-select-empty"
+                >
+                  {{ serverSelectEmptyText }}
+                </div>
+                <div v-else class="server-select-list">
+                  <div
+                    v-for="option in serverSelectVisibleOptions"
+                    :key="option.serverNumber"
+                    class="server-select-item"
+                    :class="{ 'is-selected': option.fullySelected }"
+                    @click="toggleServerSelection(option.serverNumber)"
+                  >
+                    <span class="server-select-name"
+                      >{{ option.serverNumber }}服</span
+                    >
+                    <span class="server-select-count">
+                      {{ option.selectedCount }}/{{ option.ids.length }}
+                    </span>
+                    <n-icon v-if="option.fullySelected" color="#18a058">
+                      <Checkmark />
+                    </n-icon>
+                  </div>
+                </div>
+                <div class="server-select-footer">
+                  点击可整服选中 / 取消选中
+                </div>
+              </div>
+            </n-popover>
             <n-dropdown
               trigger="click"
               :options="saltFieldMenuOptions"
@@ -1007,6 +1084,7 @@ import {
   TrashBin,
   GameController,
   Flash,
+  Server,
 } from "@vicons/ionicons5";
 import { NIcon, NAlert, useDialog, useMessage } from "naive-ui";
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from "vue";
@@ -1023,6 +1101,12 @@ import {
   toggleTokenSelection,
 } from "@/utils/gameSelection";
 import lz4 from "lz4js";
+import {
+  collectTokenServers,
+  filterTokensByServerNumbers,
+  matchServerNumbersByInput,
+  parseServerNumberInput,
+} from "@/utils/serverRole";
 import {
   getLeaderTokenIds,
   setLeaderTokenIds as setSaltFieldLeaderTokenIds,
@@ -1384,6 +1468,147 @@ function handleGroupSelect(key) {
     return;
   }
   toggleMgGroupSelection(key);
+}
+
+// ===== 按服务器选中（输入服号片段，整服选中命中的全部角色）=====
+const showServerSelectPopover = ref(false);
+const serverSelectInput = ref("");
+
+// 当前账号库里的服号列表（按服号升序）
+const serverOptionList = computed(() =>
+  collectTokenServers(tokenStore.gameTokens).map(
+    ({ serverNumber, tokens }) => {
+      const ids = tokens.map((token) => token.id);
+      const selectedCount = ids.filter((id) =>
+        multiGameSelectedTokenIds.value.has(id),
+      ).length;
+      return {
+        serverNumber,
+        ids,
+        selectedCount,
+        fullySelected: selectedCount > 0 && selectedCount === ids.length,
+      };
+    },
+  ),
+);
+
+// 是否存在「已整服选中」的服务器（用于按钮高亮）
+const hasServerSelection = computed(() =>
+  serverOptionList.value.some((option) => option.fullySelected),
+);
+
+// 输入命中的服号（子串匹配：输入 650 可命中 6509服、26501服）
+const serverSelectMatchedServers = computed(() =>
+  matchServerNumbersByInput(serverSelectInput.value, tokenStore.gameTokens),
+);
+
+// 便于列表判断某个服是否被当前输入命中
+const serverSelectMatchedSet = computed(
+  () => new Set(serverSelectMatchedServers.value),
+);
+const hasServerSelectInput = computed(
+  () => parseServerNumberInput(serverSelectInput.value) !== null,
+);
+
+// 列表跟随输入筛选：没有输入时列出全部服务器，有输入时只留命中的
+const serverSelectVisibleOptions = computed(() =>
+  hasServerSelectInput.value
+    ? serverOptionList.value.filter((option) =>
+        serverSelectMatchedSet.value.has(option.serverNumber),
+      )
+    : serverOptionList.value,
+);
+
+const serverSelectEmptyText = computed(() => {
+  const raw = serverSelectInput.value?.trim() ?? "";
+  return raw
+    ? `没有包含 ${raw} 的服务器`
+    : "还没有可识别的服务器信息，先导入带 serverId 的角色";
+});
+
+// 输入框实时提示：命中了哪些服、一共多少个角色
+const serverSelectHint = computed(() => {
+  const raw = serverSelectInput.value?.trim() ?? "";
+  if (!raw) {
+    return "输入即筛选，如 650 命中 6509服、26501服";
+  }
+
+  if (parseServerNumberInput(raw) === null) {
+    return "请输入服务器号，如 39 或 39服";
+  }
+
+  const serverNumbers = serverSelectMatchedServers.value;
+  if (serverNumbers.length === 0) {
+    return `没有包含 ${raw} 的服务器`;
+  }
+
+  const tokens = filterTokensByServerNumbers(
+    tokenStore.gameTokens,
+    serverNumbers,
+  );
+  const selectedCount = tokens.filter((token) =>
+    multiGameSelectedTokenIds.value.has(token.id),
+  ).length;
+
+  const shownNames = serverNumbers
+    .slice(0, 3)
+    .map((serverNumber) => `${serverNumber}服`)
+    .join("、");
+  const names =
+    serverNumbers.length > 3
+      ? `${shownNames} 等 ${serverNumbers.length} 个服`
+      : shownNames;
+
+  return `${names}，共 ${tokens.length} 个角色，已选 ${selectedCount} 个`;
+});
+
+// 整服选中 / 取消选中；serverNumbers 可传单个服号或数组，force 可强制方向
+function toggleServerSelection(serverNumbers, force) {
+  if (isOpeningMultiGame.value) return;
+
+  const targets = Array.isArray(serverNumbers)
+    ? serverNumbers
+    : [serverNumbers];
+  const ids = filterTokensByServerNumbers(tokenStore.gameTokens, targets).map(
+    (token) => token.id,
+  );
+  if (ids.length === 0) {
+    message.warning("没有匹配到可操作的角色");
+    return;
+  }
+
+  const fullySelected = ids.every((id) =>
+    multiGameSelectedTokenIds.value.has(id),
+  );
+  const shouldSelect = force === undefined ? !fullySelected : force;
+
+  const next = new Set(multiGameSelectedTokenIds.value);
+  for (const id of ids) {
+    if (shouldSelect) next.add(id);
+    else next.delete(id);
+  }
+  multiGameSelectedTokenIds.value = next;
+
+  const label = targets.length === 1 ? `${targets[0]}服` : `${targets.length} 个服`;
+  message.success(
+    shouldSelect
+      ? `已选中 ${label} 的 ${ids.length} 个角色`
+      : `已取消选中 ${label}（${ids.length} 个角色）`,
+  );
+}
+
+// 把输入框内容应用到「选中 / 取消选中」
+function applyServerSelectInput(shouldSelect = true) {
+  const serverNumbers = serverSelectMatchedServers.value;
+  if (serverNumbers.length === 0) {
+    const raw = serverSelectInput.value?.trim();
+    message.warning(
+      raw ? `没有包含 ${raw} 的服务器` : "请输入服务器号，如 39 或 39服",
+    );
+    return;
+  }
+
+  toggleServerSelection(serverNumbers, shouldSelect);
 }
 
 // 备注编辑状态管理
@@ -3428,5 +3653,86 @@ onUnmounted(() => {
 
 [data-theme="dark"] .mg-group-detail {
   border-top-color: #475569;
+}
+
+/* 按服务器选中 */
+.server-select-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.server-select-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.server-select-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.server-select-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.server-select-item:hover {
+  background: #f1f5f9;
+}
+
+.server-select-item.is-selected {
+  background: #ecfdf5;
+}
+
+.server-select-name {
+  flex: 1;
+}
+
+.server-select-item.is-selected .server-select-name {
+  font-weight: 600;
+}
+
+.server-select-count {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.server-select-empty {
+  padding: 10px 0;
+  font-size: 12px;
+  color: #94a3b8;
+  text-align: center;
+}
+
+.server-select-footer {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #94a3b8;
+  text-align: center;
+}
+
+[data-theme="dark"] .server-select-hint,
+[data-theme="dark"] .server-select-count,
+[data-theme="dark"] .server-select-empty,
+[data-theme="dark"] .server-select-footer {
+  color: #94a3b8;
+}
+
+[data-theme="dark"] .server-select-item:hover {
+  background: #334155;
+}
+
+[data-theme="dark"] .server-select-item.is-selected {
+  background: #14532d;
 }
 </style>
