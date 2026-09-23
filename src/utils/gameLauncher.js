@@ -7,10 +7,12 @@ export const MULTI_GAME_FRAME_SPOOF_KEY = "xyzwMultiGameFrameSpoof";
 export const MULTI_GAME_TOKEN_GROUPS_KEY = "multiGameTokenGroups";
 // 同步模式：none | group | global
 export const MULTI_GAME_SYNC_MODE_KEY = "multiGameSyncMode";
-// 分组显示顺序（分组 id 数组），第一个分组决定全局同步源
+// 分组显示顺序（分组 id 数组），第一个分组决定全局同步的默认源
 export const MULTI_GAME_SYNC_GROUP_ORDER_KEY = "multiGameSyncGroupOrder";
 // 手动指定的组长：分组 id → 窗口 scopeId
 export const MULTI_GAME_SYNC_MASTERS_KEY = "multiGameSyncMasters";
+// 手动指定的全局同步源（窗口 scopeId）。空字符串 = 未指定，按「第一个分组的组长」推导
+export const MULTI_GAME_SYNC_GLOBAL_SOURCE_KEY = "multiGameSyncGlobalSource";
 // 旧版「逐组启用开关」，只用于把老用户已有的同步意图迁移成新模式，不再写入
 export const MULTI_GAME_SYNC_LEGACY_GROUPS_KEY = "multiGameSyncGroups";
 

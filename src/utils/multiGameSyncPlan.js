@@ -5,16 +5,19 @@
  *   1) 不同步（默认）：任何窗口都不参与同步。
  *   2) 分组同步：以 Token 管理里的分组为单位，**每组只有组长能作为同步源**，
  *      组长的输入转发给本组其他窗口；组与组之间互不影响。
- *   3) 全局同步：所有窗口视为一个大组，同步源 = 第一个分组的组长
- *      （没有任何分组时不生效），其余窗口只接收、不发送。
+ *   3) 全局同步：所有窗口视为一个大组，其余窗口只接收、不发送。
+ *      同步源优先取**手动指定的窗口**（页面上点窗口标题），没有手动指定时
+ *      才回退到「第一个分组的组长」。
  *
  * **分组只有 Token 管理一个来源**：批量运行时页面直接引用 Token 管理里的分组，
- * 只显示「本次已打开窗口所在」的分组；页面自己不会造固定槽位，也不会在没分组时兜底。
+ * 只显示「本次已打开窗口所在」的分组；页面自己不会造固定槽位。
+ * 唯一的例外是全局同步的手动同步源：它按窗口指定、不依赖分组，
+ * 这样临时拼起来的一批窗口没分过组也能同步。
  *
  * 组长默认 = 该组窗口顺序第一个；可以在批量运行时页面手动指定，
  * 指定的组长必须仍在该组内，否则回退为默认值。
  *
- * 分组顺序由页面上拖动分组标签决定，它同时决定「第一个分组」——也就是全局同步源。
+ * 分组顺序由页面上拖动分组标签决定，它同时决定「第一个分组」——也就是全局同步的默认源。
  */
 
 export const SYNC_MODE_NONE = "none";
@@ -31,7 +34,7 @@ export const SYNC_MODE_OPTIONS = [
   {
     value: SYNC_MODE_GLOBAL,
     label: "全局同步",
-    hint: "所有窗口跟随第一个分组的组长",
+    hint: "所有窗口跟随同步源（点窗口标题指定，默认是第一个分组的组长）",
   },
 ];
 
@@ -51,6 +54,28 @@ export function resolveGroupMaster(scopeIds, requestedScopeId) {
     return requestedScopeId;
   }
   return scopeIds[0];
+}
+
+/**
+ * 全局同步源解析。
+ *
+ * 手动指定的窗口（点窗口标题选出来的那个）优先，但它必须仍在本次打开的窗口里，
+ * 关窗后自动作废；没有手动指定时回退到「第一个分组的组长」。
+ * 两者都没有就返回 null —— 分组只来自 Token 管理，页面不造源兜底。
+ */
+export function resolveGlobalSource(scopeIds, groups, requestedScopeId) {
+  const frameIds = Array.isArray(scopeIds) ? scopeIds : [];
+  if (
+    typeof requestedScopeId === "string" &&
+    requestedScopeId &&
+    frameIds.includes(requestedScopeId)
+  ) {
+    return requestedScopeId;
+  }
+  const sourceGroup = (Array.isArray(groups) ? groups : [])[0] || null;
+  const fallback = sourceGroup?.masterScopeId ?? null;
+  // 组长本身也必须还在已打开窗口里（组里只剩关掉的窗口时等于没有源）
+  return fallback && frameIds.includes(fallback) ? fallback : null;
 }
 
 /** 按保存的顺序重排分组；没记录过顺序的分组按原相对顺序追加在后面。 */
@@ -79,17 +104,26 @@ export function orderSyncGroups(groups, order) {
  * @param {Array<{scopeId: string}>} input.frames 窗口（按页面顺序）
  * @param {Array<{id: string, scopeIds: string[]}>} input.groups 已完成排序的分组
  * @param {Record<string, string>} [input.masters] 分组 id → 指定组长 scopeId
+ * @param {string} [input.globalSourceScopeId] 全局同步下手动指定的同步源窗口
  * @returns {{
  *   mode: string,
  *   groups: Array<object>,
  *   roles: Record<string, {send: boolean, receive: boolean}>,
  *   sources: Array<{groupId: string|null, scopeId: string}>,
  *   sourceScopeId: string|null,
+ *   globalSourceManual: boolean,
+ *   globalSourceGroupId: string|null,
  *   targets: Record<string, string[]>,
  *   active: boolean,
  * }}
  */
-export function planMultiGameSync({ mode, frames, groups, masters } = {}) {
+export function planMultiGameSync({
+  mode,
+  frames,
+  groups,
+  masters,
+  globalSourceScopeId,
+} = {}) {
   const normalizedMode = normalizeSyncMode(mode);
   const frameList = (Array.isArray(frames) ? frames : []).filter(
     (frame) => frame && frame.scopeId,
@@ -120,6 +154,8 @@ export function planMultiGameSync({ mode, frames, groups, masters } = {}) {
     roles,
     sources: [],
     sourceScopeId: null,
+    globalSourceManual: false,
+    globalSourceGroupId: null,
     targets: {},
     active: false,
   };
@@ -148,12 +184,23 @@ export function planMultiGameSync({ mode, frames, groups, masters } = {}) {
       linkTargets(group.masterScopeId, group.scopeIds);
     }
   } else {
-    // 全局同步：所有窗口一起跟随第一个分组的组长。
-    // 同步源**只能**来自 Token 管理里的分组，页面自己不会造组兜底。
-    const sourceGroup = groupList[0] || null;
-    const sourceScopeId = sourceGroup ? sourceGroup.masterScopeId : null;
+    // 全局同步：所有窗口一起跟随同一个同步源。
+    // 同步源优先取手动指定的窗口（点窗口标题），否则回退到第一个分组的组长。
+    const sourceScopeId = resolveGlobalSource(
+      frameIds,
+      groupList,
+      globalSourceScopeId,
+    );
+    // 有源时记下它所在的分组（手动源不在任何分组里时为 null）；
+    // 没源时把第一个分组当作候选，UI 用它提示「谁是默认源」。
+    const sourceGroup = sourceScopeId
+      ? (groupList.find((group) => group.scopeIds.includes(sourceScopeId)) ?? null)
+      : (groupList[0] ?? null);
+    plan.globalSourceManual =
+      Boolean(sourceScopeId) && globalSourceScopeId === sourceScopeId;
+    plan.globalSourceGroupId = sourceGroup?.id ?? null;
     if (sourceScopeId) {
-      markSend(sourceScopeId, sourceGroup.id);
+      markSend(sourceScopeId, sourceGroup?.id ?? null);
       linkTargets(sourceScopeId, frameIds);
       plan.sourceScopeId = sourceScopeId;
     }

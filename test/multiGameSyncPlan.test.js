@@ -7,6 +7,7 @@ import {
   normalizeSyncMode,
   orderSyncGroups,
   planMultiGameSync,
+  resolveGlobalSource,
   resolveGroupMaster,
   SYNC_MODE_GLOBAL,
   SYNC_MODE_GROUP,
@@ -179,7 +180,7 @@ test("全局同步：分组顺序变化会改变同步源", () => {
   );
 });
 
-test("全局同步：没有分组时不生效（分组只能来自 Token 管理，页面不兜底）", () => {
+test("全局同步：没有分组、也没手动指定同步源时不生效（不拿窗口顺序兜底）", () => {
   const plan = planMultiGameSync({
     mode: SYNC_MODE_GLOBAL,
     frames: frames("a", "b"),
@@ -187,11 +188,98 @@ test("全局同步：没有分组时不生效（分组只能来自 Token 管理�
   });
   assert.equal(plan.sourceScopeId, null);
   assert.equal(plan.active, false);
+  assert.equal(plan.globalSourceManual, false);
+  assert.equal(plan.globalSourceGroupId, null);
   assert.deepEqual(plan.targets, {});
   assert.deepEqual(plan.roles, {
     a: { send: false, receive: false },
     b: { send: false, receive: false },
   });
+});
+
+test("resolveGlobalSource：手动指定的窗口优先，失效后回退第一个分组的组长", () => {
+  const groups = [{ id: "g1", masterScopeId: "a" }];
+  assert.equal(resolveGlobalSource(["a", "b"], groups, "b"), "b");
+  // 指定的窗口已关闭 → 回退到分组组长
+  assert.equal(resolveGlobalSource(["a", "b"], groups, "zz"), "a");
+  // 空字符串（未指定）不算指定
+  assert.equal(resolveGlobalSource(["a", "b"], groups, ""), "a");
+  // 既没指定也没分组 → null
+  assert.equal(resolveGlobalSource(["a", "b"], [], ""), null);
+  assert.equal(resolveGlobalSource([], [{ id: "g1", masterScopeId: "a" }], "a"), null);
+});
+
+test("全局同步：没有任何分组时，点窗口标题指定的同步源也能生效", () => {
+  const plan = planMultiGameSync({
+    mode: SYNC_MODE_GLOBAL,
+    frames: frames("a", "b", "c"),
+    groups: [],
+    globalSourceScopeId: "b",
+  });
+  assert.equal(plan.sourceScopeId, "b");
+  assert.equal(plan.globalSourceManual, true);
+  assert.equal(plan.globalSourceGroupId, null);
+  assert.equal(plan.active, true);
+  assert.deepEqual(plan.sources, [{ groupId: null, scopeId: "b" }]);
+  assert.deepEqual(plan.targets, { b: ["a", "c"] });
+  assert.deepEqual(plan.roles, {
+    a: { send: false, receive: true },
+    b: { send: true, receive: false },
+    c: { send: false, receive: true },
+  });
+});
+
+test("全局同步：手动指定的源优先于第一个分组的组长", () => {
+  const plan = planMultiGameSync({
+    mode: SYNC_MODE_GLOBAL,
+    frames: frames("a", "b", "c", "d"),
+    groups: [
+      { id: "g1", scopeIds: ["c", "d"] },
+      { id: "g2", scopeIds: ["a", "b"] },
+    ],
+    globalSourceScopeId: "b",
+  });
+  assert.equal(plan.sourceScopeId, "b");
+  assert.equal(plan.globalSourceManual, true);
+  // b 属于第二个分组，这里记的是「源所在的分组」而不是第一个分组
+  assert.equal(plan.globalSourceGroupId, "g2");
+  assert.deepEqual(plan.targets, { b: ["a", "c", "d"] });
+  assert.deepEqual(plan.roles, {
+    a: { send: false, receive: true },
+    b: { send: true, receive: false },
+    c: { send: false, receive: true },
+    d: { send: false, receive: true },
+  });
+});
+
+test("全局同步：手动指定的窗口关掉后回退到第一个分组的组长", () => {
+  const plan = planMultiGameSync({
+    mode: SYNC_MODE_GLOBAL,
+    frames: frames("a", "c", "d"),
+    groups: [{ id: "g1", scopeIds: ["c", "d"] }],
+    globalSourceScopeId: "b",
+  });
+  assert.equal(plan.sourceScopeId, "c");
+  assert.equal(plan.globalSourceManual, false);
+  assert.equal(plan.globalSourceGroupId, "g1");
+});
+
+test("分组同步：手动指定的全局同步源不影响各组组长", () => {
+  const plan = planMultiGameSync({
+    mode: SYNC_MODE_GROUP,
+    frames: frames("a", "b", "c", "d"),
+    groups: [
+      { id: "g1", scopeIds: ["a", "b"] },
+      { id: "g2", scopeIds: ["c", "d"] },
+    ],
+    globalSourceScopeId: "d",
+  });
+  assert.deepEqual(plan.sources, [
+    { groupId: "g1", scopeId: "a" },
+    { groupId: "g2", scopeId: "c" },
+  ]);
+  assert.equal(plan.globalSourceManual, false);
+  assert.equal(plan.sourceScopeId, null);
 });
 
 test("只显示有已打开窗口的分组（Token 管理里没选中的分组不会出现）", () => {

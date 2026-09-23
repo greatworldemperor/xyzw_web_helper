@@ -156,7 +156,7 @@
       </n-popover>
     </header>
 
-    <!-- 同步栏：模式 / 分组顺序 / 组长（第一个分组的组长即全局同步源） -->
+    <!-- 同步栏：模式 / 分组顺序 / 组长（全局同步源默认取第一个分组的组长，也可点窗口标题指定） -->
     <section
       v-if="frames.length"
       class="sync-bar"
@@ -185,6 +185,15 @@
         >
           {{ syncSummary }}
         </span>
+        <button
+          v-if="syncMode === SYNC_MODE_GLOBAL && syncGlobalSource"
+          type="button"
+          class="sync-source-clear"
+          title="取消手动指定的同步源，改回按「第一个分组的组长」推导"
+          @click="clearGlobalSource"
+        >
+          ✕ 取消手动源
+        </button>
       </div>
 
       <div v-if="syncGroups.length" class="sync-group-row">
@@ -262,11 +271,11 @@
           </div>
         </div>
         <span class="sync-hint">
-          分组直接来自 Token 管理，只显示已打开窗口所在的分组；拖动 ⠿ 调整顺序，第一个分组的组长就是全局同步源，分组同步时各组组长只驱动本组
+          分组直接来自 Token 管理，只显示已打开窗口所在的分组；拖动 ⠿ 调整顺序，第一个分组的组长是全局同步的默认源，分组同步时各组组长只驱动本组；全局同步模式下点窗口标题可直接指定同步源
         </span>
       </div>
       <span v-else class="sync-hint">
-        本次打开的窗口都不在任何 Token 管理分组里：同步分组只引用 Token 管理中的分组，请先到 Token 管理把账号分好组并勾选，再回到这里选择同步模式
+        本次打开的窗口都不在任何 Token 管理分组里：分组同步用不了，请先到 Token 管理把账号分好组并勾选；全局同步不受影响，点窗口标题就能指定同步源
       </span>
     </section>
 
@@ -320,7 +329,18 @@
           >
             {{ frameSyncRole(frame.scopeId).label }}
           </span>
-          <span class="account-name" :title="frame.name">{{ frame.name }}</span>
+          <!-- 全局同步下点标题即指定同步源（不依赖 Token 管理分组） -->
+          <button
+            v-if="syncMode === SYNC_MODE_GLOBAL"
+            type="button"
+            class="account-name account-name-pick"
+            :class="{ 'is-global-source': isGlobalSourceScope(frame.scopeId) }"
+            :title="globalSourceTitle(frame.scopeId)"
+            @click="toggleGlobalSource(frame.scopeId)"
+          >
+            {{ frame.name }}
+          </button>
+          <span v-else class="account-name" :title="frame.name">{{ frame.name }}</span>
           <span
             class="frame-status"
             :class="`is-${frameStates[frame.scopeId]?.status || 'loading'}`"
@@ -499,6 +519,7 @@ import {
   moveMultiGameSession,
   MULTI_GAME_FRAME_SPOOF_KEY,
   MULTI_GAME_PLATFORM_SPOOF_KEY,
+  MULTI_GAME_SYNC_GLOBAL_SOURCE_KEY,
   MULTI_GAME_SYNC_GROUP_ORDER_KEY,
   MULTI_GAME_SYNC_LEGACY_GROUPS_KEY,
   MULTI_GAME_SYNC_MASTERS_KEY,
@@ -573,7 +594,8 @@ const frameStates = reactive(
 );
 
 // ========== 同步操作相关状态 ==========
-// 三种模式：不同步（默认）/ 分组同步（各组组长驱动本组）/ 全局同步（第一个分组的组长驱动全部）
+// 三种模式：不同步（默认）/ 分组同步（各组组长驱动本组）/ 全局同步（一个源驱动全部，
+// 源点窗口标题指定，没指定时用第一个分组的组长）
 const SYNC_CMD_CHANNEL = "multi-game-sync";
 const SYNC_VERSION = 2;
 const syncThrottleMs = 16; // ~60fps
@@ -581,6 +603,8 @@ const tokenGroups = ref([]);
 const syncMode = ref(SYNC_MODE_NONE);
 const syncGroupOrder = ref([]);
 const syncGroupMasters = ref({});
+// 全局同步源：点窗口标题手动指定的 scopeId；空 = 按「第一个分组的组长」推导
+const syncGlobalSource = ref("");
 const draggingGroupId = ref("");
 const dragOverGroupId = ref("");
 const syncModeOptions = SYNC_MODE_OPTIONS;
@@ -637,6 +661,8 @@ function loadSyncSettings() {
           ]),
         )
       : {};
+  const globalSource = readJsonStorage(MULTI_GAME_SYNC_GLOBAL_SOURCE_KEY, "");
+  syncGlobalSource.value = typeof globalSource === "string" ? globalSource : "";
 }
 
 /**
@@ -772,6 +798,7 @@ const syncPlan = computed(() =>
     })),
     groups: syncGroups.value,
     masters: syncGroupMasters.value,
+    globalSourceScopeId: syncGlobalSource.value,
   }),
 );
 
@@ -791,8 +818,9 @@ const ungroupedFrameCount = computed(() => {
 
 const syncGroupChips = computed(() => {
   const plan = syncPlan.value;
+  // 手动指定同步源时，高亮它所在的分组；没手动指定才把第一个分组标成「默认全局源」
   const globalSourceGroupId =
-    plan.mode === SYNC_MODE_GLOBAL ? (plan.groups[0]?.id ?? null) : null;
+    plan.mode === SYNC_MODE_GLOBAL ? plan.globalSourceGroupId : null;
   return plan.groups.map((group) => {
     const opened = group.scopeIds.length;
     const totalMembers = group.tokenKeys.length;
@@ -820,7 +848,7 @@ const syncSummary = computed(() => {
   if (plan.mode === SYNC_MODE_NONE) return "○ 不同步（默认，不会互相影响）";
   if (!plan.active) {
     if (!plan.groups.length) {
-      return "○ 未生效：没有可用分组，请先在 Token 管理里给账号分组并勾选";
+      return "○ 未生效：没有可用分组，请先在 Token 管理里给账号分组并勾选，或点击窗口标题直接指定全局同步源";
     }
     return plan.mode === SYNC_MODE_GLOBAL
       ? "○ 未生效：没有可用窗口"
@@ -828,7 +856,11 @@ const syncSummary = computed(() => {
   }
   const targetCount = new Set(Object.values(plan.targets).flat()).size;
   if (plan.mode === SYNC_MODE_GLOBAL) {
-    return `● 全局：${frameName(plan.sourceScopeId)} 驱动 ${targetCount} 个窗口`;
+    const source = frameName(plan.sourceScopeId);
+    if (!targetCount) return `● 全局：${source} 是同步源，暂无其他窗口可跟随`;
+    return `● 全局：${source} 驱动 ${targetCount} 个窗口（${
+      plan.globalSourceManual ? "手动指定" : "第一个分组的组长"
+    }）`;
   }
   const skipped = ungroupedFrameCount.value;
   return `● 分组：${plan.sources.length} 个组长驱动 ${targetCount} 个窗口${
@@ -842,6 +874,45 @@ function setSyncMode(mode) {
   syncMode.value = next;
   writeJsonStorage(MULTI_GAME_SYNC_MODE_KEY, next);
   broadcastSyncConfig();
+}
+
+/** 当前是否就是这个窗口在当全局同步源（只有全局同步模式才有这一说）。 */
+function isGlobalSourceScope(scopeId) {
+  return (
+    syncMode.value === SYNC_MODE_GLOBAL &&
+    syncPlan.value.sourceScopeId === String(scopeId)
+  );
+}
+
+function globalSourceTitle(scopeId) {
+  const name = frameName(scopeId);
+  return isGlobalSourceScope(scopeId)
+    ? `${name} 是当前全局同步源：点击取消，改回按「第一个分组的组长」推导`
+    : `点击把 ${name} 设为全局同步源，其他窗口跟随它的操作`;
+}
+
+/** 写入手动指定的全局同步源（空字符串 = 取消，回退为第一个分组的组长）。 */
+function setGlobalSource(scopeId) {
+  const next = typeof scopeId === "string" ? scopeId : "";
+  if (next === syncGlobalSource.value) return;
+  syncGlobalSource.value = next;
+  writeJsonStorage(MULTI_GAME_SYNC_GLOBAL_SOURCE_KEY, next);
+  broadcastSyncConfig();
+}
+
+function clearGlobalSource() {
+  setGlobalSource("");
+}
+
+/**
+ * 点击窗口标题指定全局同步源 —— 不依赖 Token 管理分组，
+ * 临时拼起来的一批窗口也能选队长。再点一次取消（回退为第一个分组的组长）。
+ * 分组同步没有这个入口：各组的组长在同步栏下拉 / 分组标签里选。
+ */
+function toggleGlobalSource(scopeId) {
+  if (syncMode.value !== SYNC_MODE_GLOBAL) return;
+  const key = String(scopeId);
+  setGlobalSource(syncGlobalSource.value === key ? "" : key);
 }
 
 function getFrameGroups(scopeId) {
@@ -1005,11 +1076,14 @@ function handleUserEventFromFrame(scopeId, eventData) {
   lockStripScroll();
 }
 
-// 窗口增减 / 窗口顺序 / 分组归属变化都会改变同步角色，重新下发一次
+// 窗口增减 / 窗口顺序 / 分组归属 / 手动同步源变化都会改变同步角色，重新下发一次
 watch(
   () =>
-    syncGroups.value
-      .map((group) => `${group.id}:${group.scopeIds.join(",")}`)
+    Object.entries(syncPlan.value.roles)
+      .map(
+        ([scopeId, role]) =>
+          `${scopeId}:${role.send ? "s" : ""}${role.receive ? "r" : ""}`,
+      )
       .join("|"),
   () => broadcastSyncConfig(),
 );
@@ -1393,6 +1467,8 @@ function closeFrame(frame) {
     clearControlPending(frame.scopeId);
     frameElements.delete(frame.scopeId);
     delete frameStates[frame.scopeId];
+    // 关掉的正好是手动指定的全局同步源：顺手清掉，别留一个指向已关窗口的引用
+    if (syncGlobalSource.value === frame.scopeId) setGlobalSource("");
     const nextSelection = new Set(selectedScopes.value);
     nextSelection.delete(frame.scopeId);
     selectedScopes.value = nextSelection;
@@ -1639,6 +1715,25 @@ onUnmounted(() => {
 
 .sync-summary.is-off {
   color: #64748b;
+}
+
+/* 有手动指定的全局同步源时，给个一键回到默认（第一个分组的组长）的入口 */
+.sync-source-clear {
+  flex: none;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid #334155;
+  border-radius: 5px;
+  color: #cbd5e1;
+  background: #111827;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.sync-source-clear:hover {
+  border-color: #64748b;
+  color: #f8fafc;
 }
 
 .sync-group-chips {
@@ -2052,6 +2147,31 @@ onUnmounted(() => {
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 全局同步模式下标题变成按钮：点一下就是同步源（虚线提示可点） */
+.account-name-pick {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #cbd5e1;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  text-align: left;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.account-name-pick:hover,
+.account-name-pick:focus-visible {
+  color: #f8fafc;
+}
+
+.account-name-pick.is-global-source {
+  color: #4ade80;
+  font-weight: 700;
+  text-decoration: underline;
 }
 
 .frame-status {
