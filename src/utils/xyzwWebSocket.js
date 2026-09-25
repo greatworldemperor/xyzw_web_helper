@@ -311,6 +311,14 @@ export function registerDefaultCommands(reg) {
     .register("activity_claimsignreward", { activityId: 0, patchDay: 0 })
     .register("activity_getlotteryinfo")
     .register("activity_lottery", { times: 1 })
+    // 累计抽奖奖励：每档固定 +2 张抽奖券 5283（2026-09-25 抓包实证 id 11~15）
+    .register("activity_claimlotterycumulative", { id: 0 })
+    // 兑换商店：消耗 5284（每 50 抽产出 1 个）换道具
+    .register("activity_exchange", {
+      activityId: 0,
+      goodsId: 0,
+      quantity: 0,
+    })
     .register("activity_buystoregoods", {
       activityId: 6,
       goodsIndex: 0,
@@ -1156,6 +1164,9 @@ export class XyzwWebSocketClient {
       activity_rewardresp: "activity_claimsignreward",
       activity_getlotteryinforesp: "activity_getlotteryinfo",
       activity_lotteryresp: "activity_lottery",
+      activity_claimlotterycumulativeresp: "activity_claimlotterycumulative",
+      // 兑换商店回的是通用奖励响应 Common_RewardResp
+      commonrewardresp: "activity_exchange",
       arena_getarearankresp: "arena_getarearank",
       bosstower_gethelprankresp: "bosstower_gethelprank",
       // 功法相关响应映射

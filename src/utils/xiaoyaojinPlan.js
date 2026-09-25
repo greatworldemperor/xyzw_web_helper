@@ -17,13 +17,23 @@
  * 活动实例 ID 规则（同一期全服一致、跨账号一致；详见 docs/xiaoyaojin-activity-protocol.md）：
  *
  *   YYMMDD + 功能位    1 = 战令（= warOrderActivityInfo 的键）/ 2 = 抽奖奖池 pack /
- *                      4 = 一次性礼包 / 5 = 7 天登录
+ *                      4 = 一次性礼包 / 5 = 7 天登录 / 6 = 兑换商店
  *
- *   例：#2026-09-19 期 → 战令 2609191 / 礼包活动 2609194（商品 26091941）/ 签到 2609195
+ *   例：#2026-09-19 期 → 战令 2609191 / 礼包活动 2609194（商品 26091941）/ 签到 2609195 /
+ *                        兑换 2609196（商品 260919602）
  *
  * 战令内部 ID = 战令实例 ID + 2 位序号：
  *   01~30 → 每日任务（出现在 `taskClaimed` 里，`complete[id] >= 1` 才可领）
  *   41+   → 战令等级奖励（出现在 `rewardClaimed` 里；本工具暂不处理）
+ *
+ * ## 玄武灵契（抽奖券 5283）的「领 → 耗 → 再领」闭环（2026-09-25 抓包实证）
+ *
+ *   activity_lottery { times: N }           → 扣 5283 ×N（**N=10 十连实测可行**）
+ *   activity_claimlotterycumulative { id }  → **每档固定 +2 张 5283**（id 11~15 全部 5283×2）+ 5285×5
+ *   activity_exchange { activityId, goodsId, quantity } → 消耗 5284 换道具（1023×10）
+ *
+ * 所以「抽光为止」= 反复 { 抽 → 券尽 → 扫累计奖励补券 → 再抽 }，
+ * 其中累计奖励的门槛随 id 递增 → **第一个不可领的 id 之后必然也都不可领，可安全停止**。
  */
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
@@ -37,13 +47,44 @@ export const XIAOYAOJIN_SLOTS = Object.freeze({
   lottery: "2",
   gift: "4",
   sign: "5",
+  /** 兑换商店（2026-09-25 抓包实证：activity_exchange 的 activityId = 2609196） */
+  exchange: "6",
 });
 
 /** 一次性礼包商品号 = 礼包活动 ID + 该序号（2609194 → 26091941） */
 export const XIAOYAOJIN_GIFT_GOODS_SUFFIX = "1";
 
+/** 兑换商店商品号 = 兑换活动 ID + 该序号（2609196 → 260919602） */
+export const XIAOYAOJIN_EXCHANGE_GOODS_SUFFIX = "02";
+
 /** 抽奖券道具 ID（抓包实证：礼包掉落 5283 ×1，抽奖后 5283 归零） */
 export const XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID = 5283;
+
+/**
+ * 兑换材料道具 ID（5284）
+ *
+ * 实证（2026-09-25）：`role.pack[奖池ID][5284]` 与 `lotteryInfo.fragProgress` 同步，**每抽 1 次 +1**；
+ * 满 50 归零并把 1 个 5284 发进背包（`num 99/frag 49 → 抽 1 次 → num 100/frag 0，reward 5284×1`）。
+ * `activity_exchange` 消耗的就是背包里的 5284（响应里 `role.items["5284"] = null`）。
+ */
+export const XIAOYAOJIN_EXCHANGE_ITEM_ID = 5284;
+
+/** 抽奖副产物道具 ID（5285；累计奖励每档另给 ×5） */
+export const XIAOYAOJIN_LOTTERY_SUB_ITEM_ID = 5285;
+
+/**
+ * 累计抽奖奖励（`activity_claimlotterycumulative`）的 id 扫描上界
+ *
+ * 已领的 id 能从 `lotteryInfo.cumulativeClaimedMap` 读到；未领的只能逐个试。
+ * 本期实证见到 1~15，门槛随 id 递增 → 遇到第一个不可领的 id 即停，不会刷到 30。
+ */
+export const XIAOYAOJIN_CUMULATIVE_ID_MAX = 30;
+
+/** 「抽光为止」循环的迭代上限（防死循环；正常跑不到） */
+export const XIAOYAOJIN_LOTTERY_LOOP_MAX_ROUNDS = 200;
+
+/** 单次「抽光为止」最多发多少次兑换请求（防死循环） */
+export const XIAOYAOJIN_EXCHANGE_MAX_TIMES = 50;
 
 /**
  * 战令「积分」道具 ID（= master 截图右下角那个数）
@@ -153,6 +194,8 @@ export const XIAOYAOJIN_MAX_DRAWS = 10;
  *    09-19 两份抓包对比实证 —— 账号A「先宝箱后等级」需要调两次才拿全（1221 → 1222/1223），
  *    账号B「先等级后宝箱」一次就拿全 1221+1222+1223。
  * 2. `oneTimeGift`（礼包）与 `passChest`（宝箱）都产抽奖券 5283，**都必须在 `lottery` 之前**。
+ * 3. `exchange`（兑换）消耗的是**抽奖产出**的 5284 → **必须排在 `lottery` 之后**。
+ *    （`lottery` 内部已含「抽光 → 扫累计奖励补券 → 再抽」的闭环。）
  */
 export const XIAOYAOJIN_ALL_STEPS = Object.freeze([
   "dailyTask",
@@ -161,6 +204,7 @@ export const XIAOYAOJIN_ALL_STEPS = Object.freeze([
   "oneTimeGift",
   "signReward",
   "lottery",
+  "exchange",
 ]);
 
 const toText = (value) =>
@@ -268,7 +312,7 @@ export function resolveXiaoyaojinActivityId(warOrderActivityInfo, options = {}) 
 export function deriveXiaoyaojinIds(head, overrides = {}) {
   const base = toText(head);
   const manual = (value) => toText(value) || null;
-  const { warOrder, lottery, gift, sign } = XIAOYAOJIN_SLOTS;
+  const { warOrder, lottery, gift, sign, exchange } = XIAOYAOJIN_SLOTS;
 
   return {
     head: base,
@@ -280,6 +324,11 @@ export function deriveXiaoyaojinIds(head, overrides = {}) {
       manual(overrides.giftGoodsId) ||
       `${base}${gift}${XIAOYAOJIN_GIFT_GOODS_SUFFIX}`,
     signActivityId: manual(overrides.signActivityId) || `${base}${sign}`,
+    exchangeActivityId:
+      manual(overrides.exchangeActivityId) || `${base}${exchange}`,
+    exchangeGoodsId:
+      manual(overrides.exchangeGoodsId) ||
+      `${base}${exchange}${XIAOYAOJIN_EXCHANGE_GOODS_SUFFIX}`,
   };
 }
 
@@ -423,6 +472,198 @@ export function resolveLotteryDraws(options = {}) {
 }
 
 /**
+ * 读响应里的道具数量（`body.role.items[itemId].quantity`）
+ *
+ * ⚠️ 三个坑（都踩过）：
+ * - `Number(null) === 0` → 「读不到」必须返回 `null`，不能返回 0（会把未知当成「没有券」而跳过抽奖）
+ * - **键存在且值为 `null` = 归零**（2026-09-25 实证：券抽光时 `items["5283"] = null`，
+ *   兑换材料用光时 `items["5284"] = null`）→ 这种情况必须返回 **0**，不是「未知」
+ * - **键不存在** = 服务端这次没报告这个道具（BON 省略未变化字段）→ 返回 `null`
+ *
+ * 兼容 `role` / `body.role` / `data.role` 三种形态。
+ *
+ * @returns {number|null}
+ */
+export function readItemQuantity(response, itemId) {
+  if (!response || typeof response !== "object") return null;
+  const candidates = [
+    response.role,
+    response.data?.role,
+    response.body?.role,
+    response.body?.data?.role,
+    response.role?.role,
+  ];
+  const key = String(itemId);
+  for (const role of candidates) {
+    if (!role || typeof role !== "object") continue;
+    const items = role.items;
+    if (!items || typeof items !== "object") continue;
+    if (!Object.prototype.hasOwnProperty.call(items, key)) continue;
+
+    const entry = items[key];
+    // 显式 null = 该道具已归零（patch 语义里的「删除」）
+    if (entry === null || entry === undefined) return 0;
+    const raw = entry && typeof entry === "object" ? entry.quantity : entry;
+    if (raw === null || raw === undefined || raw === "") return 0;
+    const value = Number(raw);
+    return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+  }
+  return null; // 键不存在 = 未知
+}
+
+/**
+ * 读响应 `body.reward[]` 里某道具的**总数量**（抽奖/领取都用它算「这次拿到了多少券」）
+ * @returns {number} 没有该道具 → 0
+ */
+export function readRewardQuantity(response, itemId) {
+  if (!response || typeof response !== "object") return 0;
+  const lists = [response.reward, response.body?.reward, response.data?.reward];
+  let total = 0;
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue;
+      if (String(item.itemId) !== String(itemId)) continue;
+      const value = Number(item.value ?? item.num ?? item.quantity);
+      if (Number.isFinite(value)) total += value;
+    }
+  }
+  return total;
+}
+
+/**
+ * 从各类响应里取 `lotteryInfo`
+ * （`Activity_GetLotteryInfoResp` 与 `Activity_LotteryResp` 都带，键就在 `body.lotteryInfo`）
+ */
+export function pickLotteryInfo(response) {
+  if (!response || typeof response !== "object") return null;
+  const candidates = [
+    response.lotteryInfo,
+    response.data?.lotteryInfo,
+    response.body?.lotteryInfo,
+    response.body?.data?.lotteryInfo,
+  ];
+  for (const info of candidates) {
+    if (info && typeof info === "object") return info;
+  }
+  return null;
+}
+
+/**
+ * 已领取的累计抽奖奖励 id 集合（`lotteryInfo.cumulativeClaimedMap`）
+ *
+ * 实证：`{"1":true,…,"10":true}` = 前 10 档已领；`activity_claimlotterycumulative`
+ * 的响应只回**本次领的那一个** id（`{"11":true}`）→ 调用方必须自己累积，不能拿新响应覆盖。
+ *
+ * @returns {Set<number>}
+ */
+export function readCumulativeClaimed(lotteryInfo) {
+  const info = lotteryInfo && typeof lotteryInfo === "object" ? lotteryInfo : {};
+  const map =
+    info.cumulativeClaimedMap && typeof info.cumulativeClaimedMap === "object"
+      ? info.cumulativeClaimedMap
+      : {};
+  const claimed = new Set();
+  for (const key of Object.keys(map)) {
+    const id = Number(key);
+    if (Number.isFinite(id) && map[key] === true) claimed.add(Math.trunc(id));
+  }
+  return claimed;
+}
+
+/**
+ * 待尝试领取的累计抽奖奖励 id（升序，跳过已领）
+ *
+ * 门槛随 id 递增 → 调用方在**第一个失败**的 id 上停即可（后面的必然也不可领）。
+ *
+ * @param {object|null} lotteryInfo
+ * @param {Set<number>} [claimed] 会话内自己累积的已领集合（会与 `cumulativeClaimedMap` 取并集）
+ * @param {{max?:number}} [options]
+ * @returns {number[]}
+ */
+export function listPendingCumulativeIds(lotteryInfo, claimed, options = {}) {
+  const fromServer = readCumulativeClaimed(lotteryInfo);
+  const merged = new Set(fromServer);
+  if (claimed instanceof Set) {
+    claimed.forEach((id) => merged.add(id));
+  }
+  const max = Number.isFinite(Number(options.max))
+    ? Math.trunc(Number(options.max))
+    : XIAOYAOJIN_CUMULATIVE_ID_MAX;
+  const ids = [];
+  for (let id = 1; id <= max; id += 1) {
+    if (!merged.has(id)) ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * 把「券余额」拆成一串抽奖批次 —— **十连优先**
+ *
+ * 实证：`activity_lottery {times:10}` 一次扣 10 张（40→30→20→10→0），与抓包逐字节一致。
+ *
+ * @param {number|null|undefined} ticketCount 券余额；`null/undefined/""` = 未知
+ * @param {{perBatch?:number}} [options] 每批张数（1~10，默认 10）
+ * @returns {{batches:number[], tickets:number|null}}
+ *          余额未知时给一批 `perBatch`（由服务端裁定，循环靠响应里的余额变化收敛）
+ */
+export function planLotteryBatches(ticketCount, options = {}) {
+  const per = Math.min(
+    XIAOYAOJIN_MAX_DRAWS,
+    Math.max(1, Math.trunc(Number(options.perBatch) || XIAOYAOJIN_MAX_DRAWS)),
+  );
+
+  const raw = ticketCount;
+  const hasValue = raw !== null && raw !== undefined && raw !== "";
+  const tickets =
+    hasValue && Number.isFinite(Number(raw))
+      ? Math.max(0, Math.trunc(Number(raw)))
+      : null;
+
+  if (tickets === null) return { batches: [per], tickets: null };
+  if (tickets <= 0) return { batches: [], tickets };
+
+  const batches = [];
+  for (let left = tickets; left > 0; left -= per) {
+    batches.push(Math.min(per, left));
+  }
+  return { batches, tickets };
+}
+
+/**
+ * 兑换次数：有多少 5284 换多少次
+ *
+ * @param {number|null|undefined} fragCount
+ * @returns {number|null} null = 读不到余额（调用方按 1 次试探）
+ */
+export function resolveExchangeTimes(fragCount) {
+  const raw = fragCount;
+  const hasValue = raw !== null && raw !== undefined && raw !== "";
+  if (!hasValue || !Number.isFinite(Number(raw))) return null;
+  const value = Math.max(0, Math.trunc(Number(raw)));
+  return Math.min(value, XIAOYAOJIN_EXCHANGE_MAX_TIMES);
+}
+
+/**
+ * 抽奖状态人类可读摘要（纯读，用于日志）
+ * @returns {{draws:number|null, frag:number|null, claimedCumulative:number[], pendingCumulative:number}}
+ */
+export function summarizeLottery(lotteryInfo, claimed) {
+  const info = lotteryInfo && typeof lotteryInfo === "object" ? lotteryInfo : {};
+  const num = Number(info.lotteryNum);
+  const frag = Number(info.fragProgress);
+  const fromServer = readCumulativeClaimed(info);
+  const merged = new Set(fromServer);
+  if (claimed instanceof Set) claimed.forEach((id) => merged.add(id));
+  return {
+    draws: Number.isFinite(num) ? num : null,
+    frag: Number.isFinite(frag) ? frag : null,
+    claimedCumulative: [...merged].sort((a, b) => a - b),
+    pendingCumulative: listPendingCumulativeIds(info, claimed).length,
+  };
+}
+
+/**
  * 汇总 activity_get → 逍遥津执行计划
  *
  * @param {object} response  activity_get 的 Promise 返回值
@@ -503,10 +744,20 @@ export function buildXiaoyaojinPlan(response, options = {}) {
     commonConfirmed: {
       gift: commonKeys.includes(ids.giftActivityId),
       sign: commonKeys.includes(ids.signActivityId),
+      exchange: commonKeys.includes(ids.exchangeActivityId),
       /** 一次性礼包本期是否已领（服务端 record 里已有该商品记录） */
       giftBought: Number(giftRecord[ids.giftGoodsId]) >= 1,
       /** 7 天登录已记录的日期序号（1 起） */
       signDays: recordDays(signRecord),
+      /**
+       * 兑换商店本期已兑换次数（`commonActivityInfo[兑换活动ID].record[goodsId]`）
+       * 实证：连换两次 → 1 → 2。仅作日志佐证，兑换次数由背包 5284 余额决定。
+       */
+      exchangeTimes: Number(
+        (commonActivityInfo[ids.exchangeActivityId]?.record || {})[
+          ids.exchangeGoodsId
+        ],
+      ) || 0,
       keys: commonKeys,
     },
   };
@@ -515,12 +766,21 @@ export function buildXiaoyaojinPlan(response, options = {}) {
 export default {
   XIAOYAOJIN_SLOTS,
   XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
+  XIAOYAOJIN_EXCHANGE_ITEM_ID,
   buildXiaoyaojinPlan,
   deriveXiaoyaojinIds,
   getActivityDateHead,
   isDailyMissionId,
+  listPendingCumulativeIds,
   listPendingDailyClaims,
+  pickLotteryInfo,
+  planLotteryBatches,
+  readCumulativeClaimed,
+  readItemQuantity,
+  readRewardQuantity,
+  resolveExchangeTimes,
   resolveLotteryDraws,
   resolveXiaoyaojinActivityId,
+  summarizeLottery,
   summarizePassRewards,
 };

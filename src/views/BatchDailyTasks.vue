@@ -867,7 +867,9 @@
                     placeholder="抽奖次数"
                     :disabled="isRunning"
                   />
-                  <span class="xiaoyaojin-hint">抽奖次数（受抽奖券余额限制）</span>
+                  <span class="xiaoyaojin-hint">
+                    每批抽奖张数（1~10，十连填 10；「抽奖」会把券抽光为止）
+                  </span>
                 </n-space>
                 <n-space :size="8">
                   <n-button
@@ -922,6 +924,20 @@
                   </n-button>
                   <n-button
                     size="small"
+                    @click="xiaoyaojinCumulative"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    累计抽奖奖励
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="xiaoyaojinExchange"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    兑换
+                  </n-button>
+                  <n-button
+                    size="small"
                     type="info"
                     ghost
                     :loading="xiaoyaojinInspecting"
@@ -935,6 +951,10 @@
                   逍遥津为限时活动：活动实例 ID（YYMMDD+功能位）由 activity_get 现场探测，
                   逐账号解析；已领取/未达成均视为正常结束。「战令等级奖励」本地按
                   complete&gt;0 且未领取圈候选、逐个交给服务端裁定（候选多时较慢）。
+                  「抽奖」= 抽光为止的闭环：十连优先地抽 → 券（玄武灵契 5283）尽 →
+                  扫 activity_claimlotterycumulative 补券（每档 +2 张）→ 再抽，
+                  直到券尽且领不出券为止。「兑换」消耗抽奖产出的 5284（每 50 抽 1 个），
+                  有多少换多少次，故排在抽奖之后。
                 </span>
               </n-space>
             </n-tab-pane>
@@ -3893,11 +3913,12 @@ const weirdTowerMaxClimb = ref(DEFAULT_WEIRD_TOWER_MAX_CLIMB);
 // —— 逍遥津（限时临时活动，入口在批量任务底部「临时活动」标签页）——
 // 协议与结论见 docs/xiaoyaojin-activity-protocol.md；纯逻辑见 utils/xiaoyaojinPlan.js
 /** 单账号本次抽奖次数上限（默认 1，与抓包一致；实际还会被抽奖券余额收紧） */
-const xiaoyaojinDraws = ref(1);
+// 每批抽奖张数（1~10）；默认 10 = 十连优先（「抽奖」会把券抽光为止）
+const xiaoyaojinDraws = ref(10);
 /** 「探测活动实例」按钮的 loading */
 const xiaoyaojinInspecting = ref(false);
 /** 传给任务模块的运行时选项（手工覆盖活动 ID 时填 overrides） */
-const xiaoyaojinOptions = reactive({ draws: 1, overrides: {} });
+const xiaoyaojinOptions = reactive({ draws: 10, overrides: {} });
 watch(xiaoyaojinDraws, (value) => {
   xiaoyaojinOptions.draws = value;
 });
@@ -5191,6 +5212,8 @@ const taskGroupDefinitions = [
       "xiaoyaojinOneTimeGift",
       "xiaoyaojinSignReward",
       "xiaoyaojinLottery",
+      "xiaoyaojinCumulative",
+      "xiaoyaojinExchange",
     ],
   },
   {
@@ -8072,6 +8095,8 @@ const {
   xiaoyaojinOneTimeGift,
   xiaoyaojinSignReward,
   xiaoyaojinLottery,
+  xiaoyaojinCumulative,
+  xiaoyaojinExchange,
   inspectXiaoyaojin,
 } = tasksXiaoyaojin;
 
@@ -8207,6 +8232,26 @@ const inspectXiaoyaojinActivity = async () => {
             ? `；下一档 ${tiers.nextTier.tier}（${tiers.nextTier.missionId.slice(-3)}）还差 ${tiers.nextTier.pointsNeeded} 分`
             : "；已到最高档"),
         type: tiers.pendingTiers.length > 0 ? "success" : "info",
+      });
+    }
+
+    // 抽奖侧：累计次数 / 已领累计奖励档 / 玄武灵契余额 / 兑换材料余额
+    const lottery = plan.lottery;
+    if (lottery) {
+      addLog({
+        time: new Date().toLocaleTimeString(),
+        message:
+          `${tokenName} 抽奖：累计 ${lottery.draws ?? "?"} 次；` +
+          `累计奖励已领 ${lottery.claimedCumulative?.length ?? 0} 档` +
+          (lottery.claimedCumulative?.length
+            ? `（${lottery.claimedCumulative.join("/")}）`
+            : "") +
+          `；玄武灵契(5283) 余额 ${lottery.tickets ?? "?"}；` +
+          `兑换材料(5284) 余额 ${lottery.frag ?? "?"}` +
+          (plan.commonConfirmed.exchange
+            ? `；兑换活动 ${plan.ids.exchangeActivityId} / 商品 ${plan.ids.exchangeGoodsId}（已换 ${plan.commonConfirmed.exchangeTimes} 次）`
+            : `；兑换活动 ${plan.ids.exchangeActivityId}（推送中未见）`),
+        type: "info",
       });
     }
   } catch (error) {

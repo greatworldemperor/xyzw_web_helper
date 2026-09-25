@@ -10,23 +10,45 @@
  *   1c. 战令等级奖励    activity_warordertaskclaim { actId, missionId }   （序号 41+，**同一个命令**）
  *   2. 一次性奖励       activity_commonbuygoods { goodsId }               （免费礼包，产抽奖券 5283）
  *   3. 7 天登录奖励     activity_claimsignreward { activityId, patchDay: 0 }
- *   4. 抽奖             activity_getlotteryinfo → activity_lottery { times: 1 } × N
+ *   4. 抽奖（含玄武灵契闭环） activity_getlotteryinfo → { activity_lottery × N ⇄ activity_claimlotterycumulative }
+ *   5. 兑换               activity_exchange { activityId, goodsId, quantity: 1 }（消耗 5284）
  *
  * ⚠️ 每日任务与战令等级奖励**共用** `activity_warordertaskclaim` 与 `taskClaimed` 字段，
  * 靠 missionId 末两位序号区分（01~30 每日任务，41+ 等级奖励）。
  *
+ * ## 玄武灵契（抽奖券 5283）闭环 —— 2026-09-25 抓包实证
+ *
+ *   activity_lottery { times: N }           → 扣 5283 ×N（**N=10 十连实测可行**）
+ *   activity_claimlotterycumulative { id }  → **每档固定 +2 张 5283**（id 11~15 全是 ×2）+ 5285×5
+ *
+ * 所以「抽光为止」= 反复 { 十连优先地抽 → 券尽 → 扫累计奖励补券 → 再抽 }，
+ * 直到「券尽且累计奖励也领不出券」。累计奖励的门槛随 id 递增 →
+ * **第一个不可领的 id 之后必然也都不可领**，扫到失败即停（不会傻扫 30 次）。
+ *
+ * 兑换（5284）消耗的是**抽奖产出**（每 50 抽给 1 个）→ 必须排在抽奖之后。
+ *
  * 设计要点：
  * - 全部 ID 都从 `activity_get` 现场探测（不写死活动 ID），逐账号独立解析；
- * - 每次调用只发 1 次 `activity_lottery`（与抓包逐字节一致），循环次数受抽奖券余额约束；
+ * - 券余额优先从**抽奖响应里**读（省一次 role_getroleinfo），读不到才回退主动查询；
  * - 已领取 / 未达成 / 活动未开 都算「正常结束」，不记错误、不打断其他账号。
  */
 import {
   XIAOYAOJIN_ALL_STEPS,
+  XIAOYAOJIN_CUMULATIVE_ID_MAX,
+  XIAOYAOJIN_EXCHANGE_ITEM_ID,
+  XIAOYAOJIN_LOTTERY_LOOP_MAX_ROUNDS,
   XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
+  XIAOYAOJIN_MAX_DRAWS,
   XIAOYAOJIN_POINTS_ITEM_ID,
   buildXiaoyaojinPlan,
   describePassTiers,
-  resolveLotteryDraws,
+  listPendingCumulativeIds,
+  pickLotteryInfo,
+  readCumulativeClaimed,
+  readItemQuantity,
+  readRewardQuantity,
+  resolveExchangeTimes,
+  summarizeLottery,
 } from "../xiaoyaojinPlan.js";
 
 const nowText = () => new Date().toLocaleTimeString();
@@ -434,10 +456,94 @@ export function createTasksXiaoyaojin(deps) {
   };
 
   /**
-   * 4) 抽奖：先查状态与抽奖券，再逐次 activity_lottery { times: 1 }
-   * 抽奖券不足时由服务端拒绝，循环遇错即停。
+   * 读背包里某个道具的数量（券 5283 / 兑换材料 5284 都走它）
+   * @returns {number|null} 读不到返回 null（**不是 0** —— 0 会让人误以为「没券」而跳过）
+   */
+  const readItemCount = async (tokenId, tokenName, itemId) => {
+    try {
+      const roleInfo = await sendRoleInfo(tokenId);
+      return readItemQuantity(roleInfo, itemId);
+    } catch (error) {
+      log(tokenName, `读取道具 ${itemId} 数量失败：${errorText(error)}`, "warning");
+      return null;
+    }
+  };
+
+  /**
+   * 扫一遍「累计抽奖奖励」—— **玄武灵契的主要来源**
+   *
+   * 每档固定 +2 张 5283（实证 id 11~15）+ 5285×5，门槛随 id 递增：
+   * 抓包里 11/12/13/14 在累计 99 次时连领，15 要等到 107 次才够。
+   *
+   * ⚠️ `claimedIds` 必须跨调用累积：服务端的 `cumulativeClaimedMap` 每次只回**本次领的那一个**，
+   * 拿新响应覆盖会把历史已领的档位忘掉 → 每轮都从 id 1 重发一遍。
+   *
+   * @param {Set<number>} claimedIds 会话内累积的已领 id（**原地更新**）
+   * @returns {{count:number, tickets:number}} 新领档数 / 新拿到的券数
+   */
+  const claimCumulative = async ({ tokenId, token, claimedIds }) => {
+    const ids = listPendingCumulativeIds(null, claimedIds, {
+      max: XIAOYAOJIN_CUMULATIVE_ID_MAX,
+    });
+    let count = 0;
+    let tickets = 0;
+
+    for (const id of ids) {
+      if (shouldStop.value) break;
+      try {
+        const response = await tokenStore.sendMessageWithPromise(
+          tokenId,
+          "activity_claimlotterycumulative",
+          { id },
+          8000,
+        );
+        claimedIds.add(id);
+        count += 1;
+        tickets += readRewardQuantity(
+          response,
+          XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
+        );
+        log(
+          token.name,
+          `累计抽奖奖励 第 ${id} 档领取成功（${rewardText(response)}）`,
+          "success",
+        );
+      } catch (error) {
+        if (isRateLimitError(error)) {
+          log(
+            token.name,
+            `触发限流(400340)，累计抽奖奖励剩余 ${ids.length - ids.indexOf(id)} 档下次再领`,
+            "warning",
+          );
+          break;
+        }
+        if (isAlreadyDoneError(error)) {
+          // 已领过（但本地 map 里没有）→ 记下来继续看下一档
+          claimedIds.add(id);
+          continue;
+        }
+        // 未达标 / 档位不存在 / 其它：门槛随 id 递增 → 后面的必然也不可领，停止本轮扫描
+        break;
+      }
+      await sleep(Math.max(300, actionDelay()));
+    }
+    return { count, tickets };
+  };
+
+  /**
+   * 4) 抽奖 —— **「抽光为止」闭环**：抽 → 券尽 → 扫累计奖励补券 → 再抽
+   *
+   * 十连优先（`times:10` 实测可行）；券余额优先从抽奖响应里读，读不到才查背包。
+   * 界面上的「抽奖次数」= **每批张数**（1~10），不再是「总共抽几次」。
    */
   const runLottery = async ({ tokenId, token, plan }) => {
+    const perBatch = Math.min(
+      XIAOYAOJIN_MAX_DRAWS,
+      Math.max(1, Math.trunc(Number(readOptions().draws) || XIAOYAOJIN_MAX_DRAWS)),
+    );
+
+    // 4.1 抽奖状态：累计次数 / 已领累计奖励档
+    let lotteryInfo = null;
     try {
       const info = await tokenStore.sendMessageWithPromise(
         tokenId,
@@ -445,58 +551,214 @@ export function createTasksXiaoyaojin(deps) {
         {},
         8000,
       );
-      const lotteryInfo =
-        info?.lotteryInfo || info?.data?.lotteryInfo || info || {};
-      log(token.name, `抽奖状态：${JSON.stringify(lotteryInfo)}`);
+      lotteryInfo = pickLotteryInfo(info);
     } catch (error) {
       log(token.name, `抽奖状态查询失败（继续尝试抽奖）：${errorText(error)}`);
     }
     await sleep();
 
-    let ticketCount = null;
-    try {
-      const roleInfo = await sendRoleInfo(tokenId);
-      const role = roleInfo?.role || roleInfo?.data?.role || {};
-      ticketCount = Number(role?.items?.[XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID]?.quantity ?? 0);
-      log(token.name, `抽奖券(${XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID}) 余额 ${ticketCount}`);
-    } catch (error) {
+    const claimedIds = readCumulativeClaimed(lotteryInfo);
+    const summary = summarizeLottery(lotteryInfo, claimedIds);
+    log(
+      token.name,
+      `抽奖状态：累计 ${summary.draws ?? "?"} 次，碎片 ${summary.frag ?? "?"}，` +
+        `累计奖励已领 ${summary.claimedCumulative.length} 档（待试 ${summary.pendingCumulative} 档）`,
+    );
+
+    // 4.2 券余额（读不到 → null，循环里按「未知」处理，靠响应收敛）
+    let balance = await readItemCount(
+      tokenId,
+      token.name,
+      XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
+    );
+    if (balance === null) {
       log(
         token.name,
-        `读取抽奖券余额失败（按配置次数尝试）：${errorText(error)}`,
+        `读取玄武灵契(${XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID})余额失败，按每批 ${perBatch} 张试探`,
         "warning",
       );
+    } else {
+      log(token.name, `玄武灵契(抽奖券 ${XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID}) 余额 ${balance}`);
+    }
+    if (balance !== null && balance <= 0) {
+      // 一张都没有也别急，先看累计奖励能不能领出券
+      const first = await claimCumulative({ tokenId, token, claimedIds });
+      if (first.tickets <= 0) {
+        log(token.name, "没有玄武灵契，也没有可领的累计抽奖奖励，跳过抽奖", "warning");
+        return;
+      }
+      balance = first.tickets;
     }
 
-    const requested = readOptions().draws;
-    const { draws, cappedByTickets } = resolveLotteryDraws({
-      requested,
-      ticketCount,
-    });
+    let drawRequests = 0;
+    let drawnTickets = 0;
+    let cumulativeCount = 0;
+    let cumulativeTickets = 0;
+    let rounds = 0;
 
-    if (cappedByTickets) {
-      log(token.name, `抽奖券不足，本次只抽 ${draws} 次`, "warning");
-    }
-    if (draws <= 0) {
-      log(token.name, "没有抽奖券，跳过抽奖", "warning");
-      return;
-    }
+    while (
+      !shouldStop.value &&
+      rounds < XIAOYAOJIN_LOTTERY_LOOP_MAX_ROUNDS
+    ) {
+      rounds += 1;
 
-    for (let index = 1; index <= draws; index++) {
-      if (shouldStop.value) break;
+      // A. 券尽 → 补券（累计奖励是唯一稳定的券来源）
+      if (balance !== null && balance <= 0) {
+        const gained = await claimCumulative({ tokenId, token, claimedIds });
+        cumulativeCount += gained.count;
+        cumulativeTickets += gained.tickets;
+        if (gained.tickets <= 0) break;
+        balance += gained.tickets;
+        continue;
+      }
+
+      // B. 发一批抽奖（十连优先）
+      const batch = balance === null ? perBatch : Math.min(perBatch, balance);
       try {
         const response = await tokenStore.sendMessageWithPromise(
           tokenId,
           "activity_lottery",
-          { times: 1 },
+          { times: batch },
           10000,
         );
-        log(token.name, `第 ${index} 次抽奖：${rewardText(response)}`, "success");
+        drawRequests += 1;
+        drawnTickets += batch;
+        // 响应里带了余额就用它（省一次 role_getroleinfo）；没带就按扣减推算
+        const fromResponse = readItemQuantity(
+          response,
+          XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
+        );
+        if (fromResponse !== null) {
+          balance = fromResponse;
+        } else if (balance !== null) {
+          balance = Math.max(0, balance - batch);
+        }
+        log(
+          token.name,
+          `抽奖 ×${batch}：${rewardText(response)}（余券 ${balance ?? "?"}）`,
+          "success",
+        );
       } catch (error) {
-        log(token.name, `第 ${index} 次抽奖失败，停止：${errorText(error)}`, "warning");
+        log(token.name, `抽奖 ×${batch} 失败，停止：${errorText(error)}`, "warning");
+        break;
+      }
+      await sleep();
+
+      // C. 抽完顺手补券（累计门槛可能刚被跨过）
+      const gained = await claimCumulative({ tokenId, token, claimedIds });
+      cumulativeCount += gained.count;
+      cumulativeTickets += gained.tickets;
+      if (gained.tickets > 0) {
+        balance = balance === null ? gained.tickets : balance + gained.tickets;
+      }
+
+      // D. 收敛：券尽 / 余额未知又补不到券 → 停（防死循环）
+      if (balance !== null && balance <= 0) break;
+      if (balance === null && gained.tickets <= 0) break;
+    }
+
+    log(
+      token.name,
+      `抽奖结束：共 ${drawnTickets} 抽 / ${drawRequests} 次请求；` +
+        `累计抽奖奖励补券 ${cumulativeTickets} 张（${cumulativeCount} 档）`,
+      drawnTickets > 0 ? "success" : "info",
+    );
+  };
+
+  /**
+   * 5) 兑换：activity_exchange { activityId, goodsId, quantity: 1 }
+   *
+   * 消耗 5284（**每 50 次抽奖产出 1 个**，实证 `fragProgress` 满 50 归零并发 1 个进背包）
+   * 换道具（抓包实证：1023×10）。有多少材料换多少次，换光为止。
+   */
+  const runExchange = async ({ tokenId, token, plan }) => {
+    const activityId = Number(plan.ids.exchangeActivityId);
+    const goodsId = Number(plan.ids.exchangeGoodsId);
+
+    let frag = await readItemCount(
+      tokenId,
+      token.name,
+      XIAOYAOJIN_EXCHANGE_ITEM_ID,
+    );
+    if (frag === null) {
+      log(
+        token.name,
+        `读取兑换材料(${XIAOYAOJIN_EXCHANGE_ITEM_ID})余额失败，试探兑换 1 次`,
+        "warning",
+      );
+    } else if (frag <= 0) {
+      log(token.name, `没有兑换材料(${XIAOYAOJIN_EXCHANGE_ITEM_ID})，跳过兑换`);
+      return;
+    } else {
+      log(token.name, `兑换材料(${XIAOYAOJIN_EXCHANGE_ITEM_ID}) 余额 ${frag}`);
+    }
+
+    const planned = resolveExchangeTimes(frag);
+    const times = planned === null ? 1 : Math.max(1, planned);
+
+    let done = 0;
+    for (let index = 1; index <= times; index += 1) {
+      if (shouldStop.value) break;
+      try {
+        const response = await tokenStore.sendMessageWithPromise(
+          tokenId,
+          "activity_exchange",
+          { activityId, goodsId, quantity: 1 },
+          8000,
+        );
+        done += 1;
+        log(
+          token.name,
+          `兑换 第 ${done} 次成功（${rewardText(response)}）`,
+          "success",
+        );
+        // 材料换光（响应里显式 null）→ 收工
+        const left = readItemQuantity(response, XIAOYAOJIN_EXCHANGE_ITEM_ID);
+        if (left !== null && left <= 0) break;
+      } catch (error) {
+        if (isRateLimitError(error)) {
+          log(token.name, "触发限流(400340)，兑换剩余次数下次再换", "warning");
+        } else if (isInactiveError(error)) {
+          log(token.name, `兑换活动未开启或商品无效：${errorText(error)}`, "warning");
+        } else {
+          log(token.name, `兑换失败，停止：${errorText(error)}`, "warning");
+        }
         break;
       }
       await sleep();
     }
+    log(token.name, `兑换结束：成功 ${done} 次`);
+  };
+
+  /**
+   * 4b) 单独跑一遍「累计抽奖奖励」（不抽奖）—— 只想补券时用
+   */
+  const claimCumulativeRewards = async ({ tokenId, token }) => {
+    let lotteryInfo = null;
+    try {
+      lotteryInfo = pickLotteryInfo(
+        await tokenStore.sendMessageWithPromise(
+          tokenId,
+          "activity_getlotteryinfo",
+          {},
+          8000,
+        ),
+      );
+    } catch (error) {
+      log(token.name, `抽奖状态查询失败（继续尝试领取）：${errorText(error)}`);
+    }
+    const claimedIds = readCumulativeClaimed(lotteryInfo);
+    const summary = summarizeLottery(lotteryInfo, claimedIds);
+    log(
+      token.name,
+      `抽奖状态：累计 ${summary.draws ?? "?"} 次，累计奖励已领 ${summary.claimedCumulative.length} 档`,
+    );
+    const gained = await claimCumulative({ tokenId, token, claimedIds });
+    log(
+      token.name,
+      `累计抽奖奖励：新领 ${gained.count} 档，拿到玄武灵契 ${gained.tickets} 张`,
+      gained.count > 0 ? "success" : "info",
+    );
   };
 
   const STEPS = {
@@ -506,6 +768,8 @@ export function createTasksXiaoyaojin(deps) {
     oneTimeGift: claimOneTimeGift,
     signReward: claimSignReward,
     lottery: runLottery,
+    cumulative: claimCumulativeRewards,
+    exchange: runExchange,
   };
 
   // ------------------------------------------------------------------ 批量框架
@@ -600,7 +864,11 @@ export function createTasksXiaoyaojin(deps) {
     runXiaoyaojin(["oneTimeGift"], "逍遥津一次性奖励");
   const xiaoyaojinSignReward = () =>
     runXiaoyaojin(["signReward"], "逍遥津7天登录奖励");
-  const xiaoyaojinLottery = () => runXiaoyaojin(["lottery"], "逍遥津抽奖");
+  const xiaoyaojinLottery = () =>
+    runXiaoyaojin(["lottery"], "逍遥津抽奖（抽光为止）");
+  const xiaoyaojinCumulative = () =>
+    runXiaoyaojin(["cumulative"], "逍遥津累计抽奖奖励");
+  const xiaoyaojinExchange = () => runXiaoyaojin(["exchange"], "逍遥津兑换");
 
   return {
     xiaoyaojinAll,
@@ -610,6 +878,8 @@ export function createTasksXiaoyaojin(deps) {
     xiaoyaojinOneTimeGift,
     xiaoyaojinSignReward,
     xiaoyaojinLottery,
+    xiaoyaojinCumulative,
+    xiaoyaojinExchange,
     // 供界面「探测活动实例」预览用：把战令档位进度也读出来（纯读）
     inspectXiaoyaojin: async (tokenId, tokenName = "") => {
       const plan = buildXiaoyaojinPlan(
@@ -618,12 +888,42 @@ export function createTasksXiaoyaojin(deps) {
       );
       if (!plan.ok) return plan;
       const points = await readPoints(tokenId, tokenName);
+
+      // 抽奖侧状态（纯读）：累计次数 / 已领累计奖励档 / 券与材料余额
+      let lottery = null;
+      try {
+        lottery = summarizeLottery(
+          pickLotteryInfo(
+            await tokenStore.sendMessageWithPromise(
+              tokenId,
+              "activity_getlotteryinfo",
+              {},
+              8000,
+            ),
+          ),
+          null,
+        );
+      } catch (error) {
+        log(tokenName, `抽奖状态查询失败：${errorText(error)}`, "warning");
+      }
+      const tickets = await readItemCount(
+        tokenId,
+        tokenName,
+        XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
+      );
+      const frag = await readItemCount(
+        tokenId,
+        tokenName,
+        XIAOYAOJIN_EXCHANGE_ITEM_ID,
+      );
+
       return {
         ...plan,
         passTiers: describePassTiers(plan.warOrderInfo, {
           actId: plan.warOrderActivityId,
           points,
         }),
+        lottery: { ...lottery, tickets, frag },
       };
     },
   };

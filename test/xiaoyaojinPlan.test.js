@@ -3,7 +3,9 @@ import { test } from "node:test";
 
 import {
   XIAOYAOJIN_ALL_STEPS,
+  XIAOYAOJIN_CUMULATIVE_ID_MAX,
   XIAOYAOJIN_DEFAULT_DRAWS,
+  XIAOYAOJIN_EXCHANGE_ITEM_ID,
   XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
   XIAOYAOJIN_MAX_ACTIVITY_AGE_DAYS,
   XIAOYAOJIN_MAX_DRAWS,
@@ -15,13 +17,21 @@ import {
   describePassTiers,
   getActivityDateHead,
   isDailyMissionId,
+  listPendingCumulativeIds,
   listPendingDailyClaims,
   listPendingPassRewards,
   parseActivityDateHead,
+  pickLotteryInfo,
+  planLotteryBatches,
+  readCumulativeClaimed,
+  readItemQuantity,
+  readRewardQuantity,
+  resolveExchangeTimes,
   resolveLotteryDraws,
   resolvePassTierCount,
   resolvePassTierMissionId,
   resolveXiaoyaojinActivityId,
+  summarizeLottery,
   summarizePassRewards,
 } from "../src/utils/xiaoyaojinPlan.js";
 
@@ -391,11 +401,13 @@ test("一键全套的步骤顺序是协议约束：先等级奖励、后一键�
   // 宝箱与礼包都产抽奖券 5283
   assert.ok(at("passChest") < at("lottery"), "宝箱必须在抽奖之前");
   assert.ok(at("oneTimeGift") < at("lottery"), "礼包必须在抽奖之前");
-  // 抽奖排最后（用券的都在它前面）
-  assert.equal(steps[steps.length - 1], "lottery");
-  // 步骤集合固定为这 6 步
+  // 兑换消耗的是**抽奖产出**的 5284（每 50 抽 1 个）→ 必须排在抽奖之后、且是最后一步
+  assert.ok(at("lottery") < at("exchange"), "兑换必须在抽奖之后");
+  assert.equal(steps[steps.length - 1], "exchange");
+  // 步骤集合固定为这 7 步
   assert.deepEqual([...steps].sort(), [
     "dailyTask",
+    "exchange",
     "lottery",
     "oneTimeGift",
     "passChest",
@@ -578,4 +590,203 @@ test("兼容裸 body 形态：res.activity / res.data.activity / 已取出的根
     assert.equal(plan.ok, true);
     assert.equal(plan.warOrderActivityId, "2609191");
   });
+});
+
+// ---------------------------------------------------------------------------
+// 玄武灵契（抽奖券 5283）闭环 —— 2026-09-25 抓包 local-data/xiaoyaojin/xiaoyaojin_full.jsonl
+// 账号「特别老实」@9724，本期 2609191（活动第 7 天）
+//   activity_lottery {times:10} → 扣 5283 ×10（40→30→20→10→0）
+//   activity_claimlotterycumulative {id} → 每档固定 +2 张 5283（id 11~15 全是 ×2）
+//   activity_exchange {activityId:2609196, goodsId:260919602, quantity:1} → 消耗 5284 得 1023×10
+// ---------------------------------------------------------------------------
+
+test("★ 十连优先：券余额拆成 [10,10,10,...] 批次（40 张 → 4 批十连）", () => {
+  assert.deepEqual(planLotteryBatches(40).batches, [10, 10, 10, 10]);
+  assert.deepEqual(planLotteryBatches(23).batches, [10, 10, 3]);
+  assert.deepEqual(planLotteryBatches(3).batches, [3]);
+  assert.deepEqual(planLotteryBatches(1).batches, [1]);
+  // 单抽模式（界面把每批调成 1）
+  assert.deepEqual(planLotteryBatches(5, { perBatch: 1 }).batches, [
+    1, 1, 1, 1, 1,
+  ]);
+  // 每批张数被夹到 1~10
+  assert.deepEqual(planLotteryBatches(30, { perBatch: 99 }).batches, [
+    10, 10, 10,
+  ]);
+  assert.deepEqual(planLotteryBatches(30, { perBatch: 0 }).batches, [10, 10, 10]);
+});
+
+test("★ 券余额为 0 → 不抽奖（[]）；余额未知 → 给一批试探（不能误判成 0）", () => {
+  assert.deepEqual(planLotteryBatches(0).batches, []);
+  assert.equal(planLotteryBatches(0).tickets, 0);
+  // ⚠️ Number(null)===0 陷阱：null/undefined/"" 必须是「未知」而不是 0
+  assert.deepEqual(planLotteryBatches(null).batches, [10]);
+  assert.equal(planLotteryBatches(null).tickets, null);
+  assert.equal(planLotteryBatches(undefined).tickets, null);
+  assert.equal(planLotteryBatches("").tickets, null);
+});
+
+test("★ 读道具数量：显式 null = 归零，键缺失 = 未知（两种都踩过坑）", () => {
+  // 券抽光：items["5283"] = null（BON patch 的删除语义）
+  assert.equal(
+    readItemQuantity({ role: { items: { 5283: null } } }, 5283),
+    0,
+  );
+  // 兑换材料换光：items["5284"] = null
+  assert.equal(
+    readItemQuantity(
+      { body: { role: { items: { 1023: { quantity: 4957 }, 5284: null } } } },
+      XIAOYAOJIN_EXCHANGE_ITEM_ID,
+    ),
+    0,
+  );
+  // 键缺失 → 未知（不能当 0，否则会被误判成「没券」而跳过抽奖）
+  assert.equal(readItemQuantity({ role: { items: {} } }, 5283), null);
+  assert.equal(readItemQuantity({ role: {} }, 5283), null);
+  assert.equal(readItemQuantity(null, 5283), null);
+  // 正常值
+  assert.equal(
+    readItemQuantity(
+      { role: { items: { 5283: { itemId: 5283, quantity: 2, ext: null } } } },
+      5283,
+    ),
+    2,
+  );
+});
+
+test("累计抽奖奖励：已领 id 从 cumulativeClaimedMap 读，响应只回本次那一个", () => {
+  // 抓包首帧 15:03:49：累计 59 次、前 10 档已领
+  const info = {
+    lotteryNum: 59,
+    fragProgress: 9,
+    boxPackIdList: [],
+    cumulativeClaimedMap: {
+      1: true, 2: true, 3: true, 4: true, 5: true,
+      6: true, 7: true, 8: true, 9: true, 10: true,
+    },
+  };
+  const claimed = readCumulativeClaimed(info);
+  assert.equal(claimed.size, 10);
+  assert.equal(claimed.has(10), true);
+  assert.equal(claimed.has(11), false);
+
+  // ⚠️ 响应只回本次领的那一个（{"11":true}）→ 不能拿新响应覆盖，必须并集
+  const justClaimed = readCumulativeClaimed({ cumulativeClaimedMap: { 11: true } });
+  assert.equal(justClaimed.size, 1);
+  const merged = new Set(claimed);
+  justClaimed.forEach((id) => merged.add(id));
+  assert.equal(merged.size, 11);
+
+  // 待试 id：跳过已领的（1~11），从第一个未领的 12 开始
+  const pending = listPendingCumulativeIds(null, merged);
+  assert.equal(pending[0], 12);
+  assert.equal(pending.length, XIAOYAOJIN_CUMULATIVE_ID_MAX - 11);
+  // 上界可配（测试用小上界，别把 30 写死在断言里）
+  assert.deepEqual(listPendingCumulativeIds(null, merged, { max: 14 }), [
+    12, 13, 14,
+  ]);
+  // 没有 map 时从 1 开始
+  assert.equal(listPendingCumulativeIds(null, new Set())[0], 1);
+  assert.equal(listPendingCumulativeIds(null, undefined)[0], 1);
+});
+
+test("★ 抽奖摘要：累计次数 / 碎片 / 已领档位（抓包首帧与末帧对照）", () => {
+  const first = {
+    lotteryNum: 59,
+    fragProgress: 9,
+    cumulativeClaimedMap: { 1: true, 2: true, 3: true },
+  };
+  const s1 = summarizeLottery(first, null);
+  assert.equal(s1.draws, 59);
+  assert.equal(s1.frag, 9);
+  assert.deepEqual(s1.claimedCumulative, [1, 2, 3]);
+  assert.equal(s1.pendingCumulative, XIAOYAOJIN_CUMULATIVE_ID_MAX - 3);
+
+  // 会话内累积：领到 15 档后
+  const accumulated = new Set([1, 2, 3, 11, 12, 13, 14, 15]);
+  const s2 = summarizeLottery(first, accumulated);
+  assert.deepEqual(s2.claimedCumulative, [1, 2, 3, 11, 12, 13, 14, 15]);
+  assert.equal(s2.pendingCumulative, XIAOYAOJIN_CUMULATIVE_ID_MAX - 8);
+
+  // 空/非法输入不抛
+  assert.equal(summarizeLottery(null, null).draws, null);
+  assert.equal(summarizeLottery(null, null).frag, null);
+  assert.deepEqual(summarizeLottery(null, null).claimedCumulative, []);
+  // pickLotteryInfo 兼容 body 层
+  assert.equal(pickLotteryInfo({ body: { lotteryInfo: first } }).lotteryNum, 59);
+  assert.equal(pickLotteryInfo({ lotteryInfo: first }).lotteryNum, 59);
+  assert.equal(pickLotteryInfo(null), null);
+});
+
+test("★ 奖励解析：累计奖励每档给 2 张玄武灵契（id 11~15 实测）", () => {
+  const resp = {
+    role: { items: { 5283: { quantity: 2 }, 5285: { quantity: 28 } } },
+    reward: [
+      { type: 3, itemId: 5283, value: 2, ext: 0 },
+      { type: 3, itemId: 5285, value: 5, ext: 0 },
+    ],
+    lotteryInfo: { cumulativeClaimedMap: { 11: true } },
+  };
+  assert.equal(readRewardQuantity(resp, XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID), 2);
+  assert.equal(readRewardQuantity(resp, 5285), 5);
+  // 没有该道具 → 0（不是 null）
+  assert.equal(readRewardQuantity(resp, 9999), 0);
+  assert.equal(readRewardQuantity(null, 5283), 0);
+  assert.equal(readRewardQuantity({}, 5283), 0);
+  // 多个条目累加（十连里 5285 出现多次）
+  assert.equal(
+    readRewardQuantity(
+      { reward: [{ itemId: 5285, value: 1 }, { itemId: 5285, value: 4 }] },
+      5285,
+    ),
+    5,
+  );
+});
+
+test("兑换次数：有多少 5284 换多少次；读不到余额 → null（由调用方试探 1 次）", () => {
+  assert.equal(resolveExchangeTimes(3), 3);
+  assert.equal(resolveExchangeTimes(0), 0);
+  assert.equal(resolveExchangeTimes(null), null);
+  assert.equal(resolveExchangeTimes(undefined), null);
+  assert.equal(resolveExchangeTimes(""), null);
+  assert.equal(resolveExchangeTimes("5"), 5);
+  // 上限保护（防死循环）
+  assert.equal(resolveExchangeTimes(99999), 50);
+});
+
+test("派生 ID 含兑换商店（功能位 6）：2609196 / 商品 260919602", () => {
+  const ids = deriveXiaoyaojinIds("260919");
+  assert.equal(ids.exchangeActivityId, "2609196");
+  assert.equal(ids.exchangeGoodsId, "260919602");
+  // 与抓包里 activity_exchange 的请求体逐字段一致
+  assert.deepEqual(
+    {
+      activityId: Number(ids.exchangeActivityId),
+      goodsId: Number(ids.exchangeGoodsId),
+      quantity: 1,
+    },
+    { activityId: 2609196, goodsId: 260919602, quantity: 1 },
+  );
+  // 手工覆盖
+  const manual = deriveXiaoyaojinIds("260919", {
+    exchangeGoodsId: "260919603",
+  });
+  assert.equal(manual.exchangeGoodsId, "260919603");
+});
+
+test("交换记录：commonActivityInfo 里能读到本期已兑换次数", () => {
+  const plan = buildXiaoyaojinPlan(
+    {
+      activity: {
+        warOrderActivityInfo: { 2609191: buildWarOrderInfo() },
+        commonActivityInfo: {
+          2609196: { record: { 260919602: 2 }, task: {}, isBought: false },
+        },
+      },
+    },
+    { now: CAPTURE_NOW },
+  );
+  assert.equal(plan.ok, true);
+  assert.equal(plan.commonConfirmed.exchange, true);
+  assert.equal(plan.commonConfirmed.exchangeTimes, 2);
 });
