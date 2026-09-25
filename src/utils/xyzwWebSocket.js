@@ -147,6 +147,7 @@ export function registerDefaultCommands(reg) {
 
     // 竞技场
     .register("arena_startarea")
+    .register("fight_startareaarena") // 竞技场战斗3次（tasksArena；漏注册曾致请求超时）
     .register("fight_startlevel") // 获取 battleVersion
     .register("fight_calcleveltime") // 计算主线关卡战斗时长
     .register("fight_endlevel") // 提交本地战斗结果
@@ -159,6 +160,13 @@ export function registerDefaultCommands(reg) {
     .register("store_buy", { goodsId: 1 })
     .register("store_purchase", { goodsId: 1 })
     .register("store_refresh", { storeId: 1 })
+    // 商店自动购买列表（金鱼等活动商店；09-25 抓包 shop_list.jsonl）
+    .register("store_getpurchase", {})
+    .register("store_setpurchase", { purchaseCnt: 15, purchaseItemList: [] })
+
+    // 金鱼/秋季活动（09-25 抓包 use_one_item.jsonl；漏注册会让帧根本发不出去→请求超时）
+    .register("autumn_useitem", { itemNum: 1 })
+    .register("autumn_getrolerank", {})
 
     // 军团
     .register("legion_getinfo")
