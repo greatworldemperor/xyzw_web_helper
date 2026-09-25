@@ -91,6 +91,7 @@ export const availableTasks = [
   { label: "逍遥津一次性奖励", value: "xiaoyaojinOneTimeGift" },
   { label: "逍遥津7天登录奖励", value: "xiaoyaojinSignReward" },
   { label: "逍遥津抽奖", value: "xiaoyaojinLottery" },
+  { label: "金鱼投道具", value: "goldenfishUseItem" },
 ];
 
 // 月度任务目标

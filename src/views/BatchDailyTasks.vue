@@ -868,6 +868,24 @@
                 </span>
               </n-space>
             </n-tab-pane>
+            <n-tab-pane name="goldenfish" tab="金鱼">
+              <n-space vertical :size="8">
+                <n-space :size="8">
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="goldenfishUseItem"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    投一个道具
+                  </n-button>
+                </n-space>
+                <span class="xiaoyaojin-hint">
+                  金鱼为秋季限时活动：autumn_useitem {'{'}itemNum: 1{'}'}，每账号每次投 1 个道具，
+                  服务端自动扣减并返回奖励与前进距离；道具不足/活动未开视为正常跳过。
+                </span>
+              </n-space>
+            </n-tab-pane>
           </n-tabs>
         </n-card>
       </div>
@@ -3773,6 +3791,7 @@ import {
   createTasksCampChallengeStrategy,
   createTasksXianMaster,
   createTasksXiaoyaojin,
+  createTasksGoldenfish,
   resolveDefaultBlackMarketKeys,
 } from "@/utils/batch";
 
@@ -5086,6 +5105,11 @@ const taskGroupDefinitions = [
       "xiaoyaojinSignReward",
       "xiaoyaojinLottery",
     ],
+  },
+  {
+    name: "goldenfish",
+    label: "金鱼",
+    tasks: ["goldenfishUseItem"],
   },
 ];
 
@@ -7964,6 +7988,10 @@ const {
   inspectXiaoyaojin,
 } = tasksXiaoyaojin;
 
+// 金鱼（秋季活动）：投道具，协议见 local-data/goldenfish 抓包
+const tasksGoldenfish = createTasksGoldenfish(createTaskDeps());
+const { goldenfishUseItem } = tasksGoldenfish;
+
 /** 「探测活动实例」：对第一个选中账号跑一次 activity_get，把探测结果写进日志 */
 const inspectXiaoyaojinActivity = async () => {
   if (selectedTokens.value.length === 0) {
@@ -8048,6 +8076,7 @@ const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksFootball(deps),
   ...createTasksCampChallengeStrategy(deps),
   ...createTasksXiaoyaojin(deps),
+  ...createTasksGoldenfish(deps),
 });
 
 const getFlexibleTaskUnavailableReason = (taskId, settings) => {

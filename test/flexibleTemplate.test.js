@@ -86,6 +86,8 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "xiaoyaojinOneTimeGift",
     "xiaoyaojinSignReward",
     "xiaoyaojinLottery",
+    // 金鱼（秋季活动）
+    "goldenfishUseItem",
   ];
 
   [...hiddenDailyTasks, ...batchActions].forEach((taskId) =>
