@@ -871,6 +871,18 @@
                     每批抽奖张数（1~10，十连填 10；「抽奖」会把券抽光为止）
                   </span>
                 </n-space>
+                <n-space align="center" :size="8">
+                  <n-input
+                    v-model:value="xiaoyaojinHead"
+                    class="xiaoyaojin-draws-input"
+                    size="small"
+                    placeholder="260919"
+                    :disabled="isRunning"
+                  />
+                  <span class="xiaoyaojin-hint">
+                    活动日期头（6 位，留空自动探测；活动结束探测不到时手工填，如 260919）
+                  </span>
+                </n-space>
                 <n-space :size="8">
                   <n-button
                     size="small"
@@ -963,6 +975,10 @@
                   直到券尽且领不出券为止。「兑换」消耗抽奖产出的 5284（每 50 抽 1 个），
                   有多少换多少次，故排在抽奖之后。一键全套会**最多转 3 轮**：抽奖会推高累计次数 →
                   解锁战令档位 → 领奖又出券 → 再抽，直到某一轮没有任何进展才停。
+                  「券兑换」花的是**兑换券 5285**：尽量多买饼干（5 券/个，一次买完），
+                  余券 ≥ 3 再换 1 个复活丹（3 券/个）。
+                  ⚠️ 活动结束后（只剩兑换延时）一键全套会**自动只跑两个兑换步骤**；
+                  若服务端不再推送活动数据导致探测失败，上方填「活动日期头」即可继续兑换。
                 </span>
               </n-space>
             </n-tab-pane>
@@ -3929,6 +3945,25 @@ const xiaoyaojinInspecting = ref(false);
 const xiaoyaojinOptions = reactive({ draws: 10, overrides: {} });
 watch(xiaoyaojinDraws, (value) => {
   xiaoyaojinOptions.draws = value;
+});
+
+/**
+ * 活动日期头手工兜底（6 位，如 260919）
+ *
+ * 活动结束后服务端可能不再推送 `warOrderActivityInfo`，自动探测会失败 →
+ * 此时填这一期的日期头（= 开启日 YYMMDD），券兑换/碎片兑换照样能跑
+ * （它们只认派生出来的 `YYMMDD+3` / `YYMMDD+6`）。
+ */
+const xiaoyaojinHead = ref("");
+watch(xiaoyaojinHead, (value) => {
+  const text = String(value || "").trim();
+  if (/^\d{6}$/.test(text)) {
+    xiaoyaojinOptions.overrides = { ...xiaoyaojinOptions.overrides, head: text };
+  } else {
+    const next = { ...xiaoyaojinOptions.overrides };
+    delete next.head;
+    xiaoyaojinOptions.overrides = next;
+  }
 });
 
 // —— 怪异塔助力：批量日常页的 3 个按钮（关系表见 docs/weird-tower-share-assist-design.md §3） ——

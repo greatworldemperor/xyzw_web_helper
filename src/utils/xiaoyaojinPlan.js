@@ -215,6 +215,27 @@ export function describePassTiers(warOrderInfo, options = {}) {
  */
 export const XIAOYAOJIN_MAX_ACTIVITY_AGE_DAYS = 21;
 
+/**
+ * 逍遥津活动时长（天）。`ageDays >= 7` = 抽奖/战令等玩法已结束，
+ * 只剩兑换延时（通常还有 4 小时）→ 全套应自动只跑两个兑换步骤，别再抽奖。
+ */
+export const XIAOYAOJIN_ACTIVITY_DAYS = 7;
+
+/** 活动结束后（只剩兑换延时）仍要跑的步骤 */
+export const XIAOYAOJIN_EXCHANGE_ONLY_STEPS = Object.freeze([
+  "exchange",
+  "couponExchange",
+]);
+
+/**
+ * 活动是否已结束（只剩兑换延时）
+ * @param {number|null} ageDays `buildXiaoyaojinPlan` 探测出的「开启于 N 天前」
+ */
+export function isXiaoyaojinEnded(ageDays) {
+  const value = Number(ageDays);
+  return Number.isFinite(value) && value >= XIAOYAOJIN_ACTIVITY_DAYS;
+}
+
 /** 每日任务序号上界（01~30 为每日任务，41+ 为战令等级奖励） */
 export const XIAOYAOJIN_DAILY_MISSION_SUFFIX_MAX = 30;
 
@@ -864,6 +885,7 @@ export default {
   deriveXiaoyaojinIds,
   getActivityDateHead,
   isDailyMissionId,
+  isXiaoyaojinEnded,
   listPendingCumulativeIds,
   listPendingDailyClaims,
   pickLotteryInfo,

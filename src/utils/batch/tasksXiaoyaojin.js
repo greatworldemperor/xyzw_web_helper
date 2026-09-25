@@ -33,7 +33,9 @@
  * - 已领取 / 未达成 / 活动未开 都算「正常结束」，不记错误、不打断其他账号。
  */
 import {
+  XIAOYAOJIN_ACTIVITY_DAYS,
   XIAOYAOJIN_ALL_ROUNDS_MAX,
+  XIAOYAOJIN_EXCHANGE_ONLY_STEPS,
   XIAOYAOJIN_ALL_STEPS,
   XIAOYAOJIN_COOKIE_PRICE,
   XIAOYAOJIN_COUPON_ITEM_ID,
@@ -45,6 +47,7 @@ import {
   XIAOYAOJIN_POINTS_ITEM_ID,
   buildXiaoyaojinPlan,
   describePassTiers,
+  isXiaoyaojinEnded,
   listPendingCumulativeIds,
   pickLotteryInfo,
   planCouponPurchase,
@@ -937,6 +940,22 @@ export function createTasksXiaoyaojin(deps) {
           return;
         }
 
+        /**
+         * 活动已结束（只剩兑换延时）→ 全套自动降级为「只兑换」
+         *
+         * 抽奖/战令/礼包/签到在活动结束后都已不可用，全套照跑只会刷一堆失败日志、
+         * 还要白等 26 个战令候选逐个被拒。券兑换花的是背包里的 5285，延时期内仍然有效。
+         */
+        let effectiveSteps = stepIds;
+        if (isFullSet && isXiaoyaojinEnded(plan.ageDays)) {
+          effectiveSteps = [...XIAOYAOJIN_EXCHANGE_ONLY_STEPS];
+          log(
+            tokenName,
+            `活动已结束（开启于 ${plan.ageDays} 天前，只剩兑换延时）→ 本次只跑兑换，跳过抽奖/战令等步骤`,
+            "warning",
+          );
+        }
+
         for (let round = 1; round <= maxRounds; round += 1) {
           if (shouldStop.value) break;
           if (round > 1) {
@@ -946,7 +965,7 @@ export function createTasksXiaoyaojin(deps) {
           }
           const before = progress.count;
 
-          for (const stepId of stepIds) {
+          for (const stepId of effectiveSteps) {
             if (shouldStop.value) break;
             const step = STEPS[stepId];
             if (!step) continue;
