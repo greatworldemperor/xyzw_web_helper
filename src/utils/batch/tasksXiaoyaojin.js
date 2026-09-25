@@ -38,6 +38,7 @@ import {
   XIAOYAOJIN_EXCHANGE_ONLY_STEPS,
   XIAOYAOJIN_ALL_STEPS,
   XIAOYAOJIN_COOKIE_PRICE,
+  XIAOYAOJIN_COUPON_HEAD_FALLBACK_DAYS,
   XIAOYAOJIN_COUPON_ITEM_ID,
   XIAOYAOJIN_CUMULATIVE_ID_MAX,
   XIAOYAOJIN_EXCHANGE_ITEM_ID,
@@ -47,6 +48,7 @@ import {
   XIAOYAOJIN_REVIVE_PRICE,
   XIAOYAOJIN_POINTS_ITEM_ID,
   buildXiaoyaojinPlan,
+  deriveXiaoyaojinIds,
   describePassTiers,
   isXiaoyaojinEnded,
   listPendingCumulativeIds,
@@ -56,6 +58,7 @@ import {
   readItemQuantity,
   readRewardQuantity,
   resolveExchangeTimes,
+  shiftActivityDateHead,
   summarizeLottery,
 } from "../xiaoyaojinPlan.js";
 
@@ -147,6 +150,12 @@ export function createTasksXiaoyaojin(deps) {
     const raw = Number(delayConfig?.action);
     return Number.isFinite(raw) && raw > 0 ? raw : 300;
   };
+  /**
+   * 券兑换认到的「能用的那一期」日期头；同一批任务里跨账号复用，避免每个号都试错。
+   * 上一期兑券延时没过时，自动探测会拿到新一期（买不动）→ 试出来的正确期存这里。
+   */
+  let rememberedCouponHead = null;
+
   const sleep = (ms = actionDelay()) =>
     new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 
@@ -766,20 +775,20 @@ export function createTasksXiaoyaojin(deps) {
    *   1. 尽量多买**饼干**（单价 5 券，`quantity` 支持一次买多个 → 一条请求买完）
    *   2. 买完剩下的券 **≥ 3** → 再换 **1 个复活丹**（单价 3 券）
    *
-   * 实证：`quantity:8` 一次买 8 个饼干（43→3 张券），再 `quantity:1` 买复活丹（3→0）。
+   * ## 自动认期（**不需要用户填任何东西**）
+   *
+   * 上一期（260919）的兑券延时没过、新一期（260925）已经开了时，
+   * 自动探测「取日期头最大者」只会拿到**新一期**，拿它去买会报
+   * 「物品不存在 / 兑换数量超上限」（2026-09-26 01:03 现场）。
+   * → 买不动就自动往前回退 6 天、7 天再试（实测两期间隔 6 天：260919 → 260925），
+   *   试中即缓存到 `rememberedCouponHead`，后续账号直接用，不再重复试错。
    */
   const runCouponExchange = async ({ tokenId, token, plan, progress }) => {
-    const activityId = Number(plan.ids.couponActivityId);
-    const cookieGoodsId = Number(plan.ids.couponCookieGoodsId);
-    const reviveGoodsId = Number(plan.ids.couponReviveGoodsId);
-
-    let tickets = await readItemCount(
+    const tickets = await readItemCount(
       tokenId,
       token.name,
       XIAOYAOJIN_COUPON_ITEM_ID,
     );
-    const purchase = planCouponPurchase(tickets);
-
     if (tickets === null) {
       log(
         token.name,
@@ -790,10 +799,12 @@ export function createTasksXiaoyaojin(deps) {
     }
     log(
       token.name,
-      `兑换券(${XIAOYAOJIN_COUPON_ITEM_ID}) 余额 ${tickets}；券兑换活动 ${activityId}` +
-        `（日期头 ${plan.head}${plan.source === "manual" ? "，手工指定" : ""}）`,
+      `兑换券(${XIAOYAOJIN_COUPON_ITEM_ID}) 余额 ${tickets}；探测日期头 ${plan.head}` +
+        `${plan.source === "manual" ? "（手工指定）" : ""}` +
+        ` → 券兑换活动 ${plan.ids.couponActivityId}，买不动会自动往回找上一期`,
     );
 
+    const purchase = planCouponPurchase(tickets);
     if (purchase.cookies <= 0 && purchase.revive <= 0) {
       log(
         token.name,
@@ -802,114 +813,129 @@ export function createTasksXiaoyaojin(deps) {
       return;
     }
 
-    // ① 饼干：先整批买（抓包实测 quantity:8 可行），被限购挡住就降级逐个买
-    if (purchase.cookies > 0) {
-      let bought = 0;
-      try {
-        const response = await tokenStore.sendMessageWithPromise(
-          tokenId,
-          "activity_exchange",
-          {
-            activityId,
-            goodsId: cookieGoodsId,
-            quantity: purchase.cookies,
-          },
-          10000,
-        );
-        bought = purchase.cookies;
-        progress.count += bought;
-        log(
-          token.name,
-          `买饼干 ×${bought}（花 ${purchase.cookieCost} 券）成功（${rewardText(response)}）`,
-          "success",
-        );
-        // 以服务端回的余额为准（可能有限购，实际买的比计划少）
-        const left = readItemQuantity(response, XIAOYAOJIN_COUPON_ITEM_ID);
-        if (left !== null) tickets = left;
-      } catch (error) {
-        // ⚠️ 抓包实证 `quantity:8` 是可行的（43 券 → 8 个饼干 → 余 3），
-        // 所以「超上限」多半是**兑换错期了**（用新一期的商品 ID 买上一期的券），
-        // 而不是数量本身有问题 → 日志把三元组打全，好对照抓包。
-        if (!isQuantityLimitError(error)) {
-          if (isRateLimitError(error)) {
-            log(token.name, "触发限流(400340)，饼干下次再买", "warning");
-          } else {
-            log(
-              token.name,
-              `买饼干失败，停止券兑换：${errorText(error)}` +
-                `（活动 ${activityId} / 商品 ${cookieGoodsId} / 数量 ${purchase.cookies} / 日期头 ${plan.head}）`,
-              "warning",
-            );
-          }
-          return;
-        }
-        // 整批超限 → 逐个买，能买几个算几个（限购挡住就停）
-        log(
-          token.name,
-          `整批买 ${purchase.cookies} 个报「${errorText(error)}」（活动 ${activityId} / 商品 ${cookieGoodsId}；` +
-            `若券属于另一期，请在「活动日期头」填那一期的开启日）→ 降级逐个买`,
-          "warning",
-        );
-        for (let index = 1; index <= purchase.cookies; index += 1) {
-          if (shouldStop.value) break;
-          try {
-            const response = await tokenStore.sendMessageWithPromise(
-              tokenId,
-              "activity_exchange",
-              { activityId, goodsId: cookieGoodsId, quantity: 1 },
-              8000,
-            );
-            bought += 1;
-            progress.count += 1;
-            const left = readItemQuantity(response, XIAOYAOJIN_COUPON_ITEM_ID);
-            if (left !== null) tickets = left;
-            log(token.name, `逐个买饼干 第 ${bought} 个成功`, "success");
-          } catch (inner) {
-            if (isRateLimitError(inner)) {
-              log(token.name, "触发限流(400340)，剩余饼干下次再买", "warning");
-            } else {
-              log(
-                token.name,
-                `逐个买饼干第 ${bought + 1} 个失败（${errorText(inner)}），买到上限了`,
-                "warning",
-              );
-            }
-            break;
-          }
-          await sleep(Math.max(300, actionDelay()));
-        }
-        if (bought === 0) {
-          log(token.name, "饼干一个都没买到，仍尝试换复活丹", "warning");
-        }
-      }
-      await sleep();
+    // 候选日期头：记住的 > 本期 > 往前 6 天 > 往前 7 天
+    const heads = [];
+    if (rememberedCouponHead) heads.push(rememberedCouponHead);
+    for (const back of [0, ...XIAOYAOJIN_COUPON_HEAD_FALLBACK_DAYS]) {
+      const candidate =
+        back === 0 ? plan.head : shiftActivityDateHead(plan.head, -back);
+      if (candidate && !heads.includes(candidate)) heads.push(candidate);
     }
 
-    // ② 复活丹：余券够 3 才换 1 个（用**服务端回的最新余额**判断，别用本地推算）
-    if (tickets >= XIAOYAOJIN_REVIVE_PRICE) {
-      try {
-        const response = await tokenStore.sendMessageWithPromise(
-          tokenId,
-          "activity_exchange",
-          { activityId, goodsId: reviveGoodsId, quantity: 1 },
-          8000,
-        );
-        progress.count += 1;
+    let ticketsLeft = tickets;
+    let done = false;
+
+    for (const head of heads) {
+      if (shouldStop.value || done) break;
+      const ids = deriveXiaoyaojinIds(head);
+      const activityId = Number(ids.couponActivityId);
+      const cookieGoodsId = Number(ids.couponCookieGoodsId);
+      const reviveGoodsId = Number(ids.couponReviveGoodsId);
+
+      /** 用某个日期头买饼干；返回买到个数，-1 = 这一期买不了（换下一期） */
+      const buyCookies = async () => {
+        if (purchase.cookies <= 0) return 0;
+        try {
+          const response = await tokenStore.sendMessageWithPromise(
+            tokenId,
+            "activity_exchange",
+            { activityId, goodsId: cookieGoodsId, quantity: purchase.cookies },
+            10000,
+          );
+          const left = readItemQuantity(response, XIAOYAOJIN_COUPON_ITEM_ID);
+          if (left !== null) ticketsLeft = left;
+          return purchase.cookies;
+        } catch (error) {
+          // 只有「超上限」才降级逐个买；物品不存在 / 期不对 → 换下一期
+          if (!isQuantityLimitError(error)) return -1;
+          log(
+            token.name,
+            `整批买 ${purchase.cookies} 个报「${errorText(error)}」（活动 ${activityId}）→ 降级逐个买`,
+            "warning",
+          );
+          let bought = 0;
+          for (let index = 1; index <= purchase.cookies; index += 1) {
+            if (shouldStop.value) break;
+            try {
+              const response = await tokenStore.sendMessageWithPromise(
+                tokenId,
+                "activity_exchange",
+                { activityId, goodsId: cookieGoodsId, quantity: 1 },
+                8000,
+              );
+              bought += 1;
+              const left = readItemQuantity(response, XIAOYAOJIN_COUPON_ITEM_ID);
+              if (left !== null) ticketsLeft = left;
+            } catch {
+              break;
+            }
+            await sleep(Math.max(300, actionDelay()));
+          }
+          return bought;
+        }
+      };
+
+      const bought = await buyCookies();
+      if (bought < 0) {
         log(
           token.name,
-          `剩余 ${tickets} 券 → 换复活丹 ×1 成功（${rewardText(response)}）`,
-          "success",
+          `日期头 ${head}（活动 ${activityId}）买不了饼干，自动换一期再试`,
+          "warning",
         );
-      } catch (error) {
-        if (isRateLimitError(error)) {
-          log(token.name, "触发限流(400340)，复活丹下次再换", "warning");
-        } else {
-          log(token.name, `换复活丹失败：${errorText(error)}`, "warning");
+        continue;
+      }
+
+      // 这一期能用 → 记住，后续账号不再试错
+      if (rememberedCouponHead !== head) {
+        rememberedCouponHead = head;
+        if (head !== plan.head) {
+          log(
+            token.name,
+            `券兑换改用日期头 ${head}（活动 ${activityId}），后续账号沿用`,
+            "success",
+          );
         }
       }
-      await sleep();
-    } else {
-      log(token.name, `余券 ${tickets} 不足 ${XIAOYAOJIN_REVIVE_PRICE}，不换复活丹`);
+      progress.count += bought;
+      if (bought > 0) {
+        log(token.name, `买饼干 ×${bought} 成功`, "success");
+        await sleep();
+      }
+
+      // 复活丹：用服务端回的最新余额判断，够 3 才换 1 个
+      if (ticketsLeft >= XIAOYAOJIN_REVIVE_PRICE) {
+        try {
+          await tokenStore.sendMessageWithPromise(
+            tokenId,
+            "activity_exchange",
+            { activityId, goodsId: reviveGoodsId, quantity: 1 },
+            8000,
+          );
+          progress.count += 1;
+          log(
+            token.name,
+            `剩余 ${ticketsLeft} 券 → 换复活丹 ×1 成功`,
+            "success",
+          );
+        } catch (error) {
+          log(token.name, `换复活丹失败：${errorText(error)}`, "warning");
+        }
+        await sleep();
+      } else {
+        log(
+          token.name,
+          `余券 ${ticketsLeft} 不足 ${XIAOYAOJIN_REVIVE_PRICE}，不换复活丹`,
+        );
+      }
+      done = true;
+    }
+
+    if (!done) {
+      log(
+        token.name,
+        `券兑换失败：${heads.join(" / ")} 各期都买不了饼干`,
+        "warning",
+      );
     }
   };
 

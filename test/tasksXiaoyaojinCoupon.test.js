@@ -218,6 +218,43 @@ test("★ 手工日期头压过自动探测：填 260919 就按 260919 发（不
   assert.match(manual.text(), /日期头 260919/);
 });
 
+test("★ 新一期买不动 → 自动往前回退 6 天找到上一期（260925 → 260919）", async () => {
+  // 现场：01:03 自动探测拿到 2609253，买饼干报「物品不存在」
+  const harness = createHarness({
+    activityGet: {
+      activity: {
+        warOrderActivityInfo: {},
+        commonActivityInfo: {
+          2609253: { record: {}, task: {}, isBought: false },
+          2609255: { record: {}, task: {}, isBought: false },
+        },
+      },
+    },
+    roleItems: { 5285: { quantity: 43 } },
+    onExchange: (params) => {
+      // 只有 260919 那一期的商品能买
+      if (params.activityId !== 2609193) {
+        return Object.assign(new Error("物品不存在"), { code: 700010 });
+      }
+      return capturedExchange(params);
+    },
+  });
+
+  await harness.tasks.xiaoyaojinCoupon();
+
+  const all = harness.exchanges();
+  // 第一次先试探测到的新一期（会被拒）
+  assert.equal(all[0].activityId, 2609253);
+  // 回退 6 天命中上一期，之后的两条与抓包逐字段一致
+  assert.deepEqual(
+    all.filter((item) => item.activityId === 2609193),
+    CAPTURED_EXCHANGES,
+  );
+  assert.match(harness.text(), /买不了饼干，自动换一期再试/);
+  assert.match(harness.text(), /改用日期头 260919/);
+  assert.ok(!/券兑换失败/.test(harness.text()), harness.text());
+});
+
 test("整批报「超上限」→ 降级逐个买，能买几个算几个", async () => {
   let single = 0;
   const harness = createHarness({

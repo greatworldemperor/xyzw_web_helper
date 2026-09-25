@@ -302,6 +302,34 @@ export function parseActivityDateHead(head) {
   return utcMidnight - BEIJING_OFFSET_MS;
 }
 
+/**
+ * 日期头往前/往后挪 N 天（`260925` - 6 → `260919`）
+ *
+ * 用途：**上一期遗留的券要回上一期商店花**。逍遥津两期间隔实测 6 天
+ * （260919 开 → 260925 开），自动探测只会拿到最新的那一期，兑换会报
+ * 「物品不存在 / 兑换数量超上限」→ 需要能自动回退到更早的期。
+ *
+ * @param {string} head 6 位 YYMMDD
+ * @param {number} days 正数向后、负数向前
+ * @returns {string|null}
+ */
+export function shiftActivityDateHead(head, days) {
+  const base = parseActivityDateHead(head);
+  const offset = Number(days);
+  if (base === null || !Number.isFinite(offset)) return null;
+  const utcMidnight = base + BEIJING_OFFSET_MS + Math.trunc(offset) * DAY_MS;
+  const date = new Date(utcMidnight);
+  const year = date.getUTCFullYear() % 100;
+  const month = date.getUTCMonth() + 1;
+  const day = date.getUTCDate();
+  return `${String(year).padStart(2, "0")}${String(month).padStart(2, "0")}${String(day).padStart(2, "0")}`;
+}
+
+/**
+ * 券兑换找不到能用的商品时，往前回退多少天再试（覆盖「间隔 6 天」和「间隔 7 天」两种排期）
+ */
+export const XIAOYAOJIN_COUPON_HEAD_FALLBACK_DAYS = Object.freeze([6, 7]);
+
 /** 某时刻所属「北京自然日」的起点毫秒时间戳 */
 export function beijingDayStart(now) {
   const value = Number(now);
@@ -934,6 +962,7 @@ export default {
   readItemQuantity,
   readRewardQuantity,
   resolveExchangeTimes,
+  shiftActivityDateHead,
   resolveLotteryDraws,
   resolveXiaoyaojinActivityId,
   summarizeLottery,
