@@ -854,134 +854,12 @@
               </n-space>
             </n-tab-pane>
             <n-tab-pane name="temporary" tab="临时活动">
-              <n-space vertical :size="8">
-                <n-space align="center" :size="8">
-                  <n-input-number
-                    v-model:value="xiaoyaojinDraws"
-                    class="xiaoyaojin-draws-input"
-                    size="small"
-                    :min="1"
-                    :max="10"
-                    :precision="0"
-                    :show-button="false"
-                    placeholder="抽奖次数"
-                    :disabled="isRunning"
-                  />
-                  <span class="xiaoyaojin-hint">
-                    每批抽奖张数（1~10，十连填 10；「抽奖」会把券抽光为止）
-                  </span>
-                </n-space>
-                <n-space align="center" :size="8">
-                  <n-input
-                    v-model:value="xiaoyaojinHead"
-                    class="xiaoyaojin-draws-input"
-                    size="small"
-                    placeholder="260919"
-                    :disabled="isRunning"
-                  />
-                  <span class="xiaoyaojin-hint">
-                    活动日期头（6 位，如 260919 = 9/19 那期；**填了就以它为准**，优先级高于自动探测。
-                    上一期兑券延时未过时必须填上一期的，否则会探测到新一期。会记住，用毕请清空）
-                  </span>
-                </n-space>
-                <n-space :size="8">
-                  <n-button
-                    size="small"
-                    type="primary"
-                    @click="xiaoyaojinAll"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    逍遥津一键全套
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinDailyTask"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    每日任务奖励
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinPassChest"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    战令奖励宝箱
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinPassRewards"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    战令等级奖励
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinOneTimeGift"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    一次性奖励
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinSignReward"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    7天登录奖励
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinLottery"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    抽奖
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinCumulative"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    累计抽奖奖励
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinExchange"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    兑换
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinCoupon"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    券兑换
-                  </n-button>
-                  <n-button
-                    size="small"
-                    type="info"
-                    ghost
-                    :loading="xiaoyaojinInspecting"
-                    @click="inspectXiaoyaojinActivity"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    探测活动实例
-                  </n-button>
-                </n-space>
-                <span class="xiaoyaojin-hint">
-                  逍遥津为限时活动：活动实例 ID（YYMMDD+功能位）由 activity_get 现场探测，
-                  逐账号解析；已领取/未达成均视为正常结束。「战令等级奖励」本地按
-                  complete&gt;0 且未领取圈候选、逐个交给服务端裁定（候选多时较慢）。
-                  「抽奖」= 抽光为止的闭环：十连优先地抽 → 券（玄武灵契 5283）尽 →
-                  扫 activity_claimlotterycumulative 补券（每档 +2 张）→ 再抽，
-                  直到券尽且领不出券为止。「兑换」消耗抽奖产出的 5284（每 50 抽 1 个），
-                  有多少换多少次，故排在抽奖之后。一键全套会**最多转 3 轮**：抽奖会推高累计次数 →
-                  解锁战令档位 → 领奖又出券 → 再抽，直到某一轮没有任何进展才停。
-                  「券兑换」花的是**兑换券 5285**：尽量多买饼干（5 券/个，一次买完），
-                  余券 ≥ 3 再换 1 个复活丹（3 券/个）。
-                  ⚠️ 活动结束后（只剩兑换延时）一键全套会**自动只跑两个兑换步骤**；
-                  若服务端不再推送活动数据导致探测失败，上方填「活动日期头」即可继续兑换。
-                </span>
-              </n-space>
+              <!-- 空壳：限时临时活动都挂在这里，当前没有进行中的活动 -->
+              <n-empty
+                description="暂无进行中的临时活动"
+                size="small"
+                class="temporary-activity-empty"
+              />
             </n-tab-pane>
             <n-tab-pane name="goldenfish" tab="金鱼">
               <n-space vertical :size="8">
@@ -3921,7 +3799,6 @@ import {
   createTasksApex,
   createTasksCampChallengeStrategy,
   createTasksXianMaster,
-  createTasksXiaoyaojin,
   createTasksGoldenfish,
   GOLDENFISH_SHOP_DEFAULTS,
   resolveDefaultBlackMarketKeys,
@@ -3934,65 +3811,6 @@ const tokenStore = useTokenStore();
 const message = useMessage();
 const dialog = useDialog();
 const weirdTowerMaxClimb = ref(DEFAULT_WEIRD_TOWER_MAX_CLIMB);
-
-// —— 逍遥津（限时临时活动，入口在批量任务底部「临时活动」标签页）——
-// 协议与结论见 docs/xiaoyaojin-activity-protocol.md；纯逻辑见 utils/xiaoyaojinPlan.js
-/** 单账号本次抽奖次数上限（默认 1，与抓包一致；实际还会被抽奖券余额收紧） */
-// 每批抽奖张数（1~10）；默认 10 = 十连优先（「抽奖」会把券抽光为止）
-const xiaoyaojinDraws = ref(10);
-/** 「探测活动实例」按钮的 loading */
-const xiaoyaojinInspecting = ref(false);
-/** 传给任务模块的运行时选项（手工覆盖活动 ID 时填 overrides） */
-const xiaoyaojinOptions = reactive({ draws: 10, overrides: {} });
-watch(xiaoyaojinDraws, (value) => {
-  xiaoyaojinOptions.draws = value;
-});
-
-/**
- * 活动日期头手工兜底（6 位，如 260919）
- *
- * 活动结束后服务端可能不再推送 `warOrderActivityInfo`，自动探测会失败 →
- * 此时填这一期的日期头（= 开启日 YYMMDD），券兑换/碎片兑换照样能跑
- * （它们只认派生出来的 `YYMMDD+3` / `YYMMDD+6`）。
- */
-const XIAOYAOJIN_HEAD_KEY = "xyzw_xiaoyaojin_head";
-const xiaoyaojinHead = ref(
-  (() => {
-    try {
-      const saved = String(localStorage.getItem(XIAOYAOJIN_HEAD_KEY) || "").trim();
-      return /^\d{6}$/.test(saved) ? saved : "";
-    } catch {
-      return "";
-    }
-  })(),
-);
-watch(
-  xiaoyaojinHead,
-  (value) => {
-    const text = String(value || "").trim();
-    if (/^\d{6}$/.test(text)) {
-      xiaoyaojinOptions.overrides = {
-        ...xiaoyaojinOptions.overrides,
-        head: text,
-      };
-      try {
-        localStorage.setItem(XIAOYAOJIN_HEAD_KEY, text);
-      } catch {
-        /* 隐私模式下写不进就算了，不影响本次运行 */
-      }
-    } else {
-      const next = { ...xiaoyaojinOptions.overrides };
-      delete next.head;
-      xiaoyaojinOptions.overrides = next;
-      try {
-        localStorage.removeItem(XIAOYAOJIN_HEAD_KEY);
-      } catch {
-        /* 同上 */
-      }
-    }
-  },
-  { immediate: true },
-);
 
 // —— 怪异塔助力：批量日常页的 3 个按钮（关系表见 docs/weird-tower-share-assist-design.md §3） ——
 const assistPlan = computed(() => normalizeAssistPlan(weirdTowerAssistPlan.value));
@@ -5271,22 +5089,6 @@ const taskGroupDefinitions = [
     name: "monthly",
     label: "月度",
     tasks: ["batchTopUpFish", "batchTopUpArena"],
-  },
-  {
-    name: "temporary",
-    label: "临时活动",
-    tasks: [
-      "xiaoyaojinAll",
-      "xiaoyaojinDailyTask",
-      "xiaoyaojinPassChest",
-      "xiaoyaojinPassRewards",
-      "xiaoyaojinOneTimeGift",
-      "xiaoyaojinSignReward",
-      "xiaoyaojinLottery",
-      "xiaoyaojinCumulative",
-      "xiaoyaojinExchange",
-      "xiaoyaojinCoupon",
-    ],
   },
   {
     name: "goldenfish",
@@ -7910,8 +7712,6 @@ const createTaskDeps = () => ({
   currentSettings,
   helperSettings,
   weirdTowerMaxClimb,
-  // 逍遥津（临时活动）：抽奖次数 + 手工覆盖活动 ID
-  xiaoyaojinOptions,
   // 功法赠送相关
   recipientIdInput,
   recipientInfo,
@@ -8157,22 +7957,6 @@ const {
   batchCampDiagnose,
 } = tasksCampChallenge;
 
-// 逍遥津（临时活动）：模块内部按 activity_get 现场探测活动实例，无需额外参数
-const tasksXiaoyaojin = createTasksXiaoyaojin(createTaskDeps());
-const {
-  xiaoyaojinAll,
-  xiaoyaojinDailyTask,
-  xiaoyaojinPassChest,
-  xiaoyaojinPassRewards,
-  xiaoyaojinOneTimeGift,
-  xiaoyaojinSignReward,
-  xiaoyaojinLottery,
-  xiaoyaojinCumulative,
-  xiaoyaojinExchange,
-  xiaoyaojinCoupon,
-  inspectXiaoyaojin,
-} = tasksXiaoyaojin;
-
 // 金鱼（秋季活动）：投道具，协议见 local-data/goldenfish 抓包
 const goldenfishCount = ref(1);
 const tasksGoldenfish = createTasksGoldenfish(createTaskDeps());
@@ -8248,115 +8032,6 @@ const resetGoldenfishShopDefaults = () => {
   message.success("已恢复金鱼模式默认购物列表");
 };
 
-/** 「探测活动实例」：对第一个选中账号跑一次 activity_get，把探测结果写进日志 */
-const inspectXiaoyaojinActivity = async () => {
-  if (selectedTokens.value.length === 0) {
-    message.warning("请先选择账号");
-    return;
-  }
-  const tokenId = selectedTokens.value[0];
-  const token = tokens.value.find((item) => item.id === tokenId);
-  const tokenName = token?.name || tokenId;
-  xiaoyaojinInspecting.value = true;
-  try {
-    await ensureConnection(tokenId);
-    const plan = await inspectXiaoyaojin(tokenId, tokenName);
-    if (!plan?.ok) {
-      addLog({
-        time: new Date().toLocaleTimeString(),
-        message: `${tokenName} 逍遥津未探测到：${plan?.reason || "未知原因"}`,
-        type: "warning",
-      });
-      return;
-    }
-    const giftState = plan.commonConfirmed.giftBought
-      ? "本期已领"
-      : plan.commonConfirmed.gift
-        ? "可领"
-        : "推送中未见（将直接尝试领取）";
-    addLog({
-      time: new Date().toLocaleTimeString(),
-      message:
-        `${tokenName} 逍遥津活动实例 ${plan.warOrderActivityId}` +
-        `（${plan.source === "manual" ? "手工指定" : `开启于 ${plan.ageDays} 天前`}）；` +
-        `签到活动 ${plan.ids.signActivityId}` +
-        (plan.commonConfirmed.sign
-          ? `（已记录第 ${plan.commonConfirmed.signDays.join("/") || "?"} 天）`
-          : "（推送中未见，将直接尝试领取）") +
-        `；礼包活动 ${plan.ids.giftActivityId} / 商品 ${plan.ids.giftGoodsId}（${giftState}）；` +
-        `每日任务待领 ${plan.dailyClaims.filter((item) => item.completed).length} 个 / ` +
-        `未达成 ${plan.dailyClaims.filter((item) => !item.completed).length} 个；` +
-        `战令候选条目 ${plan.passRewards.pending} 个（complete>0，含未解锁档）`,
-      type: "info",
-    });
-
-    // 战令档位进度：积分 / 可达档数 / 已领哪些 / 下一档还差多少（纯读，与 UI 显示一致）
-    const tiers = plan.passTiers;
-    if (tiers && tiers.points !== null) {
-      addLog({
-        time: new Date().toLocaleTimeString(),
-        message:
-          `${tokenName} 战令：积分 ${tiers.points} → 可达 ${tiers.reachable} 档；` +
-          `已领档 ${tiers.claimedTiers.length > 0 ? tiers.claimedTiers.join("/") : "无"}` +
-          (tiers.pendingTiers.length > 0
-            ? `；待领档 ${tiers.pendingTiers.map((item) => item.tier).join("/")}`
-            : "") +
-          (tiers.nextTier
-            ? `；下一档 ${tiers.nextTier.tier}（${tiers.nextTier.missionId.slice(-3)}）还差 ${tiers.nextTier.pointsNeeded} 分`
-            : "；已到最高档"),
-        type: tiers.pendingTiers.length > 0 ? "success" : "info",
-      });
-    }
-
-    // 抽奖侧：累计次数 / 已领累计奖励档 / 玄武灵契余额 / 兑换材料余额
-    const lottery = plan.lottery;
-    if (lottery) {
-      addLog({
-        time: new Date().toLocaleTimeString(),
-        message:
-          `${tokenName} 抽奖：累计 ${lottery.draws ?? "?"} 次；` +
-          `累计奖励已领 ${lottery.claimedCumulative?.length ?? 0} 档` +
-          (lottery.claimedCumulative?.length
-            ? `（${lottery.claimedCumulative.join("/")}）`
-            : "") +
-          `；玄武灵契(5283) 余额 ${lottery.tickets ?? "?"}；` +
-          `兑换材料(5284) 余额 ${lottery.frag ?? "?"}` +
-          (plan.commonConfirmed.exchange
-            ? `；兑换活动 ${plan.ids.exchangeActivityId} / 商品 ${plan.ids.exchangeGoodsId}（已换 ${plan.commonConfirmed.exchangeTimes} 次）`
-            : `；兑换活动 ${plan.ids.exchangeActivityId}（推送中未见）`),
-        type: "info",
-      });
-    }
-
-    // 券兑换商店：余额 → 能买几个饼干 / 余券够不够换复活丹
-    const coupon = plan.coupon;
-    if (coupon) {
-      const buy = coupon.purchase;
-      addLog({
-        time: new Date().toLocaleTimeString(),
-        message:
-          `${tokenName} 券兑换：兑换券(5285) 余额 ${coupon.tickets ?? "?"}` +
-          (buy && buy.tickets !== null
-            ? ` → 可买饼干 ${buy.cookies} 个（花 ${buy.cookieCost}），余 ${buy.remaining}` +
-              (buy.revive > 0 ? `，够换复活丹 ×1` : `，不够换复活丹（需 3）`)
-            : "（余额读不到，不会购买）") +
-          `；券活动 ${plan.ids.couponActivityId} / 饼干 ${plan.ids.couponCookieGoodsId} / 复活丹 ${plan.ids.couponReviveGoodsId}`,
-        type: "info",
-      });
-    }
-  } catch (error) {
-    addLog({
-      time: new Date().toLocaleTimeString(),
-      message: `${tokenName} 探测逍遥津失败: ${error?.message || String(error)}`,
-      type: "error",
-    });
-  } finally {
-    xiaoyaojinInspecting.value = false;
-    tokenStore.closeWebSocketConnection(tokenId);
-    releaseConnectionSlot();
-  }
-};
-
 const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksHangUp(deps),
   ...createTasksBottle(deps),
@@ -8368,7 +8043,8 @@ const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksLegacy(deps),
   ...createTasksFootball(deps),
   ...createTasksCampChallengeStrategy(deps),
-  ...createTasksXiaoyaojin(deps),
+  // 逍遥津已于 2026-09-26 活动结束后下线（UI 已摘除；源码与测试保留在
+  // utils/batch/tasksXiaoyaojin.js + utils/xiaoyaojinPlan.js，下期接回只需恢复接线）
   ...createTasksGoldenfish(deps),
 });
 
@@ -9639,7 +9315,8 @@ const stopBatch = () => {
   font-size: 14px;
 }
 
-/* 逍遥津（临时活动）标签页 */
+/* 「临时活动」系列标签页共用的小输入框 / 提示文字样式
+   （类名沿用 xiaoyaojin-*：现在由金鱼标签页与金鱼商店区块共用；改名会牵动多处，故保留） */
 .xiaoyaojin-draws-input {
   width: 96px;
   flex-shrink: 0;
@@ -9649,6 +9326,11 @@ const stopBatch = () => {
   color: #86909c;
   font-size: 12px;
   line-height: 1.6;
+}
+
+/* 「临时活动」空壳占位 */
+.temporary-activity-empty {
+  padding: 24px 0;
 }
 
 /* 金鱼商店购物列表行：勾选 + 折扣输入横排 */

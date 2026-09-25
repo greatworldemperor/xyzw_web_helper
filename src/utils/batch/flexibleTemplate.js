@@ -121,19 +121,10 @@ export const flexibleTaskGroups = [
       batchTask("batchWarGuessCheer", "月赛助威", { requires: "warGuess" }),
     ],
   },
-  {
-    name: "temporary",
-    label: "临时活动",
-    tasks: [
-      batchTask("xiaoyaojinAll", "逍遥津一键全套"),
-      batchTask("xiaoyaojinDailyTask", "逍遥津每日任务奖励"),
-      batchTask("xiaoyaojinPassChest", "逍遥津战令奖励宝箱"),
-      batchTask("xiaoyaojinPassRewards", "逍遥津战令等级奖励"),
-      batchTask("xiaoyaojinOneTimeGift", "逍遥津一次性奖励"),
-      batchTask("xiaoyaojinSignReward", "逍遥津7天登录奖励"),
-      batchTask("xiaoyaojinLottery", "逍遥津抽奖"),
-    ],
-  },
+  // 逍遥津（"临时活动" 分组）已于 2026-09-26 活动结束后下线：
+  // 分组与任务项一并移除。源码与测试保留（utils/batch/tasksXiaoyaojin.js +
+  // utils/xiaoyaojinPlan.js + test/xiaoyaojinPlan.test.js + test/tasksXiaoyaojinCoupon.test.js），
+  // 下期活动若要接回，恢复本分组 + 页面「临时活动」标签页的按钮接线即可。
 ];
 
 export const flexibleTasks = flexibleTaskGroups.flatMap((group) =>

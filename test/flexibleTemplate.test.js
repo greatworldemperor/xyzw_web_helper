@@ -78,14 +78,10 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "batchTopUpFish",
     "batchTopUpArena",
     "batchWarGuessCheer",
-    // 临时活动（逍遥津）
-    "xiaoyaojinAll",
-    "xiaoyaojinDailyTask",
-    "xiaoyaojinPassChest",
-    "xiaoyaojinPassRewards",
-    "xiaoyaojinOneTimeGift",
-    "xiaoyaojinSignReward",
-    "xiaoyaojinLottery",
+    // ⚠️ 逍遥津的 7 个任务（xiaoyaojinAll / DailyTask / PassChest / PassRewards /
+    //    OneTimeGift / SignReward / Lottery）已于 2026-09-26 活动结束后下线，
+    //    从「临时活动」分组移除；源码仍在 utils/batch/tasksXiaoyaojin.js，下期可接回。
+    //    金鱼（goldenfishUseItem）同样刻意不在自由/定时模板里（master 2026-09-25 指示）。
   ];
 
   [...hiddenDailyTasks, ...batchActions].forEach((taskId) =>

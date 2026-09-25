@@ -84,13 +84,7 @@ export const availableTasks = [
   { label: "一键领取蟠桃园任务", value: "batchClaimPeachTasks" },
   { label: "一键扫荡灯神", value: "batchGenieSweep" },
   { label: "一键购买梦境商品", value: "batchBuyDreamItems" },
-  { label: "逍遥津一键全套", value: "xiaoyaojinAll" },
-  { label: "逍遥津每日任务奖励", value: "xiaoyaojinDailyTask" },
-  { label: "逍遥津战令奖励宝箱", value: "xiaoyaojinPassChest" },
-  { label: "逍遥津战令等级奖励", value: "xiaoyaojinPassRewards" },
-  { label: "逍遥津一次性奖励", value: "xiaoyaojinOneTimeGift" },
-  { label: "逍遥津7天登录奖励", value: "xiaoyaojinSignReward" },
-  { label: "逍遥津抽奖", value: "xiaoyaojinLottery" },
+  // 逍遥津任务已于 2026-09-26 活动结束后下线（源码保留在 utils/batch/tasksXiaoyaojin.js）
   { label: "金鱼投道具", value: "goldenfishUseItem" },
 ];
 
