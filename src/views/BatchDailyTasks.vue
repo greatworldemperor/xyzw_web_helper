@@ -326,7 +326,8 @@
         <n-card title="批量功能列表" style="margin-top: 16px">
           <n-tabs type="line" animated>
             <n-tab-pane name="daily" tab="日常">
-              <n-space>
+              <n-space vertical :size="8">
+                <n-space>
                 <n-button
                   size="small"
                   @click="claimHangUpRewards"
@@ -427,6 +428,75 @@
                     营地挑战({{ campChallengeModeLabel }})
                   </n-button>
                 </n-popselect>
+                </n-space>
+                <n-divider style="margin: 4px 0" />
+                <span class="xiaoyaojin-hint">
+                  商店购物列表（「金鱼模式」预设：青铜宝箱 5 折 / 黄金宝箱 5 折 / 铂金宝箱 8 折 /
+                  招募令 10 折原价 / 黄金鱼竿 8 折；可微调折扣后批量下发，金鱼等活动的商店通用）
+                </span>
+                <n-space align="center" :size="8">
+                  <span class="xiaoyaojin-hint">刷新次数</span>
+                  <n-input-number
+                    v-model:value="goldenfishShopSettings.purchaseCnt"
+                    size="small"
+                    :min="1"
+                    :max="999"
+                    :precision="0"
+                    :show-button="false"
+                    style="width: 90px"
+                    :disabled="isRunning"
+                  />
+                  <span class="xiaoyaojin-hint">
+                    （即游戏内 purchaseCnt，随列表一起下发；抓包提交值 15）
+                  </span>
+                </n-space>
+                <n-space vertical :size="4">
+                  <div
+                    v-for="item in goldenfishShopItems"
+                    :key="item.itemId"
+                    class="goldenfish-shop-row"
+                  >
+                    <n-checkbox
+                      v-model:checked="item.enabled"
+                      size="small"
+                      :disabled="isRunning"
+                    >
+                      {{ item.name }}（{{ item.itemId }}）
+                    </n-checkbox>
+                    <n-input-number
+                      v-model:value="item.discount"
+                      size="small"
+                      :min="1"
+                      :max="10"
+                      :precision="0"
+                      :show-button="false"
+                      style="width: 72px"
+                      :disabled="isRunning || !item.enabled"
+                    />
+                    <span class="xiaoyaojin-hint">折（10 = 原价）</span>
+                  </div>
+                </n-space>
+                <n-space :size="8">
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="applyGoldenfishShopList"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    设置购物列表
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="resetGoldenfishShopDefaults"
+                    :disabled="isRunning"
+                  >
+                    恢复金鱼模式默认
+                  </n-button>
+                </n-space>
+                <span class="xiaoyaojin-hint">
+                  流程：store_getpurchase 读当前列表（页面刷新次数未配置时沿用服务端现值）→
+                  store_setpurchase 写入勾选项 + 刷新次数；响应回显一致才记成功，未勾选的商品不在自动购买列表。
+                </span>
               </n-space>
             </n-tab-pane>
             <n-tab-pane name="dungeon" tab="副本">
@@ -898,74 +968,7 @@
                   金鱼为秋季限时活动：autumn_useitem {'{'}itemNum: N{'}'}，单发按数量投掷，
                   服务端自动扣减并返回奖励与前进距离；道具不足/活动未开视为正常跳过。
                   完整自动金鱼开发中——协议见 docs/goldenfish-autumn-protocol.md。
-                </span>
-                <n-divider style="margin: 4px 0" />
-                <span class="xiaoyaojin-hint">
-                  商店购物列表（「金鱼模式」预设：青铜宝箱 5 折 / 黄金宝箱 5 折 / 铂金宝箱 8 折 /
-                  招募令 10 折原价 / 黄金鱼竿 8 折；可微调折扣后批量下发）
-                </span>
-                <n-space align="center" :size="8">
-                  <span class="xiaoyaojin-hint">刷新次数</span>
-                  <n-input-number
-                    v-model:value="goldenfishShopSettings.purchaseCnt"
-                    size="small"
-                    :min="1"
-                    :max="999"
-                    :precision="0"
-                    :show-button="false"
-                    style="width: 90px"
-                    :disabled="isRunning"
-                  />
-                  <span class="xiaoyaojin-hint">
-                    （即游戏内 purchaseCnt，随列表一起下发；抓包提交值 15）
-                  </span>
-                </n-space>
-                <n-space vertical :size="4">
-                  <div
-                    v-for="item in goldenfishShopItems"
-                    :key="item.itemId"
-                    class="goldenfish-shop-row"
-                  >
-                    <n-checkbox
-                      v-model:checked="item.enabled"
-                      size="small"
-                      :disabled="isRunning"
-                    >
-                      {{ item.name }}（{{ item.itemId }}）
-                    </n-checkbox>
-                    <n-input-number
-                      v-model:value="item.discount"
-                      size="small"
-                      :min="1"
-                      :max="10"
-                      :precision="0"
-                      :show-button="false"
-                      style="width: 72px"
-                      :disabled="isRunning || !item.enabled"
-                    />
-                    <span class="xiaoyaojin-hint">折（10 = 原价）</span>
-                  </div>
-                </n-space>
-                <n-space :size="8">
-                  <n-button
-                    size="small"
-                    type="primary"
-                    @click="applyGoldenfishShopList"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    设置购物列表
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="resetGoldenfishShopDefaults"
-                    :disabled="isRunning"
-                  >
-                    恢复金鱼模式默认
-                  </n-button>
-                </n-space>
-                <span class="xiaoyaojin-hint">
-                  流程：store_getpurchase 读当前列表（页面刷新次数未配置时沿用服务端现值）→
-                  store_setpurchase 写入勾选项 + 刷新次数；响应回显一致才记成功，未勾选的商品不在自动购买列表。
+                  商店购物列表已移至「日常」栏目（金鱼活动的商店也用它）。
                 </span>
               </n-space>
             </n-tab-pane>

@@ -2,7 +2,9 @@
 
 > 来源：`local-data/goldenfish/use_one_item.jsonl`（2026-09-25 抓包，`wss://xxz-xyzw.hortorgames.com/agent`，x 方案 px 帧）
 > 商店部分来源：`local-data/goldenfish/shop_list.jsonl`（2026-09-25 抓包）
-> 实现：`src/utils/batch/tasksGoldenfish.js`，入口 `/admin/batch-daily-tasks` → 批量功能「金鱼」标签页。
+> 实现：`src/utils/batch/tasksGoldenfish.js`，入口 `/admin/batch-daily-tasks` → 批量功能。
+> 「商店购物列表」按 master 指示放在「日常」栏目（常规操作，金鱼等活动的商店通用）；
+> 金鱼 tab 只保留投道具。
 
 ## 命令
 
