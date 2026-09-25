@@ -904,6 +904,22 @@
                   商店购物列表（「金鱼模式」预设：青铜宝箱 5 折 / 黄金宝箱 5 折 / 铂金宝箱 8 折 /
                   招募令 10 折原价 / 黄金鱼竿 8 折；可微调折扣后批量下发）
                 </span>
+                <n-space align="center" :size="8">
+                  <span class="xiaoyaojin-hint">刷新次数</span>
+                  <n-input-number
+                    v-model:value="goldenfishShopSettings.purchaseCnt"
+                    size="small"
+                    :min="1"
+                    :max="999"
+                    :precision="0"
+                    :show-button="false"
+                    style="width: 90px"
+                    :disabled="isRunning"
+                  />
+                  <span class="xiaoyaojin-hint">
+                    （即游戏内 purchaseCnt，随列表一起下发；抓包提交值 15）
+                  </span>
+                </n-space>
                 <n-space vertical :size="4">
                   <div
                     v-for="item in goldenfishShopItems"
@@ -948,8 +964,8 @@
                   </n-button>
                 </n-space>
                 <span class="xiaoyaojin-hint">
-                  流程：store_getpurchase 读当前列表（沿用服务端 purchaseCnt）→
-                  store_setpurchase 写入勾选项；响应回显一致才记成功，未勾选的商品不在自动购买列表。
+                  流程：store_getpurchase 读当前列表（页面刷新次数未配置时沿用服务端现值）→
+                  store_setpurchase 写入勾选项 + 刷新次数；响应回显一致才记成功，未勾选的商品不在自动购买列表。
                 </span>
               </n-space>
             </n-tab-pane>
@@ -8063,17 +8079,24 @@ const { goldenfishUseItem, goldenfishSetShopList } = tasksGoldenfish;
 
 // 金鱼商店购物列表（「金鱼模式」预设；09-25 抓包 store_setpurchase 验证，详见 docs/goldenfish-autumn-protocol.md）
 const GOLDENFISH_SHOP_STORAGE_KEY = "goldenfishShopSettings";
+const GOLDENFISH_SHOP_DEFAULT_CNT = 15; // 09-25 master 抓包提交值
 
 const loadGoldenfishShopSettings = () => {
-  const defaults = GOLDENFISH_SHOP_DEFAULTS.map((it) => ({ ...it }));
+  const defaults = {
+    items: GOLDENFISH_SHOP_DEFAULTS.map((it) => ({ ...it })),
+    purchaseCnt: GOLDENFISH_SHOP_DEFAULT_CNT,
+  };
   try {
     const raw = localStorage.getItem(GOLDENFISH_SHOP_STORAGE_KEY);
     if (!raw) return defaults;
     const saved = JSON.parse(raw);
-    if (!Array.isArray(saved)) return defaults;
+    // 兼容两代存档：旧版直接存数组（无刷新次数），新版 { items, purchaseCnt }
+    const savedItems = Array.isArray(saved) ? saved : saved?.items;
+    const savedCnt = Number(Array.isArray(saved) ? NaN : saved?.purchaseCnt);
+    if (!Array.isArray(savedItems)) return defaults;
     // 按 itemId 合并：存档缺项/多項一律以内置 5 项为准，只回填折扣与启用
-    return defaults.map((def) => {
-      const hit = saved.find((it) => Number(it?.itemId) === def.itemId);
+    const items = defaults.items.map((def) => {
+      const hit = savedItems.find((it) => Number(it?.itemId) === def.itemId);
       if (!hit) return { ...def };
       const discount = Number(hit.discount);
       return {
@@ -8085,15 +8108,21 @@ const loadGoldenfishShopSettings = () => {
         enabled: hit.enabled !== false,
       };
     });
+    const purchaseCnt =
+      Number.isInteger(savedCnt) && savedCnt >= 1
+        ? savedCnt
+        : GOLDENFISH_SHOP_DEFAULT_CNT;
+    return { items, purchaseCnt };
   } catch {
     return defaults;
   }
 };
 
-const goldenfishShopItems = ref(loadGoldenfishShopSettings());
+const goldenfishShopSettings = ref(loadGoldenfishShopSettings());
+const goldenfishShopItems = computed(() => goldenfishShopSettings.value.items);
 
 watch(
-  goldenfishShopItems,
+  goldenfishShopSettings,
   (val) => {
     try {
       localStorage.setItem(GOLDENFISH_SHOP_STORAGE_KEY, JSON.stringify(val));
@@ -8106,11 +8135,15 @@ watch(
 
 const applyGoldenfishShopList = () =>
   goldenfishSetShopList({
-    items: goldenfishShopItems.value.map((it) => ({ ...it })),
+    items: goldenfishShopSettings.value.items.map((it) => ({ ...it })),
+    purchaseCnt: goldenfishShopSettings.value.purchaseCnt,
   });
 
 const resetGoldenfishShopDefaults = () => {
-  goldenfishShopItems.value = GOLDENFISH_SHOP_DEFAULTS.map((it) => ({ ...it }));
+  goldenfishShopSettings.value = {
+    items: GOLDENFISH_SHOP_DEFAULTS.map((it) => ({ ...it })),
+    purchaseCnt: GOLDENFISH_SHOP_DEFAULT_CNT,
+  };
   message.success("已恢复金鱼模式默认购物列表");
 };
 

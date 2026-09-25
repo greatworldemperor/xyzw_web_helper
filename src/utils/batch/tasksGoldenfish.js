@@ -17,7 +17,8 @@
  *   - 写：`store_setpurchase { purchaseCnt, purchaseItemList: [{ itemId, discount }] }`
  *     响应回显设置后的列表（按 itemId 升序）；discount = 折扣阈值（整数折，10 = 原价），
  *     商店刷新出 ≤ 阈值的折扣时服务端自动购买。
- *   - `purchaseCnt` 语义未知（抓包 get/set 均为 15）→ 一律沿用服务端现值，缺失才用默认 15。
+ *   - `purchaseCnt` = 游戏里的「刷新次数」（09-25 晚 master 口径确认，抓包 15）；
+ *     优先用页面配置值，未配置沿用服务端现值，最后兜底 15。
  *
  * 设计要点（与 tasksXiaoyaojin 一致）：
  * - 每次调用每账号只投 1 个道具（与抓包逐字节一致），道具不足 / 活动未开都是「正常结束」；
@@ -35,8 +36,14 @@ export const GOLDENFISH_SHOP_DEFAULTS = [
   { itemId: 1012, name: "黄金鱼竿", discount: 8, enabled: true },
 ];
 
-/** 抓包默认 purchaseCnt（get/set 均为 15，语义未知，仅作缺失兜底） */
+/** 抓包默认刷新次数（09-25 master 提交 15，仅作缺失兜底） */
 const DEFAULT_PURCHASE_CNT = 15;
+
+/** 刷新次数（purchaseCnt）合法值：正整数（Number(null)===0 陷阱，显式判） */
+const normalizePurchaseCnt = (raw) => {
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 1 ? n : null;
+};
 
 /**
  * UI 配置 → 请求体 purchaseItemList
@@ -174,12 +181,10 @@ export function createTasksGoldenfish(deps) {
       {},
       8000,
     );
-    // purchaseCnt 语义未知 → 沿用服务端现值；缺失/空串才用抓包默认 15（Number(null)===0 陷阱，显式判）
-    const rawCnt = current?.purchaseCnt;
+    // 刷新次数（purchaseCnt）：页面配置优先 → 服务端现值 → 抓包默认 15（Number(null)===0 陷阱，显式判）
+    const wantedCnt = normalizePurchaseCnt(config?.purchaseCnt);
     const purchaseCnt =
-      rawCnt === null || rawCnt === undefined || rawCnt === ""
-        ? DEFAULT_PURCHASE_CNT
-        : Number(rawCnt);
+      wantedCnt ?? normalizePurchaseCnt(current?.purchaseCnt) ?? DEFAULT_PURCHASE_CNT;
     const oldText = formatPurchaseItems(current?.purchaseItemList);
 
     const response = await tokenStore.sendMessageWithPromise(
@@ -189,11 +194,12 @@ export function createTasksGoldenfish(deps) {
       8000,
     );
 
-    // 响应回显按 itemId 升序，与发送顺序无关 → 逐项比对集合
+    // 回显比对：列表逐项比对集合 + 刷新次数一致
     const echoed = Array.isArray(response?.purchaseItemList)
       ? response.purchaseItemList
       : [];
     const ok =
+      Number(response?.purchaseCnt) === purchaseCnt &&
       echoed.length === purchaseItemList.length &&
       purchaseItemList.every((item) =>
         echoed.some(
@@ -205,8 +211,9 @@ export function createTasksGoldenfish(deps) {
     log(
       token.name,
       `商店购物列表${ok ? "已设置" : "已发送（回显不一致，注意核对）"}：` +
+        `刷新 ${purchaseCnt} 次；` +
         `${purchaseItemList.map((it) => `${it.itemId} ${it.discount}折`).join("、")}` +
-        `（原列表：${oldText || "空"}；purchaseCnt ${purchaseCnt}）`,
+        `（原列表：${oldText || "空"}）`,
       ok ? "success" : "warning",
     );
   };

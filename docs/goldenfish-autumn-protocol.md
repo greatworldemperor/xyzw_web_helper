@@ -37,7 +37,9 @@ RESP Store_SetPurchaseResp  回显设置后的列表（按 itemId 升序，与�
 ```
 
 - `discount` = 折扣阈值（整数折，10 = 原价）；商店刷新出 ≤ 阈值的折扣时服务端自动购买。
-- `purchaseCnt` 语义未知（抓包 get/set 均为 15）→ 实现一律沿用 `getpurchase` 返回的现值，缺失才兜底 15。
+- `purchaseCnt` = 游戏里的**刷新次数**（09-25 晚 master 口径确认，抓包提交 15）；
+  实现优先用页面配置值，未配置沿用 `getpurchase` 返回的现值，最后兜底 15。
+  回显比对同时校验列表与 purchaseCnt。
 - itemId 对照（金鱼活动商店，抓包 #525 实测）：
 
 | itemId | 商品     | master 口径 |
@@ -48,8 +50,8 @@ RESP Store_SetPurchaseResp  回显设置后的列表（按 itemId 升序，与�
 | 1001   | 招募令   | 10 折（原价） |
 | 1012   | 黄金鱼竿 | 8 折        |
 
-- 以上 5 项即「金鱼模式」预设（`GOLDENFISH_SHOP_DEFAULTS`）；页面可改折扣/勾选项，
-  localStorage `goldenfishShopSettings` 记忆。其他商品 itemId 未抓到，暂不支持自定义添加。
+- 以上 5 项即「金鱼模式」预设（`GOLDENFISH_SHOP_DEFAULTS`）；页面可改折扣/勾选/刷新次数，
+  localStorage `goldenfishShopSettings` 记忆（旧版纯数组存档兼容读取）。其他商品 itemId 未抓到，暂不支持自定义添加。
 - 回归：`test/goldenfishShop.test.js` —— 默认配置构造的 setpurchase body 与抓包 #525 帧逐字节一致。
 
 ## 实现要点
