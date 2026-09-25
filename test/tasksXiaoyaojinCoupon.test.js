@@ -276,7 +276,39 @@ test("整批报「超上限」→ 降级逐个买，能买几个算几个", asyn
     .exchanges()
     .filter((item) => item.goodsId === 260919302);
   assert.equal(cookieCalls[0].quantity, 8, "第一次仍是整批");
-  assert.equal(cookieCalls.length, 5, "整批1 + 逐个3成功 + 第4个失败");
-  assert.equal(cookieCalls[1].quantity, 1);
-  assert.match(harness.text(), /降级逐个买/);
+  // 整批1 + 试买1 + 再买2个 + 第4个撞限购 = 5 次
+  assert.equal(cookieCalls.length, 5);
+  assert.equal(cookieCalls[1].quantity, 1, "失败后先试买 1 个");
+  assert.match(harness.text(), /确认为限购/);
+});
+
+test("★ 报「超上限」但连 1 个都买不动 = 这一期不对 → 继续换期（01:34 现场）", async () => {
+  const harness = createHarness({
+    activityGet: {
+      activity: {
+        warOrderActivityInfo: {},
+        commonActivityInfo: { 2609253: { record: {}, task: {}, isBought: false } },
+      },
+    },
+    roleItems: { 5285: { quantity: 43 } },
+    onExchange: (params) => {
+      // 新一期怎么买都失败（整批超上限、单个物品不存在）
+      if (params.activityId !== 2609193) {
+        return Object.assign(
+          new Error(params.quantity > 1 ? "兑换数量超上限" : "物品不存在"),
+          { code: 700010 },
+        );
+      }
+      return capturedExchange(params);
+    },
+  });
+
+  await harness.tasks.xiaoyaojinCoupon();
+
+  const ok = harness
+    .exchanges()
+    .filter((item) => item.activityId === 2609193);
+  assert.deepEqual(ok, CAPTURED_EXCHANGES, "最终仍按上一期正常买完");
+  assert.match(harness.text(), /试买 1 个也失败/);
+  assert.ok(!/券兑换失败/.test(harness.text()), harness.text());
 });

@@ -846,15 +846,39 @@ export function createTasksXiaoyaojin(deps) {
           if (left !== null) ticketsLeft = left;
           return purchase.cookies;
         } catch (error) {
-          // 只有「超上限」才降级逐个买；物品不存在 / 期不对 → 换下一期
-          if (!isQuantityLimitError(error)) return -1;
+          /**
+           * ⚠️ 008 「兑换数量超上限」**不等于**「这一期能用、只是限购」——
+           * 2026-09-26 01:34 实证：拿新一期 2609253 买也是「兑换数量超上限」，
+           * 但逐个买同样失败（商品在这一期根本不存在）→ 必须能继续换下一期。
+           * 判据：**先试买 1 个**，买得动才是限购，买不动就是这一期不对。
+           */
           log(
             token.name,
-            `整批买 ${purchase.cookies} 个报「${errorText(error)}」（活动 ${activityId}）→ 降级逐个买`,
+            `整批买 ${purchase.cookies} 个报「${errorText(error)}」（活动 ${activityId}）→ 试买 1 个确认是否为限购`,
             "warning",
           );
-          let bought = 0;
-          for (let index = 1; index <= purchase.cookies; index += 1) {
+          try {
+            const probe = await tokenStore.sendMessageWithPromise(
+              tokenId,
+              "activity_exchange",
+              { activityId, goodsId: cookieGoodsId, quantity: 1 },
+              8000,
+            );
+            const left = readItemQuantity(probe, XIAOYAOJIN_COUPON_ITEM_ID);
+            if (left !== null) ticketsLeft = left;
+            log(token.name, `试买 1 个成功 → 确认为限购，继续逐个买`);
+          } catch (probeError) {
+            // 连 1 个都买不了 → 这一期不对（物品不存在 / 活动未开）
+            log(
+              token.name,
+              `试买 1 个也失败（${errorText(probeError)}）→ 这一期不是券所属的期`,
+              "warning",
+            );
+            return -1;
+          }
+
+          let bought = 1; // 上面那 1 个已买成
+          for (let index = 2; index <= purchase.cookies; index += 1) {
             if (shouldStop.value) break;
             try {
               const response = await tokenStore.sendMessageWithPromise(
@@ -867,7 +891,7 @@ export function createTasksXiaoyaojin(deps) {
               const left = readItemQuantity(response, XIAOYAOJIN_COUPON_ITEM_ID);
               if (left !== null) ticketsLeft = left;
             } catch {
-              break;
+              break; // 买到上限了
             }
             await sleep(Math.max(300, actionDelay()));
           }
@@ -903,6 +927,7 @@ export function createTasksXiaoyaojin(deps) {
       }
 
       // 复活丹：用服务端回的最新余额判断，够 3 才换 1 个
+      let reviveSettled = false;
       if (ticketsLeft >= XIAOYAOJIN_REVIVE_PRICE) {
         try {
           await tokenStore.sendMessageWithPromise(
@@ -912,6 +937,7 @@ export function createTasksXiaoyaojin(deps) {
             8000,
           );
           progress.count += 1;
+          reviveSettled = true;
           log(
             token.name,
             `剩余 ${ticketsLeft} 券 → 换复活丹 ×1 成功`,
@@ -922,12 +948,14 @@ export function createTasksXiaoyaojin(deps) {
         }
         await sleep();
       } else {
+        reviveSettled = true; // 不需要换，这一期算搞定
         log(
           token.name,
           `余券 ${ticketsLeft} 不足 ${XIAOYAOJIN_REVIVE_PRICE}，不换复活丹`,
         );
       }
-      done = true;
+      // 只有「确实买到了」或「复活丹已处理」才收工；啥都没买到 → 换下一期再试
+      if (bought > 0 || reviveSettled) done = true;
     }
 
     if (!done) {
