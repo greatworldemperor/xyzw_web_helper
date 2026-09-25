@@ -826,18 +826,27 @@ export function createTasksXiaoyaojin(deps) {
         const left = readItemQuantity(response, XIAOYAOJIN_COUPON_ITEM_ID);
         if (left !== null) tickets = left;
       } catch (error) {
+        // ⚠️ 抓包实证 `quantity:8` 是可行的（43 券 → 8 个饼干 → 余 3），
+        // 所以「超上限」多半是**兑换错期了**（用新一期的商品 ID 买上一期的券），
+        // 而不是数量本身有问题 → 日志把三元组打全，好对照抓包。
         if (!isQuantityLimitError(error)) {
           if (isRateLimitError(error)) {
             log(token.name, "触发限流(400340)，饼干下次再买", "warning");
           } else {
-            log(token.name, `买饼干失败，停止券兑换：${errorText(error)}`, "warning");
+            log(
+              token.name,
+              `买饼干失败，停止券兑换：${errorText(error)}` +
+                `（活动 ${activityId} / 商品 ${cookieGoodsId} / 数量 ${purchase.cookies} / 日期头 ${plan.head}）`,
+              "warning",
+            );
           }
           return;
         }
         // 整批超限 → 逐个买，能买几个算几个（限购挡住就停）
         log(
           token.name,
-          `整批买 ${purchase.cookies} 个超上限（${errorText(error)}）→ 降级逐个买`,
+          `整批买 ${purchase.cookies} 个报「${errorText(error)}」（活动 ${activityId} / 商品 ${cookieGoodsId}；` +
+            `若券属于另一期，请在「活动日期头」填那一期的开启日）→ 降级逐个买`,
           "warning",
         );
         for (let index = 1; index <= purchase.cookies; index += 1) {
