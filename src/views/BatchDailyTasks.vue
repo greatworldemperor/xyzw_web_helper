@@ -870,19 +870,34 @@
             </n-tab-pane>
             <n-tab-pane name="goldenfish" tab="金鱼">
               <n-space vertical :size="8">
+                <n-space align="center" :size="8">
+                  <n-input-number
+                    v-model:value="goldenfishCount"
+                    class="xiaoyaojin-draws-input"
+                    size="small"
+                    :min="1"
+                    :max="999"
+                    :precision="0"
+                    :show-button="false"
+                    placeholder="投掷数量"
+                    :disabled="isRunning"
+                  />
+                  <span class="xiaoyaojin-hint">投掷数量（单发 itemNum，N>1 待实测）</span>
+                </n-space>
                 <n-space :size="8">
                   <n-button
                     size="small"
                     type="primary"
-                    @click="goldenfishUseItem"
+                    @click="goldenfishUseItem(goldenfishCount)"
                     :disabled="isRunning || selectedTokens.length === 0"
                   >
-                    投一个道具
+                    投道具
                   </n-button>
                 </n-space>
                 <span class="xiaoyaojin-hint">
-                  金鱼为秋季限时活动：autumn_useitem {'{'}itemNum: 1{'}'}，每账号每次投 1 个道具，
+                  金鱼为秋季限时活动：autumn_useitem {'{'}itemNum: N{'}'}，单发按数量投掷，
                   服务端自动扣减并返回奖励与前进距离；道具不足/活动未开视为正常跳过。
+                  完整自动金鱼开发中——协议见 docs/goldenfish-autumn-protocol.md。
                 </span>
               </n-space>
             </n-tab-pane>
@@ -7989,6 +8004,7 @@ const {
 } = tasksXiaoyaojin;
 
 // 金鱼（秋季活动）：投道具，协议见 local-data/goldenfish 抓包
+const goldenfishCount = ref(1);
 const tasksGoldenfish = createTasksGoldenfish(createTaskDeps());
 const { goldenfishUseItem } = tasksGoldenfish;
 

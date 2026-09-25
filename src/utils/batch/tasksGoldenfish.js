@@ -69,12 +69,30 @@ export function createTasksGoldenfish(deps) {
   const log = (tokenName, text, type = "info") =>
     addLog({ time: nowText(), message: `${tokenName} ${text}`, type });
 
-  /** 投一个道具：autumn_useitem { itemNum: 1 }，响应里带回进度与奖励 */
-  const useOneItem = async ({ tokenId, token }) => {
+  /** 可选数值参数一律显式判空（Number(null)===0 陷阱） */
+  const clampCount = (raw) => {
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
+  };
+
+  /** 道具余额快照 → 可读文案（resp.role.items: { itemId: { quantity } }） */
+  const itemsText = (response) => {
+    const items = response?.role?.items;
+    if (!items || typeof items !== "object") return "";
+    const parts = Object.entries(items)
+      .map(([id, v]) => `${id}×${Number(v?.quantity)}`)
+      .filter((s) => !s.endsWith("×NaN"));
+    return parts.length > 0 ? `；余额 ${parts.join(" ")}` : "";
+  };
+
+  /** 投 N 个道具：autumn_useitem { itemNum: N }，响应里带回进度/奖励/余额
+   *  ⚠️ 抓包只实测过 itemNum:1；N>1 是否单次生效待活动开放时间验证（见 docs 待验证清单） */
+  const useOneItem = async ({ tokenId, token, count }) => {
+    const n = clampCount(count);
     const response = await tokenStore.sendMessageWithPromise(
       tokenId,
       "autumn_useitem",
-      { itemNum: 1 },
+      { itemNum: n },
       8000,
     );
     const distance = Number(response?.distance ?? response?.roleAutumn?.distance);
@@ -83,14 +101,18 @@ export function createTasksGoldenfish(deps) {
       Number.isFinite(distance) && distance > 0
         ? `，前进 ${distance} 格` + (Number.isFinite(areaId) ? `（区域 ${areaId}）` : "")
         : "";
-    log(token.name, `投出 1 个道具${progress}（${rewardText(response)}）`, "success");
+    log(
+      token.name,
+      `投出 ${n} 个道具${progress}（${rewardText(response)}${itemsText(response)}）`,
+      "success",
+    );
   };
 
   const STEPS = { useOneItem };
 
   // ------------------------------------------------------------------ 批量框架
 
-  const runGoldenfish = async (stepIds, title) => {
+  const runGoldenfish = async (stepIds, title, count = 1) => {
     if (selectedTokens.value.length === 0) {
       message.warning("请先选择账号");
       return;
@@ -123,7 +145,7 @@ export function createTasksGoldenfish(deps) {
           const step = STEPS[stepId];
           if (!step) continue;
           try {
-            await step({ tokenId, token });
+            await step({ tokenId, token, count });
           } catch (error) {
             if (isRateLimitError(error)) {
               log(tokenName, `触发限流(400340)，下次再试`, "warning");
@@ -176,7 +198,8 @@ export function createTasksGoldenfish(deps) {
     message.success(`${title}结束`);
   };
 
-  const goldenfishUseItem = () => runGoldenfish(["useOneItem"], "金鱼投道具");
+  const goldenfishUseItem = (count = 1) =>
+    runGoldenfish(["useOneItem"], "金鱼投道具", clampCount(count));
 
   return { goldenfishUseItem };
 }
