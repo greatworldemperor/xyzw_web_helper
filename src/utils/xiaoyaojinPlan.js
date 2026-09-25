@@ -831,12 +831,18 @@ export function buildXiaoyaojinPlan(response, options = {}) {
         maxAgeDays: options.maxAgeDays,
       });
 
-  const headFromManual = getActivityDateHead(manualWarOrderId);
-  const head =
-    headFromManual ||
-    detected?.head ||
-    detectedCommon?.head ||
+  /**
+   * ⚠️ 手工填的日期头**优先级最高**。
+   *
+   * 实证（2026-09-26 00:52）：上一期（260919）的兑换延时还剩几小时，但新一期（260925）
+   * 已经开了 → `commonActivityInfo` 里两期的键都有，而「取日期头最大者」会选中**新一期**，
+   * 于是券被拿去换新一期的商品 → `兑换数量超上限`（新一期限购更严）。
+   * 用户手工填 `260919` 就是「我要花上一期的券」这一明确意图，必须压过自动探测。
+   */
+  const headFromManual =
+    getActivityDateHead(manualWarOrderId) ||
     (toText(overrides.head).length === 6 ? toText(overrides.head) : null);
+  const head = headFromManual || detected?.head || detectedCommon?.head;
 
   if (!head) {
     return {
@@ -871,9 +877,7 @@ export function buildXiaoyaojinPlan(response, options = {}) {
       ? "manual"
       : detected
         ? "auto"
-        : detectedCommon
-          ? "common"
-          : "head",
+        : "common",
     head,
     ageDays,
     /**

@@ -81,6 +81,15 @@ const isNothingToClaimError = (error) =>
 /** 服务端限流（沿用项目通用码）：不是失败，是「这次别连发了」 */
 const isRateLimitError = (error) => Number(error?.code) === 400340;
 
+/**
+ * 「兑换数量超上限」：一次买 N 个被限购挡了（2026-09-26 00:52 实证：
+ * `买饼干 ×8` → `兑换数量超上限`）→ 应降级成逐个买，能买几个算几个。
+ */
+const isQuantityLimitError = (error) =>
+  /超上限|超出上限|超过上限|超出限购|超过限购|数量上限|已达上限|达到上限|超出最大/.test(
+    errorText(error),
+  );
+
 /** 奖励字段 → 可读文案 */
 const rewardText = (response) => {
   const list = Array.isArray(response?.reward) ? response.reward : [];
@@ -778,7 +787,11 @@ export function createTasksXiaoyaojin(deps) {
       );
       return;
     }
-    log(token.name, `兑换券(${XIAOYAOJIN_COUPON_ITEM_ID}) 余额 ${tickets}`);
+    log(
+      token.name,
+      `兑换券(${XIAOYAOJIN_COUPON_ITEM_ID}) 余额 ${tickets}；券兑换活动 ${activityId}` +
+        `（日期头 ${plan.head}${plan.source === "manual" ? "，手工指定" : ""}）`,
+    );
 
     if (purchase.cookies <= 0 && purchase.revive <= 0) {
       log(
@@ -788,8 +801,9 @@ export function createTasksXiaoyaojin(deps) {
       return;
     }
 
-    // ① 饼干：一条请求买完（实测 quantity:8 可行）
+    // ① 饼干：先整批买（抓包实测 quantity:8 可行），被限购挡住就降级逐个买
     if (purchase.cookies > 0) {
+      let bought = 0;
       try {
         const response = await tokenStore.sendMessageWithPromise(
           tokenId,
@@ -801,22 +815,62 @@ export function createTasksXiaoyaojin(deps) {
           },
           10000,
         );
-        progress.count += purchase.cookies;
+        bought = purchase.cookies;
+        progress.count += bought;
         log(
           token.name,
-          `买饼干 ×${purchase.cookies}（花 ${purchase.cookieCost} 券）成功（${rewardText(response)}）`,
+          `买饼干 ×${bought}（花 ${purchase.cookieCost} 券）成功（${rewardText(response)}）`,
           "success",
         );
         // 以服务端回的余额为准（可能有限购，实际买的比计划少）
         const left = readItemQuantity(response, XIAOYAOJIN_COUPON_ITEM_ID);
         if (left !== null) tickets = left;
       } catch (error) {
-        if (isRateLimitError(error)) {
-          log(token.name, "触发限流(400340)，饼干下次再买", "warning");
-        } else {
-          log(token.name, `买饼干失败，停止券兑换：${errorText(error)}`, "warning");
+        if (!isQuantityLimitError(error)) {
+          if (isRateLimitError(error)) {
+            log(token.name, "触发限流(400340)，饼干下次再买", "warning");
+          } else {
+            log(token.name, `买饼干失败，停止券兑换：${errorText(error)}`, "warning");
+          }
+          return;
         }
-        return;
+        // 整批超限 → 逐个买，能买几个算几个（限购挡住就停）
+        log(
+          token.name,
+          `整批买 ${purchase.cookies} 个超上限（${errorText(error)}）→ 降级逐个买`,
+          "warning",
+        );
+        for (let index = 1; index <= purchase.cookies; index += 1) {
+          if (shouldStop.value) break;
+          try {
+            const response = await tokenStore.sendMessageWithPromise(
+              tokenId,
+              "activity_exchange",
+              { activityId, goodsId: cookieGoodsId, quantity: 1 },
+              8000,
+            );
+            bought += 1;
+            progress.count += 1;
+            const left = readItemQuantity(response, XIAOYAOJIN_COUPON_ITEM_ID);
+            if (left !== null) tickets = left;
+            log(token.name, `逐个买饼干 第 ${bought} 个成功`, "success");
+          } catch (inner) {
+            if (isRateLimitError(inner)) {
+              log(token.name, "触发限流(400340)，剩余饼干下次再买", "warning");
+            } else {
+              log(
+                token.name,
+                `逐个买饼干第 ${bought + 1} 个失败（${errorText(inner)}），买到上限了`,
+                "warning",
+              );
+            }
+            break;
+          }
+          await sleep(Math.max(300, actionDelay()));
+        }
+        if (bought === 0) {
+          log(token.name, "饼干一个都没买到，仍尝试换复活丹", "warning");
+        }
       }
       await sleep();
     }

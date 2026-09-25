@@ -942,15 +942,44 @@ test("活动结束判定：ageDays>=7 或 战令表已清空，二者取其一",
   );
   assert.equal(running.ended, false);
 
-  // ③ 手工填日期头（连 commonActivityInfo 都没有）→ source=head
+  // ③ 手工填日期头（连 commonActivityInfo 都没有）→ source=manual
   const manual = buildXiaoyaojinPlan(
     { activity: { warOrderActivityInfo: {}, commonActivityInfo: {} } },
     { now: ENDED_NOW, overrides: { head: "260919" } },
   );
   assert.equal(manual.ok, true);
-  assert.equal(manual.source, "head");
+  assert.equal(manual.source, "manual");
   assert.equal(manual.ids.couponActivityId, "2609193");
   assert.equal(manual.ended, true); // 战令数据为空 → 判定已结束
+});
+
+test("★ 手工日期头压过自动探测（上一期兑券延时 vs 已开的新一期）", () => {
+  // 09-26：上一期 260919 的兑换延时未过，但新一期 260925 已经开了 →
+  // commonActivityInfo 里两期的键都有，自动探测「取日期头最大者」会选中新一期
+  const bothPeriods = {
+    activity: {
+      warOrderActivityInfo: {},
+      commonActivityInfo: {
+        2609193: { record: { 260919302: 8 }, task: {}, isBought: false },
+        2609253: { record: {}, task: {}, isBought: false },
+        2609255: { record: {}, task: {}, isBought: false },
+      },
+    },
+  };
+  const auto = buildXiaoyaojinPlan(bothPeriods, { now: ENDED_NOW });
+  assert.equal(auto.head, "260925"); // ← 自动探测会选新一期（不是我们想要的）
+  assert.equal(auto.ids.couponActivityId, "2609253");
+
+  // 用户手工填上一期 → 必须压过自动探测
+  const manual = buildXiaoyaojinPlan(bothPeriods, {
+    now: ENDED_NOW,
+    overrides: { head: "260919" },
+  });
+  assert.equal(manual.head, "260919");
+  assert.equal(manual.source, "manual");
+  assert.equal(manual.ids.couponActivityId, "2609193");
+  assert.equal(manual.ids.couponCookieGoodsId, "260919302");
+  assert.equal(manual.ids.couponReviveGoodsId, "260919303");
 });
 
 test("日期头优先级：手工战令ID > 战令表探测 > 公共活动表反推 > 手工 head", () => {
