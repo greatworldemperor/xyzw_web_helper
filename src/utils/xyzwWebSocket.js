@@ -147,7 +147,6 @@ export function registerDefaultCommands(reg) {
 
     // 竞技场
     .register("arena_startarea")
-    .register("fight_startareaarena") // 竞技场战斗3次（tasksArena；漏注册曾致请求超时）
     .register("fight_startlevel") // 获取 battleVersion
     .register("fight_calcleveltime") // 计算主线关卡战斗时长
     .register("fight_endlevel") // 提交本地战斗结果

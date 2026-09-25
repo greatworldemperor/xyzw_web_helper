@@ -6,8 +6,9 @@
  *   "Unknown cmd"（被 catch 吞掉），帧根本不会发出去 → Promise 只能等到超时。
  *   store_getpurchase / store_setpurchase / autumn_useitem 当时就漏在注册表外。
  *
- * 本测试静态扫描批量任务代码里所有字面量 cmd，逐一断言已在
- * registerDefaultCommands 中注册，防止「任务写了、命令没注册」再次发生。
+ * 注册有两种写法：链式 .register("cmd", ...) 和收尾的
+ * registry.commands.set("cmd", ...)（如 fight_startareaarena 的专用构建器），
+ * 本测试两种都认，静态扫描批量任务代码里所有字面量 cmd 逐一断言已注册。
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -34,6 +35,10 @@ const WS_SRC = fs.readFileSync(
 const CMD_RE =
   /(?:sendMessageWithPromise|sendWithPromise)\(\s*[\w.$]+\s*,\s*"([a-z0-9_]+)"/g;
 
+const isRegistered = (cmd) =>
+  new RegExp(`\\.register\\(\\s*"${cmd}"\\s*[,)]`).test(WS_SRC) ||
+  new RegExp(`commands\\.set\\(\\s*"${cmd}"\\s*,`).test(WS_SRC);
+
 test("批量任务里出现的每个字面量 cmd 都已注册到 CommandRegistry", () => {
   const used = new Map(); // cmd -> [file:line]
   for (const file of SCAN_FILES) {
@@ -47,9 +52,7 @@ test("批量任务里出现的每个字面量 cmd 都已注册到 CommandRegistr
   }
   assert.ok(used.size > 10, `应扫描到足够的命令（实际 ${used.size} 个）`);
 
-  const missing = [...used.keys()].filter(
-    (cmd) => !new RegExp(`register\\("${cmd}"[,)]`).test(WS_SRC),
-  );
+  const missing = [...used.keys()].filter((cmd) => !isRegistered(cmd));
   assert.deepEqual(
     missing,
     [],
@@ -65,10 +68,6 @@ test("关键命令显式断言（金鱼/商店自动购买）", () => {
     "autumn_useitem",
     "autumn_getrolerank",
   ]) {
-    assert.match(
-      WS_SRC,
-      new RegExp(`register\\("${cmd}"`),
-      `${cmd} 未注册`,
-    );
+    assert.ok(isRegistered(cmd), `${cmd} 未注册`);
   }
 });
