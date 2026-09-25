@@ -83,6 +83,16 @@ export const XIAOYAOJIN_CUMULATIVE_ID_MAX = 30;
 /** 「抽光为止」循环的迭代上限（防死循环；正常跑不到） */
 export const XIAOYAOJIN_LOTTERY_LOOP_MAX_ROUNDS = 200;
 
+/**
+ * 「一键全套」的**外层轮次上限**
+ *
+ * 为什么需要外层循环（2026-09-25 抓包实证 #105→#127）：
+ *   抽奖把 `lotteryNum` 推高 → 战令「累计抽奖次数」档位（序号 50~69）解锁 →
+ *   领战令档位奖励 → 战令宝箱又给 5283 → **又有券了，可以再抽** → 再出兑换材料 → 再兑换。
+ * 所以「一套」跑完可能又冒出新的可领项，必须再转一轮；零进展才停。
+ */
+export const XIAOYAOJIN_ALL_ROUNDS_MAX = 3;
+
 /** 单次「抽光为止」最多发多少次兑换请求（防死循环） */
 export const XIAOYAOJIN_EXCHANGE_MAX_TIMES = 50;
 

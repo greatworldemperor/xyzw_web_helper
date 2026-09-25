@@ -33,6 +33,7 @@
  * - 已领取 / 未达成 / 活动未开 都算「正常结束」，不记错误、不打断其他账号。
  */
 import {
+  XIAOYAOJIN_ALL_ROUNDS_MAX,
   XIAOYAOJIN_ALL_STEPS,
   XIAOYAOJIN_CUMULATIVE_ID_MAX,
   XIAOYAOJIN_EXCHANGE_ITEM_ID,
@@ -182,7 +183,7 @@ export function createTasksXiaoyaojin(deps) {
   // ------------------------------------------------------------------ 四个步骤
 
   /** 1) 每日任务奖励：complete>=1 且未领取的每日任务（序号 01~30） */
-  const claimDailyTasks = async ({ tokenId, token, plan }) => {
+  const claimDailyTasks = async ({ tokenId, token, plan, progress }) => {
     const pending = plan.dailyClaims || [];
     if (pending.length === 0) {
       log(token.name, "没有待领取的每日任务");
@@ -216,6 +217,7 @@ export function createTasksXiaoyaojin(deps) {
           },
           8000,
         );
+        progress.count += 1;
         log(
           token.name,
           `每日任务 ${String(item.missionId).slice(-2)} 领取成功（${rewardText(response)}）`,
@@ -279,7 +281,7 @@ export function createTasksXiaoyaojin(deps) {
    * 服务端一次发完所有当前可领的宝箱（实测两次调用分别给 5283×1 + 10002×400 与 5283×2，
    * 落在 `rewardClaimed` 的 4 位奖励 ID 上）。**产抽奖券 5283**，所以排在抽奖之前。
    */
-  const claimPassChest = async ({ tokenId, token, plan }) => {
+  const claimPassChest = async ({ tokenId, token, plan, progress }) => {
     try {
       const response = await tokenStore.sendMessageWithPromise(
         tokenId,
@@ -287,6 +289,7 @@ export function createTasksXiaoyaojin(deps) {
         { actId: Number(plan.warOrderActivityId) },
         8000,
       );
+      progress.count += 1;
       log(token.name, `战令奖励宝箱领取成功（${rewardText(response)}）`, "success");
     } catch (error) {
       if (isAlreadyDoneError(error) || isNothingToClaimError(error)) {
@@ -316,7 +319,7 @@ export function createTasksXiaoyaojin(deps) {
    *
    * 积分（5282）只写进日志供对照，**不参与筛选**。
    */
-  const claimPassRewards = async ({ tokenId, token, plan }) => {
+  const claimPassRewards = async ({ tokenId, token, plan, progress }) => {
     const points = await readPoints(tokenId, token.name);
     // 先把「积分 / 可达档数 / 已领档 / 下一档还差多少」读出来打进日志（纯读，不发写请求）
     const tiers = describePassTiers(plan.warOrderInfo, {
@@ -387,6 +390,7 @@ export function createTasksXiaoyaojin(deps) {
       // 节奏比默认稍慢：这段是连续多帧，贴近真人点击间隔（约 1~2s/次）
       await sleep(Math.max(500, actionDelay()));
     }
+    progress.count += claimed;
     const reasonText = [...skipReasons.entries()]
       .map(([code, count]) => `${count} 个(${code})`)
       .join("、");
@@ -400,7 +404,7 @@ export function createTasksXiaoyaojin(deps) {
   };
 
   /** 2) 一次性奖励：免费礼包 activity_commonbuygoods { goodsId } */
-  const claimOneTimeGift = async ({ tokenId, token, plan }) => {
+  const claimOneTimeGift = async ({ tokenId, token, plan, progress }) => {
     // 服务端 record 已记录该商品 → 本期已领，直接跳过（省一次请求 + 一条误导性的失败日志）
     if (plan.commonConfirmed?.giftBought) {
       log(token.name, "一次性奖励本期已领取（服务端记录），跳过");
@@ -414,6 +418,7 @@ export function createTasksXiaoyaojin(deps) {
         { goodsId: Number(plan.ids.giftGoodsId) },
         8000,
       );
+      progress.count += 1;
       log(token.name, `一次性奖励领取成功（${rewardText(response)}）`, "success");
     } catch (error) {
       if (isAlreadyDoneError(error)) {
@@ -433,7 +438,7 @@ export function createTasksXiaoyaojin(deps) {
    * patchDay=0 = 领取「当天」那一份（抓包实证：第 1 天领取后 record 写入键 "1"）。
    * 缺签需补签的天数语义未知，本工具不代为补签。
    */
-  const claimSignReward = async ({ tokenId, token, plan }) => {
+  const claimSignReward = async ({ tokenId, token, plan, progress }) => {
     try {
       const response = await tokenStore.sendMessageWithPromise(
         tokenId,
@@ -441,6 +446,7 @@ export function createTasksXiaoyaojin(deps) {
         { activityId: Number(plan.ids.signActivityId), patchDay: 0 },
         8000,
       );
+      progress.count += 1;
       log(token.name, `7 天登录奖励领取成功（${rewardText(response)}）`, "success");
     } catch (error) {
       if (isAlreadyDoneError(error)) {
@@ -536,7 +542,7 @@ export function createTasksXiaoyaojin(deps) {
    * 十连优先（`times:10` 实测可行）；券余额优先从抽奖响应里读，读不到才查背包。
    * 界面上的「抽奖次数」= **每批张数**（1~10），不再是「总共抽几次」。
    */
-  const runLottery = async ({ tokenId, token, plan }) => {
+  const runLottery = async ({ tokenId, token, plan, progress }) => {
     const perBatch = Math.min(
       XIAOYAOJIN_MAX_DRAWS,
       Math.max(1, Math.trunc(Number(readOptions().draws) || XIAOYAOJIN_MAX_DRAWS)),
@@ -657,6 +663,7 @@ export function createTasksXiaoyaojin(deps) {
       if (balance === null && gained.tickets <= 0) break;
     }
 
+    progress.count += drawnTickets + cumulativeCount;
     log(
       token.name,
       `抽奖结束：共 ${drawnTickets} 抽 / ${drawRequests} 次请求；` +
@@ -671,7 +678,7 @@ export function createTasksXiaoyaojin(deps) {
    * 消耗 5284（**每 50 次抽奖产出 1 个**，实证 `fragProgress` 满 50 归零并发 1 个进背包）
    * 换道具（抓包实证：1023×10）。有多少材料换多少次，换光为止。
    */
-  const runExchange = async ({ tokenId, token, plan }) => {
+  const runExchange = async ({ tokenId, token, plan, progress }) => {
     const activityId = Number(plan.ids.exchangeActivityId);
     const goodsId = Number(plan.ids.exchangeGoodsId);
 
@@ -727,6 +734,7 @@ export function createTasksXiaoyaojin(deps) {
       }
       await sleep();
     }
+    progress.count += done;
     log(token.name, `兑换结束：成功 ${done} 次`);
   };
 
@@ -801,17 +809,54 @@ export function createTasksXiaoyaojin(deps) {
         });
 
         await ensureConnection(tokenId);
-        const plan = await loadPlan(tokenId, tokenName);
+
+        /**
+         * 「一键全套」有**外层轮次循环** —— 单步任务不循环
+         *
+         * 实证（2026-09-25 抓包 #105→#127）：抽奖把累计次数推高 → 战令「累计抽奖次数」
+         * 档位解锁 → 领档位奖励 → 宝箱又给 5283 → **又有券了** → 再抽 → 再出 5284 → 再兑换。
+         * 所以跑完一整套可能又冒出新的可领项，必须再转一轮；某轮「零进展」才停。
+         *
+         * ⚠️ 每轮重新 `activity_get` 拉一次计划：否则第二轮拿的还是旧快照，
+         * 会把刚领掉的档位当候选再发一遍（白跑 20+ 个请求）。
+         */
+        const isFullSet =
+          stepIds.length === XIAOYAOJIN_ALL_STEPS.length &&
+          XIAOYAOJIN_ALL_STEPS.every((id, index) => id === stepIds[index]);
+        const maxRounds = isFullSet ? XIAOYAOJIN_ALL_ROUNDS_MAX : 1;
+        const progress = { count: 0 };
+
+        let plan = await loadPlan(tokenId, tokenName);
         if (!plan) {
           tokenStatus.value[tokenId] = "completed";
           return;
         }
 
-        for (const stepId of stepIds) {
+        for (let round = 1; round <= maxRounds; round += 1) {
           if (shouldStop.value) break;
-          const step = STEPS[stepId];
-          if (!step) continue;
-          await step({ tokenId, token, plan });
+          if (round > 1) {
+            // 第二轮起刷新计划（上面的原因）；拉不到就沿用上一轮的
+            const refreshed = await loadPlan(tokenId, tokenName);
+            if (refreshed) plan = refreshed;
+          }
+          const before = progress.count;
+
+          for (const stepId of stepIds) {
+            if (shouldStop.value) break;
+            const step = STEPS[stepId];
+            if (!step) continue;
+            await step({ tokenId, token, plan, progress });
+          }
+
+          if (!isFullSet) break;
+          const gained = progress.count - before;
+          if (gained <= 0) {
+            log(tokenName, `第 ${round} 轮无新进展，全套结束`);
+            break;
+          }
+          if (round < maxRounds) {
+            log(tokenName, `第 ${round} 轮有进展（+${gained}），再转一轮看有没有新解锁`);
+          }
         }
 
         if (tokenStatus.value[tokenId] !== "failed") {
