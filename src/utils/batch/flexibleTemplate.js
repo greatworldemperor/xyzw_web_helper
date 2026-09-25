@@ -134,11 +134,6 @@ export const flexibleTaskGroups = [
       batchTask("xiaoyaojinLottery", "逍遥津抽奖"),
     ],
   },
-  {
-    name: "goldenfish",
-    label: "金鱼",
-    tasks: [batchTask("goldenfishUseItem", "投一个道具")],
-  },
 ];
 
 export const flexibleTasks = flexibleTaskGroups.flatMap((group) =>
