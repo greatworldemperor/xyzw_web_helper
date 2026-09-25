@@ -880,7 +880,7 @@
                     :disabled="isRunning"
                   />
                   <span class="xiaoyaojin-hint">
-                    活动日期头（6 位，留空自动探测；活动结束探测不到时手工填，如 260919）
+                    活动日期头（6 位，留空自动探测；探测不到时填本期开启日如 260919，会记住；**下期开始前记得清空**）
                   </span>
                 </n-space>
                 <n-space :size="8">
@@ -3954,17 +3954,44 @@ watch(xiaoyaojinDraws, (value) => {
  * 此时填这一期的日期头（= 开启日 YYMMDD），券兑换/碎片兑换照样能跑
  * （它们只认派生出来的 `YYMMDD+3` / `YYMMDD+6`）。
  */
-const xiaoyaojinHead = ref("");
-watch(xiaoyaojinHead, (value) => {
-  const text = String(value || "").trim();
-  if (/^\d{6}$/.test(text)) {
-    xiaoyaojinOptions.overrides = { ...xiaoyaojinOptions.overrides, head: text };
-  } else {
-    const next = { ...xiaoyaojinOptions.overrides };
-    delete next.head;
-    xiaoyaojinOptions.overrides = next;
-  }
-});
+const XIAOYAOJIN_HEAD_KEY = "xyzw_xiaoyaojin_head";
+const xiaoyaojinHead = ref(
+  (() => {
+    try {
+      const saved = String(localStorage.getItem(XIAOYAOJIN_HEAD_KEY) || "").trim();
+      return /^\d{6}$/.test(saved) ? saved : "";
+    } catch {
+      return "";
+    }
+  })(),
+);
+watch(
+  xiaoyaojinHead,
+  (value) => {
+    const text = String(value || "").trim();
+    if (/^\d{6}$/.test(text)) {
+      xiaoyaojinOptions.overrides = {
+        ...xiaoyaojinOptions.overrides,
+        head: text,
+      };
+      try {
+        localStorage.setItem(XIAOYAOJIN_HEAD_KEY, text);
+      } catch {
+        /* 隐私模式下写不进就算了，不影响本次运行 */
+      }
+    } else {
+      const next = { ...xiaoyaojinOptions.overrides };
+      delete next.head;
+      xiaoyaojinOptions.overrides = next;
+      try {
+        localStorage.removeItem(XIAOYAOJIN_HEAD_KEY);
+      } catch {
+        /* 同上 */
+      }
+    }
+  },
+  { immediate: true },
+);
 
 // —— 怪异塔助力：批量日常页的 3 个按钮（关系表见 docs/weird-tower-share-assist-design.md §3） ——
 const assistPlan = computed(() => normalizeAssistPlan(weirdTowerAssistPlan.value));
