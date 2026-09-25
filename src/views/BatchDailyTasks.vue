@@ -899,6 +899,58 @@
                   服务端自动扣减并返回奖励与前进距离；道具不足/活动未开视为正常跳过。
                   完整自动金鱼开发中——协议见 docs/goldenfish-autumn-protocol.md。
                 </span>
+                <n-divider style="margin: 4px 0" />
+                <span class="xiaoyaojin-hint">
+                  商店购物列表（「金鱼模式」预设：青铜宝箱 5 折 / 黄金宝箱 5 折 / 铂金宝箱 8 折 /
+                  招募令 10 折原价 / 黄金鱼竿 8 折；可微调折扣后批量下发）
+                </span>
+                <n-space vertical :size="4">
+                  <div
+                    v-for="item in goldenfishShopItems"
+                    :key="item.itemId"
+                    class="goldenfish-shop-row"
+                  >
+                    <n-checkbox
+                      v-model:checked="item.enabled"
+                      size="small"
+                      :disabled="isRunning"
+                    >
+                      {{ item.name }}（{{ item.itemId }}）
+                    </n-checkbox>
+                    <n-input-number
+                      v-model:value="item.discount"
+                      size="small"
+                      :min="1"
+                      :max="10"
+                      :precision="0"
+                      :show-button="false"
+                      style="width: 72px"
+                      :disabled="isRunning || !item.enabled"
+                    />
+                    <span class="xiaoyaojin-hint">折（10 = 原价）</span>
+                  </div>
+                </n-space>
+                <n-space :size="8">
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="applyGoldenfishShopList"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    设置购物列表
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="resetGoldenfishShopDefaults"
+                    :disabled="isRunning"
+                  >
+                    恢复金鱼模式默认
+                  </n-button>
+                </n-space>
+                <span class="xiaoyaojin-hint">
+                  流程：store_getpurchase 读当前列表（沿用服务端 purchaseCnt）→
+                  store_setpurchase 写入勾选项；响应回显一致才记成功，未勾选的商品不在自动购买列表。
+                </span>
               </n-space>
             </n-tab-pane>
           </n-tabs>
@@ -3807,6 +3859,7 @@ import {
   createTasksXianMaster,
   createTasksXiaoyaojin,
   createTasksGoldenfish,
+  GOLDENFISH_SHOP_DEFAULTS,
   resolveDefaultBlackMarketKeys,
 } from "@/utils/batch";
 
@@ -8006,7 +8059,60 @@ const {
 // 金鱼（秋季活动）：投道具，协议见 local-data/goldenfish 抓包
 const goldenfishCount = ref(1);
 const tasksGoldenfish = createTasksGoldenfish(createTaskDeps());
-const { goldenfishUseItem } = tasksGoldenfish;
+const { goldenfishUseItem, goldenfishSetShopList } = tasksGoldenfish;
+
+// 金鱼商店购物列表（「金鱼模式」预设；09-25 抓包 store_setpurchase 验证，详见 docs/goldenfish-autumn-protocol.md）
+const GOLDENFISH_SHOP_STORAGE_KEY = "goldenfishShopSettings";
+
+const loadGoldenfishShopSettings = () => {
+  const defaults = GOLDENFISH_SHOP_DEFAULTS.map((it) => ({ ...it }));
+  try {
+    const raw = localStorage.getItem(GOLDENFISH_SHOP_STORAGE_KEY);
+    if (!raw) return defaults;
+    const saved = JSON.parse(raw);
+    if (!Array.isArray(saved)) return defaults;
+    // 按 itemId 合并：存档缺项/多項一律以内置 5 项为准，只回填折扣与启用
+    return defaults.map((def) => {
+      const hit = saved.find((it) => Number(it?.itemId) === def.itemId);
+      if (!hit) return { ...def };
+      const discount = Number(hit.discount);
+      return {
+        ...def,
+        discount:
+          Number.isFinite(discount) && discount >= 1 && discount <= 10
+            ? Math.floor(discount)
+            : def.discount,
+        enabled: hit.enabled !== false,
+      };
+    });
+  } catch {
+    return defaults;
+  }
+};
+
+const goldenfishShopItems = ref(loadGoldenfishShopSettings());
+
+watch(
+  goldenfishShopItems,
+  (val) => {
+    try {
+      localStorage.setItem(GOLDENFISH_SHOP_STORAGE_KEY, JSON.stringify(val));
+    } catch {
+      /* 存储不可用时静默：仅影响下次记忆 */
+    }
+  },
+  { deep: true },
+);
+
+const applyGoldenfishShopList = () =>
+  goldenfishSetShopList({
+    items: goldenfishShopItems.value.map((it) => ({ ...it })),
+  });
+
+const resetGoldenfishShopDefaults = () => {
+  goldenfishShopItems.value = GOLDENFISH_SHOP_DEFAULTS.map((it) => ({ ...it }));
+  message.success("已恢复金鱼模式默认购物列表");
+};
 
 /** 「探测活动实例」：对第一个选中账号跑一次 activity_get，把探测结果写进日志 */
 const inspectXiaoyaojinActivity = async () => {
@@ -9372,6 +9478,13 @@ const stopBatch = () => {
   color: #86909c;
   font-size: 12px;
   line-height: 1.6;
+}
+
+/* 金鱼商店购物列表行：勾选 + 折扣输入横排 */
+.goldenfish-shop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* Responsive Design */

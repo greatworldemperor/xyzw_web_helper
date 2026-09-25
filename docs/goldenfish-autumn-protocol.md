@@ -1,6 +1,7 @@
 # 金鱼（秋季活动 autumn_*）协议备忘
 
 > 来源：`local-data/goldenfish/use_one_item.jsonl`（2026-09-25 抓包，`wss://xxz-xyzw.hortorgames.com/agent`，x 方案 px 帧）
+> 商店部分来源：`local-data/goldenfish/shop_list.jsonl`（2026-09-25 抓包）
 > 实现：`src/utils/batch/tasksGoldenfish.js`，入口 `/admin/batch-daily-tasks` → 批量功能「金鱼」标签页。
 
 ## 命令
@@ -24,6 +25,32 @@ SEND autumn_useitem  body = { itemNum: 1 }
 SEND autumn_getrolerank  body = {}          （ack = UseItemResp 的 seq）
 RESP Autumn_GetRoleRankResp  list: [{ roleId, serverId, name, itemNum, rank, distance, score, ... }]
 ```
+
+### 商店购物列表（自动购买，09-25 接入批量）
+
+```
+SEND store_getpurchase  body = {}
+RESP Store_GetPurchaseResp  { purchaseCnt, purchaseItemList: [{ itemId, discount }] }
+
+SEND store_setpurchase  body = { purchaseCnt, purchaseItemList: [{ itemId, discount }] }
+RESP Store_SetPurchaseResp  回显设置后的列表（按 itemId 升序，与发送顺序无关）
+```
+
+- `discount` = 折扣阈值（整数折，10 = 原价）；商店刷新出 ≤ 阈值的折扣时服务端自动购买。
+- `purchaseCnt` 语义未知（抓包 get/set 均为 15）→ 实现一律沿用 `getpurchase` 返回的现值，缺失才兜底 15。
+- itemId 对照（金鱼活动商店，抓包 #525 实测）：
+
+| itemId | 商品     | master 口径 |
+| ------ | -------- | ----------- |
+| 2002   | 青铜宝箱 | 5 折        |
+| 2003   | 黄金宝箱 | 5 折        |
+| 2004   | 铂金宝箱 | 8 折        |
+| 1001   | 招募令   | 10 折（原价） |
+| 1012   | 黄金鱼竿 | 8 折        |
+
+- 以上 5 项即「金鱼模式」预设（`GOLDENFISH_SHOP_DEFAULTS`）；页面可改折扣/勾选项，
+  localStorage `goldenfishShopSettings` 记忆。其他商品 itemId 未抓到，暂不支持自定义添加。
+- 回归：`test/goldenfishShop.test.js` —— 默认配置构造的 setpurchase body 与抓包 #525 帧逐字节一致。
 
 ## 实现要点
 
