@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  DAY_MS,
   XIAOYAOJIN_ALL_STEPS,
   XIAOYAOJIN_COOKIE_PRICE,
   XIAOYAOJIN_COUPON_ITEM_ID,
@@ -360,7 +361,7 @@ test("完整计划：活动未开启时给出可读原因，不抛异常", () =>
     now: CAPTURE_NOW,
   });
   assert.equal(plan.ok, false);
-  assert.match(plan.reason, /未在 warOrderActivityInfo 中找到逍遥津活动实例/);
+  assert.match(plan.reason, /未在 warOrderActivityInfo .* commonActivityInfo 中找到逍遥津活动实例/);
 });
 
 test("抽奖次数：受配置与抽奖券余额双重约束", () => {
@@ -872,6 +873,103 @@ test("一键全套：券兑换排在抽奖与碎片兑换之后（券来自抽�
   assert.ok(steps.indexOf("couponExchange") > steps.indexOf("exchange"));
   assert.equal(steps[steps.length - 1], "couponExchange");
   assert.equal(Object.isFrozen(XIAOYAOJIN_ALL_STEPS), true);
+});
+
+// ---------------------------------------------------------------------------
+// 活动结束后（只剩兑换延时）：warOrderActivityInfo 被清空，只剩 commonActivityInfo
+// 实证 2026-09-26 00:44 xiaoyaojin_redemption1.jsonl —— activity_exchange 仍成功，
+// 响应回 commonActivityInfo["2609193"]，但 activity_get 已拿不到战令实例。
+// ---------------------------------------------------------------------------
+const ENDED_NOW = CAPTURE_NOW + 7 * DAY_MS; // 09-26（活动开启后第 7 天）
+
+test("★ 战令表被清空时，从 commonActivityInfo 反推日期头（活动结束仍能兑换）", () => {
+  const plan = buildXiaoyaojinPlan(
+    {
+      activity: {
+        warOrderActivityInfo: {}, // ← 活动结束后服务端不再推送战令
+        commonActivityInfo: {
+          2609193: { record: { 260919302: 8 }, task: {}, isBought: false },
+          2609194: { record: { 26091941: 1 }, task: {}, isBought: false },
+          2609195: { record: { 1: 1789754264 }, task: {}, isBought: false },
+          2609196: { record: { 260919602: 2 }, task: {}, isBought: false },
+        },
+      },
+    },
+    { now: ENDED_NOW },
+  );
+
+  assert.equal(plan.ok, true);
+  assert.equal(plan.source, "common");
+  assert.equal(plan.head, "260919");
+  // 所有派生 ID 都能用 → 券兑换照样能跑
+  assert.equal(plan.ids.couponActivityId, "2609193");
+  assert.equal(plan.ids.couponCookieGoodsId, "260919302");
+  assert.equal(plan.ids.couponReviveGoodsId, "260919303");
+  assert.equal(plan.ids.exchangeActivityId, "2609196");
+  assert.equal(plan.commonConfirmed.coupon, true);
+  assert.equal(plan.commonConfirmed.exchange, true);
+  // 战令数据没了 → 判定已结束 → 全套只跑兑换
+  assert.equal(plan.warOrderInfo, null);
+  assert.equal(plan.ended, true);
+  assert.deepEqual(plan.dailyClaims, []);
+  assert.equal(plan.passRewards.pending, 0);
+});
+
+test("活动结束判定：ageDays>=7 或 战令表已清空，二者取其一", () => {
+  // ① 战令还在但已过期（第 8 天）
+  const stale = buildXiaoyaojinPlan(
+    {
+      activity: {
+        warOrderActivityInfo: { 2609191: buildWarOrderInfo() },
+        commonActivityInfo: {},
+      },
+    },
+    { now: CAPTURE_NOW + 8 * DAY_MS },
+  );
+  assert.equal(stale.ok, true);
+  assert.equal(stale.source, "auto");
+  assert.equal(stale.ended, true);
+
+  // ② 活动期内：战令在、ageDays<7 → 未结束
+  const running = buildXiaoyaojinPlan(
+    {
+      activity: {
+        warOrderActivityInfo: { 2609191: buildWarOrderInfo() },
+        commonActivityInfo: {},
+      },
+    },
+    { now: CAPTURE_NOW },
+  );
+  assert.equal(running.ended, false);
+
+  // ③ 手工填日期头（连 commonActivityInfo 都没有）→ source=head
+  const manual = buildXiaoyaojinPlan(
+    { activity: { warOrderActivityInfo: {}, commonActivityInfo: {} } },
+    { now: ENDED_NOW, overrides: { head: "260919" } },
+  );
+  assert.equal(manual.ok, true);
+  assert.equal(manual.source, "head");
+  assert.equal(manual.ids.couponActivityId, "2609193");
+  assert.equal(manual.ended, true); // 战令数据为空 → 判定已结束
+});
+
+test("日期头优先级：手工战令ID > 战令表探测 > 公共活动表反推 > 手工 head", () => {
+  const snapshot = {
+    activity: {
+      warOrderActivityInfo: { 2609191: buildWarOrderInfo() },
+      commonActivityInfo: { 2609193: { record: {}, task: {}, isBought: false } },
+    },
+  };
+  // 战令表可用 → 优先用它
+  assert.equal(buildXiaoyaojinPlan(snapshot, { now: ENDED_NOW }).source, "auto");
+  // 手工指定战令 ID 覆盖
+  assert.equal(
+    buildXiaoyaojinPlan(snapshot, {
+      now: ENDED_NOW,
+      overrides: { warOrderActivityId: "2609191" },
+    }).source,
+    "manual",
+  );
 });
 
 test("交换记录：commonActivityInfo 里能读到本期已兑换次数", () => {

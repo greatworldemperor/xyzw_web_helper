@@ -163,13 +163,17 @@ export function createTasksXiaoyaojin(deps) {
       return null;
     }
 
+    const sourceText = {
+      manual: "手工指定",
+      auto: `战令表自动探测，开启于 ${plan.ageDays} 天前`,
+      // 活动结束后战令表被清空 → 从 commonActivityInfo 的键（券兑换/礼包/签到）反推日期头
+      common: `公共活动表反推（战令表已清空），开启于 ${plan.ageDays} 天前`,
+      head: "手工指定日期头",
+    }[plan.source] || plan.source;
+
     log(
       tokenName,
-      `活动实例 ${plan.warOrderActivityId}（${
-        plan.source === "manual"
-          ? "手工指定"
-          : `自动探测，开启于 ${plan.ageDays} 天前`
-      }），签到 ${plan.ids.signActivityId}${
+      `活动实例 ${plan.warOrderActivityId}（${sourceText}），签到 ${plan.ids.signActivityId}${
         plan.commonConfirmed.sign
           ? `（已记录 ${plan.commonConfirmed.signDays.length} 天）`
           : ""
@@ -947,11 +951,11 @@ export function createTasksXiaoyaojin(deps) {
          * 还要白等 26 个战令候选逐个被拒。券兑换花的是背包里的 5285，延时期内仍然有效。
          */
         let effectiveSteps = stepIds;
-        if (isFullSet && isXiaoyaojinEnded(plan.ageDays)) {
+        if (isFullSet && plan.ended) {
           effectiveSteps = [...XIAOYAOJIN_EXCHANGE_ONLY_STEPS];
           log(
             tokenName,
-            `活动已结束（开启于 ${plan.ageDays} 天前，只剩兑换延时）→ 本次只跑兑换，跳过抽奖/战令等步骤`,
+            `活动已结束（${plan.warOrderInfo ? `开启于 ${plan.ageDays} 天前` : "战令数据已被清空"}，只剩兑换延时）→ 本次只跑兑换，跳过抽奖/战令等步骤`,
             "warning",
           );
         }

@@ -815,21 +815,41 @@ export function buildXiaoyaojinPlan(response, options = {}) {
     maxAgeDays: options.maxAgeDays,
   });
 
-  const warOrderActivityId = manualWarOrderId || detected?.activityId || null;
+  /**
+   * ⚠️ 兜底：活动结束后 `warOrderActivityInfo` 会被服务端清掉（战令数据没了），
+   * 但 **`commonActivityInfo` 里券兑换(…3)/礼包(…4)/签到(…5)/碎片兑换(…6) 的键还在**。
+   *
+   * 实证（2026-09-26 00:44 `xiaoyaojin_redemption1.jsonl`）：兑换延时期内
+   * `activity_exchange` 仍然成功（响应回 `commonActivityInfo["2609193"]`），
+   * 但 `activity_get` 已经拿不到战令实例 → 旧实现直接判「未找到活动实例」而跳过兑换。
+   * → 日期头可以从 `commonActivityInfo` 的 7 位键反推（同一套 YYMMDD+功能位 规则）。
+   */
+  const detectedCommon = detected
+    ? null
+    : resolveXiaoyaojinActivityId(commonActivityInfo, {
+        now,
+        maxAgeDays: options.maxAgeDays,
+      });
+
+  const headFromManual = getActivityDateHead(manualWarOrderId);
   const head =
-    getActivityDateHead(warOrderActivityId) ||
+    headFromManual ||
+    detected?.head ||
+    detectedCommon?.head ||
     (toText(overrides.head).length === 6 ? toText(overrides.head) : null);
 
   if (!head) {
     return {
       ok: false,
-      reason: warOrderActivityId
-        ? `活动实例 ${warOrderActivityId} 不是 YYMMDD+功能位 形式，且未手工指定签到/礼包 ID`
-        : "未在 warOrderActivityInfo 中找到逍遥津活动实例（活动可能未开启或已结束）",
+      reason: manualWarOrderId
+        ? `活动实例 ${manualWarOrderId} 不是 YYMMDD+功能位 形式，且未手工指定日期头`
+        : "未在 warOrderActivityInfo / commonActivityInfo 中找到逍遥津活动实例（活动可能未开启或已结束）；可手工填「活动日期头」",
     };
   }
 
   const ids = deriveXiaoyaojinIds(head, overrides);
+  // 探测到日期头后，战令 ID 也随之派生（战令数据可能已被清空，但 ID 规则不变）
+  const warOrderActivityId = manualWarOrderId || ids.warOrderActivityId;
   const warOrderInfo = warOrderActivityInfo[warOrderActivityId] || null;
   const commonKeys = Object.keys(commonActivityInfo);
 
@@ -843,11 +863,25 @@ export function buildXiaoyaojinPlan(response, options = {}) {
       .map((key) => Number(key))
       .filter((value) => Number.isFinite(value));
 
+  const ageDays = detected?.ageDays ?? detectedCommon?.ageDays ?? null;
+
   return {
     ok: true,
-    source: manualWarOrderId ? "manual" : "auto",
+    source: headFromManual
+      ? "manual"
+      : detected
+        ? "auto"
+        : detectedCommon
+          ? "common"
+          : "head",
     head,
-    ageDays: detected?.ageDays ?? null,
+    ageDays,
+    /**
+     * 活动是否已结束（只剩兑换延时）
+     * 判据二选一：① 开启日已过 ≥7 天 ② **战令数据已被服务端清掉**
+     * —— 第 ② 条是关键：活动结束后 warOrderActivityInfo 里就没这个实例了。
+     */
+    ended: isXiaoyaojinEnded(ageDays) || !warOrderInfo,
     warOrderActivityId,
     ids,
     warOrderInfo,
@@ -858,6 +892,7 @@ export function buildXiaoyaojinPlan(response, options = {}) {
       gift: commonKeys.includes(ids.giftActivityId),
       sign: commonKeys.includes(ids.signActivityId),
       exchange: commonKeys.includes(ids.exchangeActivityId),
+      coupon: commonKeys.includes(ids.couponActivityId),
       /** 一次性礼包本期是否已领（服务端 record 里已有该商品记录） */
       giftBought: Number(giftRecord[ids.giftGoodsId]) >= 1,
       /** 7 天登录已记录的日期序号（1 起） */
