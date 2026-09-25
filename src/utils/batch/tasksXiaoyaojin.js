@@ -35,6 +35,8 @@
 import {
   XIAOYAOJIN_ALL_ROUNDS_MAX,
   XIAOYAOJIN_ALL_STEPS,
+  XIAOYAOJIN_COOKIE_PRICE,
+  XIAOYAOJIN_COUPON_ITEM_ID,
   XIAOYAOJIN_CUMULATIVE_ID_MAX,
   XIAOYAOJIN_EXCHANGE_ITEM_ID,
   XIAOYAOJIN_LOTTERY_LOOP_MAX_ROUNDS,
@@ -45,6 +47,7 @@ import {
   describePassTiers,
   listPendingCumulativeIds,
   pickLotteryInfo,
+  planCouponPurchase,
   readCumulativeClaimed,
   readItemQuantity,
   readRewardQuantity,
@@ -739,6 +742,107 @@ export function createTasksXiaoyaojin(deps) {
   };
 
   /**
+   * 6) 券兑换商店：activity_exchange { activityId: 券活动ID, goodsId, quantity }
+   *
+   * 货币是 **5285「兑换券」**（来源：抽奖掉落 + 累计抽奖奖励每档 ×5）。
+   * 策略（master 口径，抓包实证 43 张券）：
+   *   1. 尽量多买**饼干**（单价 5 券，`quantity` 支持一次买多个 → 一条请求买完）
+   *   2. 买完剩下的券 **≥ 3** → 再换 **1 个复活丹**（单价 3 券）
+   *
+   * 实证：`quantity:8` 一次买 8 个饼干（43→3 张券），再 `quantity:1` 买复活丹（3→0）。
+   */
+  const runCouponExchange = async ({ tokenId, token, plan, progress }) => {
+    const activityId = Number(plan.ids.couponActivityId);
+    const cookieGoodsId = Number(plan.ids.couponCookieGoodsId);
+    const reviveGoodsId = Number(plan.ids.couponReviveGoodsId);
+
+    let tickets = await readItemCount(
+      tokenId,
+      token.name,
+      XIAOYAOJIN_COUPON_ITEM_ID,
+    );
+    const purchase = planCouponPurchase(tickets);
+
+    if (tickets === null) {
+      log(
+        token.name,
+        `读取兑换券(${XIAOYAOJIN_COUPON_ITEM_ID})余额失败，跳过券兑换（不瞎买）`,
+        "warning",
+      );
+      return;
+    }
+    log(token.name, `兑换券(${XIAOYAOJIN_COUPON_ITEM_ID}) 余额 ${tickets}`);
+
+    if (purchase.cookies <= 0 && purchase.revive <= 0) {
+      log(
+        token.name,
+        `兑换券 ${tickets} 张不足 ${XIAOYAOJIN_COOKIE_PRICE}（饼干单价），跳过券兑换`,
+      );
+      return;
+    }
+
+    // ① 饼干：一条请求买完（实测 quantity:8 可行）
+    if (purchase.cookies > 0) {
+      try {
+        const response = await tokenStore.sendMessageWithPromise(
+          tokenId,
+          "activity_exchange",
+          {
+            activityId,
+            goodsId: cookieGoodsId,
+            quantity: purchase.cookies,
+          },
+          10000,
+        );
+        progress.count += purchase.cookies;
+        log(
+          token.name,
+          `买饼干 ×${purchase.cookies}（花 ${purchase.cookieCost} 券）成功（${rewardText(response)}）`,
+          "success",
+        );
+        // 以服务端回的余额为准（可能有限购，实际买的比计划少）
+        const left = readItemQuantity(response, XIAOYAOJIN_COUPON_ITEM_ID);
+        if (left !== null) tickets = left;
+      } catch (error) {
+        if (isRateLimitError(error)) {
+          log(token.name, "触发限流(400340)，饼干下次再买", "warning");
+        } else {
+          log(token.name, `买饼干失败，停止券兑换：${errorText(error)}`, "warning");
+        }
+        return;
+      }
+      await sleep();
+    }
+
+    // ② 复活丹：余券够 3 才换 1 个（用**服务端回的最新余额**判断，别用本地推算）
+    if (tickets >= XIAOYAOJIN_REVIVE_PRICE) {
+      try {
+        const response = await tokenStore.sendMessageWithPromise(
+          tokenId,
+          "activity_exchange",
+          { activityId, goodsId: reviveGoodsId, quantity: 1 },
+          8000,
+        );
+        progress.count += 1;
+        log(
+          token.name,
+          `剩余 ${tickets} 券 → 换复活丹 ×1 成功（${rewardText(response)}）`,
+          "success",
+        );
+      } catch (error) {
+        if (isRateLimitError(error)) {
+          log(token.name, "触发限流(400340)，复活丹下次再换", "warning");
+        } else {
+          log(token.name, `换复活丹失败：${errorText(error)}`, "warning");
+        }
+      }
+      await sleep();
+    } else {
+      log(token.name, `余券 ${tickets} 不足 ${XIAOYAOJIN_REVIVE_PRICE}，不换复活丹`);
+    }
+  };
+
+  /**
    * 4b) 单独跑一遍「累计抽奖奖励」（不抽奖）—— 只想补券时用
    */
   const claimCumulativeRewards = async ({ tokenId, token }) => {
@@ -778,6 +882,7 @@ export function createTasksXiaoyaojin(deps) {
     lottery: runLottery,
     cumulative: claimCumulativeRewards,
     exchange: runExchange,
+    couponExchange: runCouponExchange,
   };
 
   // ------------------------------------------------------------------ 批量框架
@@ -914,6 +1019,8 @@ export function createTasksXiaoyaojin(deps) {
   const xiaoyaojinCumulative = () =>
     runXiaoyaojin(["cumulative"], "逍遥津累计抽奖奖励");
   const xiaoyaojinExchange = () => runXiaoyaojin(["exchange"], "逍遥津兑换");
+  const xiaoyaojinCoupon = () =>
+    runXiaoyaojin(["couponExchange"], "逍遥津券兑换（饼干/复活丹）");
 
   return {
     xiaoyaojinAll,
@@ -925,6 +1032,7 @@ export function createTasksXiaoyaojin(deps) {
     xiaoyaojinLottery,
     xiaoyaojinCumulative,
     xiaoyaojinExchange,
+    xiaoyaojinCoupon,
     // 供界面「探测活动实例」预览用：把战令档位进度也读出来（纯读）
     inspectXiaoyaojin: async (tokenId, tokenName = "") => {
       const plan = buildXiaoyaojinPlan(
@@ -961,6 +1069,11 @@ export function createTasksXiaoyaojin(deps) {
         tokenName,
         XIAOYAOJIN_EXCHANGE_ITEM_ID,
       );
+      const coupons = await readItemCount(
+        tokenId,
+        tokenName,
+        XIAOYAOJIN_COUPON_ITEM_ID,
+      );
 
       return {
         ...plan,
@@ -969,6 +1082,7 @@ export function createTasksXiaoyaojin(deps) {
           points,
         }),
         lottery: { ...lottery, tickets, frag },
+        coupon: { tickets: coupons, purchase: planCouponPurchase(coupons) },
       };
     },
   };

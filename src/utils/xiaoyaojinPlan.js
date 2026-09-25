@@ -45,11 +45,22 @@ export const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
 export const XIAOYAOJIN_SLOTS = Object.freeze({
   warOrder: "1",
   lottery: "2",
+  /** 券兑换商店：花 5285「兑换券」买道具（2026-09-25 `xiaoyaojin_redemption.jsonl` 实证） */
+  coupon: "3",
   gift: "4",
   sign: "5",
-  /** 兑换商店（2026-09-25 抓包实证：activity_exchange 的 activityId = 2609196） */
+  /** 碎片兑换：花 5284（每 50 抽产出 1 个）换道具（activityId = 2609196） */
   exchange: "6",
 });
+
+/**
+ * 券兑换商店的两个商品号后缀（= 券活动 ID + 两位序号）
+ *
+ * 实证：`260919302` = 饼干（单价 5 券，`quantity:8` 一次买 8 个，得 15001×40000）；
+ *       `260919303` = 复活丹（单价 3 券，`quantity:1` 买 1 个，得 1017×1）。
+ */
+export const XIAOYAOJIN_COUPON_COOKIE_SUFFIX = "02";
+export const XIAOYAOJIN_COUPON_REVIVE_SUFFIX = "03";
 
 /** 一次性礼包商品号 = 礼包活动 ID + 该序号（2609194 → 26091941） */
 export const XIAOYAOJIN_GIFT_GOODS_SUFFIX = "1";
@@ -69,8 +80,22 @@ export const XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID = 5283;
  */
 export const XIAOYAOJIN_EXCHANGE_ITEM_ID = 5284;
 
-/** 抽奖副产物道具 ID（5285；累计奖励每档另给 ×5） */
-export const XIAOYAOJIN_LOTTERY_SUB_ITEM_ID = 5285;
+/**
+ * **兑换券道具 ID（5285）** —— 券兑换商店（功能位 3）的货币
+ *
+ * 2026-09-25 `xiaoyaojin_redemption.jsonl` 实证（账号 21a @9721）：
+ *   43 张券 → 买 8 个饼干（`quantity:8` 一次搞定）→ `5285: 3`（43 − 8×5）
+ *           → 再买 1 个复活丹 → `5285: null`（3 − 3 = 0）
+ * 来源：抽奖掉落 + 累计抽奖奖励每档 ×5。
+ * ⚠️ v1 曾把它标注成「抽奖副产物」，其实是**兑换券**。
+ */
+export const XIAOYAOJIN_COUPON_ITEM_ID = 5285;
+
+/** 饼干单价（兑换券/个） */
+export const XIAOYAOJIN_COOKIE_PRICE = 5;
+
+/** 复活丹单价（兑换券/个） */
+export const XIAOYAOJIN_REVIVE_PRICE = 3;
 
 /**
  * 累计抽奖奖励（`activity_claimlotterycumulative`）的 id 扫描上界
@@ -204,8 +229,9 @@ export const XIAOYAOJIN_MAX_DRAWS = 10;
  *    09-19 两份抓包对比实证 —— 账号A「先宝箱后等级」需要调两次才拿全（1221 → 1222/1223），
  *    账号B「先等级后宝箱」一次就拿全 1221+1222+1223。
  * 2. `oneTimeGift`（礼包）与 `passChest`（宝箱）都产抽奖券 5283，**都必须在 `lottery` 之前**。
- * 3. `exchange`（兑换）消耗的是**抽奖产出**的 5284 → **必须排在 `lottery` 之后**。
- *    （`lottery` 内部已含「抽光 → 扫累计奖励补券 → 再抽」的闭环。）
+ * 3. `exchange`（碎片兑换，花 5284）与 `couponExchange`（券兑换，花 5285）都消耗
+ *    **抽奖产出**（5284 每 50 抽 1 个；5285 抽奖掉落 + 累计奖励每档 ×5）
+ *    → **都必须排在 `lottery` 之后**，且排在最后。
  */
 export const XIAOYAOJIN_ALL_STEPS = Object.freeze([
   "dailyTask",
@@ -215,6 +241,7 @@ export const XIAOYAOJIN_ALL_STEPS = Object.freeze([
   "signReward",
   "lottery",
   "exchange",
+  "couponExchange",
 ]);
 
 const toText = (value) =>
@@ -322,13 +349,20 @@ export function resolveXiaoyaojinActivityId(warOrderActivityInfo, options = {}) 
 export function deriveXiaoyaojinIds(head, overrides = {}) {
   const base = toText(head);
   const manual = (value) => toText(value) || null;
-  const { warOrder, lottery, gift, sign, exchange } = XIAOYAOJIN_SLOTS;
+  const { warOrder, lottery, coupon, gift, sign, exchange } = XIAOYAOJIN_SLOTS;
 
   return {
     head: base,
     warOrderActivityId:
       manual(overrides.warOrderActivityId) || `${base}${warOrder}`,
     lotteryPackId: manual(overrides.lotteryPackId) || `${base}${lottery}`,
+    couponActivityId: manual(overrides.couponActivityId) || `${base}${coupon}`,
+    couponCookieGoodsId:
+      manual(overrides.couponCookieGoodsId) ||
+      `${base}${coupon}${XIAOYAOJIN_COUPON_COOKIE_SUFFIX}`,
+    couponReviveGoodsId:
+      manual(overrides.couponReviveGoodsId) ||
+      `${base}${coupon}${XIAOYAOJIN_COUPON_REVIVE_SUFFIX}`,
     giftActivityId: manual(overrides.giftActivityId) || `${base}${gift}`,
     giftGoodsId:
       manual(overrides.giftGoodsId) ||
@@ -641,6 +675,54 @@ export function planLotteryBatches(ticketCount, options = {}) {
 }
 
 /**
+ * 券兑换商店的购买方案：**先尽量多买饼干，余券够 3 就再换 1 个复活丹**
+ *
+ * 实证（43 张券）：43 ÷ 5 = **8 个饼干**（花 40）→ 余 3 ≥ 3 → **1 个复活丹**（花 3）→ 余 0。
+ *
+ * ⚠️ `quantity` 支持一次买多个（抓包 `quantity:8` 一次买 8 个饼干）→ 饼干**一条请求发完**，
+ * 不用逐个买。复活丹固定 1 个（master 口径：只换一个）。
+ *
+ * @param {number|null|undefined} ticketCount 兑换券（5285）余额
+ * @returns {{tickets:number|null, cookies:number, cookieCost:number,
+ *            remaining:number|null, revive:number, reviveCost:number}}
+ *          余额未知（null）→ cookies/revive 都是 0（**不能瞎买**）
+ */
+export function planCouponPurchase(ticketCount) {
+  const raw = ticketCount;
+  const hasValue = raw !== null && raw !== undefined && raw !== "";
+  const tickets =
+    hasValue && Number.isFinite(Number(raw))
+      ? Math.max(0, Math.trunc(Number(raw)))
+      : null;
+
+  if (tickets === null) {
+    return {
+      tickets: null,
+      cookies: 0,
+      cookieCost: 0,
+      remaining: null,
+      revive: 0,
+      reviveCost: 0,
+    };
+  }
+
+  const cookies = Math.floor(tickets / XIAOYAOJIN_COOKIE_PRICE);
+  const cookieCost = cookies * XIAOYAOJIN_COOKIE_PRICE;
+  const remaining = tickets - cookieCost;
+  const revive =
+    remaining >= XIAOYAOJIN_REVIVE_PRICE ? 1 : 0;
+
+  return {
+    tickets,
+    cookies,
+    cookieCost,
+    remaining,
+    revive,
+    reviveCost: revive * XIAOYAOJIN_REVIVE_PRICE,
+  };
+}
+
+/**
  * 兑换次数：有多少 5284 换多少次
  *
  * @param {number|null|undefined} fragCount
@@ -776,6 +858,7 @@ export function buildXiaoyaojinPlan(response, options = {}) {
 export default {
   XIAOYAOJIN_SLOTS,
   XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
+  XIAOYAOJIN_COUPON_ITEM_ID,
   XIAOYAOJIN_EXCHANGE_ITEM_ID,
   buildXiaoyaojinPlan,
   deriveXiaoyaojinIds,
@@ -784,6 +867,7 @@ export default {
   listPendingCumulativeIds,
   listPendingDailyClaims,
   pickLotteryInfo,
+  planCouponPurchase,
   planLotteryBatches,
   readCumulativeClaimed,
   readItemQuantity,

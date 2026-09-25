@@ -3,8 +3,11 @@ import { test } from "node:test";
 
 import {
   XIAOYAOJIN_ALL_STEPS,
+  XIAOYAOJIN_COOKIE_PRICE,
+  XIAOYAOJIN_COUPON_ITEM_ID,
   XIAOYAOJIN_CUMULATIVE_ID_MAX,
   XIAOYAOJIN_DEFAULT_DRAWS,
+  XIAOYAOJIN_REVIVE_PRICE,
   XIAOYAOJIN_EXCHANGE_ITEM_ID,
   XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
   XIAOYAOJIN_MAX_ACTIVITY_AGE_DAYS,
@@ -22,6 +25,7 @@ import {
   listPendingPassRewards,
   parseActivityDateHead,
   pickLotteryInfo,
+  planCouponPurchase,
   planLotteryBatches,
   readCumulativeClaimed,
   readItemQuantity,
@@ -401,11 +405,14 @@ test("一键全套的步骤顺序是协议约束：先等级奖励、后一键�
   // 宝箱与礼包都产抽奖券 5283
   assert.ok(at("passChest") < at("lottery"), "宝箱必须在抽奖之前");
   assert.ok(at("oneTimeGift") < at("lottery"), "礼包必须在抽奖之前");
-  // 兑换消耗的是**抽奖产出**的 5284（每 50 抽 1 个）→ 必须排在抽奖之后、且是最后一步
-  assert.ok(at("lottery") < at("exchange"), "兑换必须在抽奖之后");
-  assert.equal(steps[steps.length - 1], "exchange");
+  // 兑换消耗的是**抽奖产出**的 5284（每 50 抽 1 个）→ 必须排在抽奖之后
+  assert.ok(at("lottery") < at("exchange"), "碎片兑换必须在抽奖之后");
+  // 券兑换花的是 5285（抽奖掉落 + 累计奖励每档 ×5）→ 也必须在抽奖之后，排在最后
+  assert.ok(at("lottery") < at("couponExchange"), "券兑换必须在抽奖之后");
+  assert.equal(steps[steps.length - 1], "couponExchange");
   // 步骤集合固定为这 7 步
   assert.deepEqual([...steps].sort(), [
+    "couponExchange",
     "dailyTask",
     "exchange",
     "lottery",
@@ -772,6 +779,99 @@ test("派生 ID 含兑换商店（功能位 6）：2609196 / 商品 260919602", 
     exchangeGoodsId: "260919603",
   });
   assert.equal(manual.exchangeGoodsId, "260919603");
+});
+
+// ---------------------------------------------------------------------------
+// 券兑换商店 —— 2026-09-25 抓包 local-data/xiaoyaojin/xiaoyaojin_redemption.jsonl
+// 账号 21a @9721，本期 2609193（功能位 3）
+//   43 张兑换券(5285) → 饼干 quantity:8（花 40，得 15001×40000）→ 余 3 → 复活丹 ×1（得 1017×1）
+// ---------------------------------------------------------------------------
+
+test("★ 券兑换方案：43 券 → 8 个饼干（花 40）+ 1 个复活丹（花 3），余 0", () => {
+  const plan = planCouponPurchase(43);
+  assert.equal(plan.cookies, 8);
+  assert.equal(plan.cookieCost, 40);
+  assert.equal(plan.remaining, 3);
+  assert.equal(plan.revive, 1);
+  assert.equal(plan.reviveCost, 3);
+  assert.equal(plan.tickets - plan.cookieCost - plan.reviveCost, 0);
+  assert.equal(XIAOYAOJIN_COOKIE_PRICE, 5);
+  assert.equal(XIAOYAOJIN_REVIVE_PRICE, 3);
+  assert.equal(XIAOYAOJIN_COUPON_ITEM_ID, 5285);
+});
+
+test("券兑换边界：不够 5 券不买饼干；余券够 3 才换复活丹", () => {
+  // 4 券：买不了饼干，但够换 1 个复活丹
+  const few = planCouponPurchase(4);
+  assert.equal(few.cookies, 0);
+  assert.equal(few.remaining, 4);
+  assert.equal(few.revive, 1);
+
+  // 2 券：啥也买不了
+  const tiny = planCouponPurchase(2);
+  assert.equal(tiny.cookies, 0);
+  assert.equal(tiny.revive, 0);
+
+  // 5 → 1 个饼干，余 0，不换复活丹
+  const exact = planCouponPurchase(5);
+  assert.equal(exact.cookies, 1);
+  assert.equal(exact.remaining, 0);
+  assert.equal(exact.revive, 0);
+
+  // 8 → 1 个饼干，余 3 → 换复活丹
+  const eight = planCouponPurchase(8);
+  assert.equal(eight.cookies, 1);
+  assert.equal(eight.remaining, 3);
+  assert.equal(eight.revive, 1);
+
+  // 7 → 1 个饼干，余 2 → 不换
+  assert.equal(planCouponPurchase(7).revive, 0);
+  // 0 券
+  assert.equal(planCouponPurchase(0).cookies, 0);
+  assert.equal(planCouponPurchase(0).revive, 0);
+});
+
+test("★ 券余额读不到 → 一个都不买（不能瞎买）", () => {
+  for (const unknown of [null, undefined, ""]) {
+    const plan = planCouponPurchase(unknown);
+    assert.equal(plan.tickets, null);
+    assert.equal(plan.cookies, 0);
+    assert.equal(plan.revive, 0);
+  }
+  // 字符串数字也能算
+  assert.equal(planCouponPurchase("43").cookies, 8);
+});
+
+test("派生 ID 含券兑换商店（功能位 3）：2609193 / 饼干 02 / 复活丹 03", () => {
+  const ids = deriveXiaoyaojinIds("260919");
+  assert.equal(ids.couponActivityId, "2609193");
+  assert.equal(ids.couponCookieGoodsId, "260919302");
+  assert.equal(ids.couponReviveGoodsId, "260919303");
+  // 与抓包里两条 activity_exchange 的请求体逐字段一致
+  assert.deepEqual(
+    {
+      activityId: Number(ids.couponActivityId),
+      goodsId: Number(ids.couponCookieGoodsId),
+      quantity: 8,
+    },
+    { activityId: 2609193, goodsId: 260919302, quantity: 8 },
+  );
+  assert.deepEqual(
+    {
+      activityId: Number(ids.couponActivityId),
+      goodsId: Number(ids.couponReviveGoodsId),
+      quantity: 1,
+    },
+    { activityId: 2609193, goodsId: 260919303, quantity: 1 },
+  );
+});
+
+test("一键全套：券兑换排在抽奖与碎片兑换之后（券来自抽奖/累计奖励）", () => {
+  const steps = [...XIAOYAOJIN_ALL_STEPS];
+  assert.ok(steps.indexOf("lottery") < steps.indexOf("couponExchange"));
+  assert.ok(steps.indexOf("couponExchange") > steps.indexOf("exchange"));
+  assert.equal(steps[steps.length - 1], "couponExchange");
+  assert.equal(Object.isFrozen(XIAOYAOJIN_ALL_STEPS), true);
 });
 
 test("交换记录：commonActivityInfo 里能读到本期已兑换次数", () => {

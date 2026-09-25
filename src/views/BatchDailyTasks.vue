@@ -938,6 +938,13 @@
                   </n-button>
                   <n-button
                     size="small"
+                    @click="xiaoyaojinCoupon"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    券兑换
+                  </n-button>
+                  <n-button
+                    size="small"
                     type="info"
                     ghost
                     :loading="xiaoyaojinInspecting"
@@ -5215,6 +5222,7 @@ const taskGroupDefinitions = [
       "xiaoyaojinLottery",
       "xiaoyaojinCumulative",
       "xiaoyaojinExchange",
+      "xiaoyaojinCoupon",
     ],
   },
   {
@@ -8098,6 +8106,7 @@ const {
   xiaoyaojinLottery,
   xiaoyaojinCumulative,
   xiaoyaojinExchange,
+  xiaoyaojinCoupon,
   inspectXiaoyaojin,
 } = tasksXiaoyaojin;
 
@@ -8252,6 +8261,23 @@ const inspectXiaoyaojinActivity = async () => {
           (plan.commonConfirmed.exchange
             ? `；兑换活动 ${plan.ids.exchangeActivityId} / 商品 ${plan.ids.exchangeGoodsId}（已换 ${plan.commonConfirmed.exchangeTimes} 次）`
             : `；兑换活动 ${plan.ids.exchangeActivityId}（推送中未见）`),
+        type: "info",
+      });
+    }
+
+    // 券兑换商店：余额 → 能买几个饼干 / 余券够不够换复活丹
+    const coupon = plan.coupon;
+    if (coupon) {
+      const buy = coupon.purchase;
+      addLog({
+        time: new Date().toLocaleTimeString(),
+        message:
+          `${tokenName} 券兑换：兑换券(5285) 余额 ${coupon.tickets ?? "?"}` +
+          (buy && buy.tickets !== null
+            ? ` → 可买饼干 ${buy.cookies} 个（花 ${buy.cookieCost}），余 ${buy.remaining}` +
+              (buy.revive > 0 ? `，够换复活丹 ×1` : `，不够换复活丹（需 3）`)
+            : "（余额读不到，不会购买）") +
+          `；券活动 ${plan.ids.couponActivityId} / 饼干 ${plan.ids.couponCookieGoodsId} / 复活丹 ${plan.ids.couponReviveGoodsId}`,
         type: "info",
       });
     }
