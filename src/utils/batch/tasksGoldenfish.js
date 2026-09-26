@@ -416,8 +416,9 @@ export function createTasksGoldenfish(deps) {
 
   /**
    * 检测达标账号并同步「金鱼组」
-   * - 本次检测达标 → 加入组；本次检测未达标 / 命中例外服 → 移出组（未参与本次检测的账号不动）
-   * - 检测失败的账号不动它原有的组成员身份
+   * 合并语义：只把本次达标的账号加进组，老成员一律保留
+   * （本次不达标 / 例外服 / 检测失败都不会被移出）。
+   * 想全量重建：在「管理分组」里删掉「金鱼组」再重新检测即可。
    */
   const syncGoldenfishGroup = (summary) => {
     const groups = readGroups();
@@ -441,11 +442,9 @@ export function createTasksGoldenfish(deps) {
     }
 
     const groupId = group.id;
+    const oldSize = (group.tokenKeys || []).length;
     summary.qualified.forEach((row) => {
       tokenStore.addTokenToGroup(groupId, row.tokenId);
-    });
-    [...summary.unqualified, ...summary.excluded].forEach((row) => {
-      tokenStore.removeTokenFromGroup(groupId, row.tokenId);
     });
 
     summary.groupName = GOLDENFISH_GROUP_NAME;
@@ -454,7 +453,7 @@ export function createTasksGoldenfish(deps) {
     ).length;
     addLog?.({
       time: nowText(),
-      message: `「${GOLDENFISH_GROUP_NAME}」现有 ${summary.groupSize} 个账号（本次新增/保留 ${summary.qualified.length} 个）`,
+      message: `「${GOLDENFISH_GROUP_NAME}」合并完成：本次达标 ${summary.qualified.length} 个，${oldSize} → ${summary.groupSize} 个（合并模式，老成员保留；全量重建请先在管理分组里删除本组）`,
       type: "success",
     });
     return summary;
@@ -635,7 +634,7 @@ export function createTasksGoldenfish(deps) {
       type: "info",
     });
     message.success(
-      `检测完成：达标 ${summary.qualified.length} 个，已同步到「${GOLDENFISH_GROUP_NAME}」（现有 ${summary.groupSize} 个）`,
+      `检测完成：达标 ${summary.qualified.length} 个，已合并进「${GOLDENFISH_GROUP_NAME}」（现有 ${summary.groupSize} 个）`,
     );
 
     return summary;

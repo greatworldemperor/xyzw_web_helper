@@ -192,14 +192,14 @@ test("检测金鱼号：达标入组，不达标/例外服不入组", async () =
   assert.equal(fixture.tokenStatus.value.t3, "completed");
 });
 
-test("检测金鱼号：组里已存在的账号，本次不达标会被移出", async () => {
+test("检测金鱼号：合并语义，老成员（含本次不达标/例外服）不会被移出", async () => {
   const fixture = createFixture();
-  // 预置一个「金鱼组」，里面已有 t2（本次不达标）
+  // 预置「金鱼组」：老成员含本次不达标的 t2 与例外服 t3
   fixture.tokenGroups.push({
     id: "group_preset",
     name: GOLDENFISH_GROUP_NAME,
     color: "#f5a623",
-    tokenKeys: ["1001:12"],
+    tokenKeys: ["1001:12", "9724:13"],
   });
 
   const summary = await fixture.task.detectGoldenfishAccounts({
@@ -207,6 +207,13 @@ test("检测金鱼号：组里已存在的账号，本次不达标会被移出",
   });
 
   assert.equal(fixture.tokenGroups.length, 1); // 复用同名组，不新建
-  assert.deepEqual(fixture.tokenGroups[0].tokenKeys, ["1001:11"]);
-  assert.equal(summary.groupSize, 1);
+  // 合并：老的 1001:12 / 9724:13 保留，新增达标的 1001:11
+  assert.deepEqual(
+    [...fixture.tokenGroups[0].tokenKeys].sort(),
+    ["1001:11", "1001:12", "9724:13"],
+  );
+  assert.equal(summary.groupSize, 3);
+  assert.ok(
+    fixture.logs.some((entry) => entry.message.includes("合并完成")),
+  );
 });
