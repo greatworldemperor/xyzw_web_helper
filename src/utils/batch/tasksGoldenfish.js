@@ -39,6 +39,84 @@ export const GOLDENFISH_SHOP_DEFAULTS = [
 /** 抓包默认刷新次数（09-25 master 提交 15，仅作缺失兜底） */
 const DEFAULT_PURCHASE_CNT = 15;
 
+// ------------------------------------------------------------------ 金鱼号检测
+
+/** 固定分组名：检测达标的账号统一进这个组，后续金鱼任务基于它执行 */
+export const GOLDENFISH_GROUP_NAME = "金鱼组";
+/** 金鱼组例外（排除）server id 默认值 */
+export const DEFAULT_GOLDENFISH_EXCLUDE_SERVERS = "9724, 9736, 26501";
+/** 金鱼组颜色（分组标签用） */
+const GOLDENFISH_GROUP_COLOR = "#f5a623";
+
+/** 达标阈值与折算（09-26 master 口径） */
+export const GOLDENFISH_CHECK_RULES = {
+  recruitMin: 3000, // 招募令（itemId 1001）
+  rodUnit: 600, // 1 根黄金鱼竿折算的金砖
+  diamondPlusRodMin: 640000, // 金砖 + 黄金鱼竿×600
+  boxPointMin: 30000, // 有效宝箱积分
+  /** 有效宝箱积分 = 未兑换积分×0.52 + 各宝箱可兑换积分之和 */
+  boxPointFactor: 0.52,
+  /** 各宝箱单个可兑换积分（itemId → 积分；钻石宝箱没有积分） */
+  chestPoints: { 2001: 1, 2002: 10, 2003: 20, 2004: 50, 2005: 0 },
+};
+
+const ITEM_RECRUIT = 1001; // 招募令
+const ITEM_GOLD_ROD = 1012; // 黄金鱼竿
+
+/** 例外 server id 文本 → Set（支持中英文逗号/分号/空格/换行分隔） */
+export const parseServerIdList = (raw) => {
+  const text = Array.isArray(raw)
+    ? raw.join(",")
+    : typeof raw === "string"
+      ? raw
+      : String(raw ?? "");
+  return new Set(
+    text
+      .split(/[,，;；\s]+/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+  );
+};
+
+const normalizeServerId = (value) => {
+  const text = String(value ?? "").trim();
+  return text === "" || text === "undefined" || text === "null" ? "" : text;
+};
+
+const fmtNum = (value) => (Number(value) || 0).toLocaleString("zh-CN");
+
+/** 从 role.items 里取道具数量：兼容数组 / { itemId: { quantity } } / { itemId: num } */
+const readItemCount = (items, itemId) => {
+  if (!items) return 0;
+  if (Array.isArray(items)) {
+    const found = items.find(
+      (it) => Number(it?.id ?? it?.itemId) === Number(itemId),
+    );
+    if (!found) return 0;
+    return Number(found.num ?? found.count ?? found.quantity ?? 0) || 0;
+  }
+  if (typeof items !== "object") return 0;
+  const node = items[String(itemId)] ?? items[itemId];
+  const pick = (entry) => {
+    if (entry == null) return 0;
+    if (typeof entry === "number") return Number(entry) || 0;
+    if (typeof entry === "object")
+      return Number(entry.num ?? entry.count ?? entry.quantity ?? 0) || 0;
+    return Number(entry) || 0;
+  };
+  if (node == null) {
+    const match = Object.values(items).find(
+      (entry) => Number(entry?.itemId ?? entry?.id) === Number(itemId),
+    );
+    return pick(match);
+  }
+  return pick(node);
+};
+
+/** role_getroleinfo 响应 → role 对象 */
+const extractRole = (response) =>
+  response?.role || response?.body?.role || response?.body || response || {};
+
 /** 刷新次数（purchaseCnt）合法值：正整数（Number(null)===0 陷阱，显式判） */
 const normalizePurchaseCnt = (raw) => {
   const n = Number(raw);
@@ -112,11 +190,23 @@ export function createTasksGoldenfish(deps) {
     connectionQueue,
     batchSettings,
     tokenStore,
+    sendRoleInfo: batchSendRoleInfo,
     addLog,
     message,
     currentRunningTokenId,
     delayConfig,
   } = deps;
+
+  /** 取角色信息（批量页注入的带限流重试版本优先） */
+  const sendRoleInfoRef =
+    batchSendRoleInfo ||
+    ((tokenId, params = {}, timeout = 15000) =>
+      tokenStore.sendMessageWithPromise(
+        tokenId,
+        "role_getroleinfo",
+        params,
+        timeout,
+      ));
 
   const actionDelay = () => {
     const raw = Number(delayConfig?.action);
@@ -314,7 +404,248 @@ export function createTasksGoldenfish(deps) {
   const goldenfishSetShopList = (config) =>
     runGoldenfish(["setShopList"], "金鱼商店购物列表", 1, config);
 
-  return { goldenfishUseItem, goldenfishSetShopList };
+  // ---------------------------------------------------------------- 金鱼号检测
+
+  /** tokenStore.tokenGroups 兼容取值（Pinia 解包后是数组） */
+  const readGroups = () => {
+    const groups = tokenStore?.tokenGroups;
+    if (Array.isArray(groups)) return groups;
+    if (Array.isArray(groups?.value)) return groups.value;
+    return [];
+  };
+
+  /**
+   * 检测达标账号并同步「金鱼组」
+   * - 本次检测达标 → 加入组；本次检测未达标 / 命中例外服 → 移出组（未参与本次检测的账号不动）
+   * - 检测失败的账号不动它原有的组成员身份
+   */
+  const syncGoldenfishGroup = (summary) => {
+    const groups = readGroups();
+    let group = groups.find((item) => item?.name === GOLDENFISH_GROUP_NAME);
+
+    if (!group && summary.qualified.length > 0) {
+      group = tokenStore.createTokenGroup(
+        GOLDENFISH_GROUP_NAME,
+        GOLDENFISH_GROUP_COLOR,
+      );
+      addLog?.({
+        time: nowText(),
+        message: `已新建分组「${GOLDENFISH_GROUP_NAME}」`,
+        type: "success",
+      });
+    }
+    if (!group) {
+      summary.groupName = GOLDENFISH_GROUP_NAME;
+      summary.groupSize = 0;
+      return summary;
+    }
+
+    const groupId = group.id;
+    summary.qualified.forEach((row) => {
+      tokenStore.addTokenToGroup(groupId, row.tokenId);
+    });
+    [...summary.unqualified, ...summary.excluded].forEach((row) => {
+      tokenStore.removeTokenFromGroup(groupId, row.tokenId);
+    });
+
+    summary.groupName = GOLDENFISH_GROUP_NAME;
+    summary.groupSize = (
+      tokenStore.getGroupTokenIds?.(groupId) || []
+    ).length;
+    addLog?.({
+      time: nowText(),
+      message: `「${GOLDENFISH_GROUP_NAME}」现有 ${summary.groupSize} 个账号（本次新增/保留 ${summary.qualified.length} 个）`,
+      type: "success",
+    });
+    return summary;
+  };
+
+  /**
+   * 检测金鱼号：招募令 ≥ 3000；金砖 + 黄金鱼竿×600 ≥ 640000；宝箱积分 ≥ 30000
+   * @param {{ excludeServers?: string | string[] }} options 例外（排除）server id
+   */
+  const detectGoldenfishAccounts = async (options = {}) => {
+    const excludeServers = parseServerIdList(options?.excludeServers);
+
+    if (selectedTokens.value.length === 0) {
+      message.warning("请先选择要检测的账号");
+      return null;
+    }
+
+    const {
+      recruitMin,
+      rodUnit,
+      diamondPlusRodMin,
+      boxPointMin,
+      boxPointFactor,
+      chestPoints,
+    } = GOLDENFISH_CHECK_RULES;
+
+    isRunning.value = true;
+    shouldStop.value = false;
+    selectedTokens.value.forEach((id) => {
+      tokenStatus.value[id] = "waiting";
+    });
+
+    addLog?.({
+      time: nowText(),
+      message:
+        `=== 开始检测金鱼号：共 ${selectedTokens.value.length} 个账号 ===` +
+        (excludeServers.size > 0
+          ? `（例外 server id：${[...excludeServers].join("、")}）`
+          : ""),
+      type: "info",
+    });
+
+    const summary = {
+      total: selectedTokens.value.length,
+      qualified: [],
+      unqualified: [],
+      excluded: [],
+      failed: [],
+      groupName: GOLDENFISH_GROUP_NAME,
+      groupSize: 0,
+    };
+
+    const taskPromises = selectedTokens.value.map(async (tokenId) => {
+      if (shouldStop.value) return;
+
+      const token = tokens.value.find((item) => item.id === tokenId);
+      const tokenName = token?.name || tokenId;
+      const serverId = normalizeServerId(token?.serverId);
+
+      // 例外 server：不检测、不入组（已入组的移出）
+      if (serverId && excludeServers.has(serverId)) {
+        summary.excluded.push({ tokenId, tokenName, serverId });
+        tokenStatus.value[tokenId] = "completed";
+        log(
+          tokenName,
+          `${serverId}服 命中例外 server id，跳过检测（不入「${GOLDENFISH_GROUP_NAME}」）`,
+          "info",
+        );
+        return;
+      }
+
+      tokenStatus.value[tokenId] = "running";
+      try {
+        log(tokenName, "=== 开始检测金鱼号 ===", "info");
+        await ensureConnection(tokenId);
+        if (shouldStop.value) return;
+
+        const response = await sendRoleInfoRef(
+          tokenId,
+          {},
+          15000,
+          "检测金鱼号",
+        );
+        const role = extractRole(response);
+        const recruit = readItemCount(role?.items, ITEM_RECRUIT);
+        const goldRod = readItemCount(role?.items, ITEM_GOLD_ROD);
+        const diamond = Number(role?.diamond ?? 0) || 0;
+        const diamondTotal = diamond + goldRod * rodUnit;
+        const boxPoint =
+          Number(role?.boxPoint ?? role?.boxPoints ?? 0) || 0;
+
+        // 有效宝箱积分 = 未兑换积分×0.52 + 各宝箱可兑换积分之和
+        // （木1/青铜10/黄金20/铂金50/钻石0，见 GOLDENFISH_CHECK_RULES.chestPoints）
+        const chests = Object.entries(chestPoints).map(([itemId, pts]) => ({
+          itemId: Number(itemId),
+          pts,
+          count: readItemCount(role?.items, Number(itemId)),
+        }));
+        const chestScore = chests.reduce(
+          (sum, chest) => sum + chest.count * chest.pts,
+          0,
+        );
+        const boxScore = Math.floor(
+          boxPoint * boxPointFactor + chestScore,
+        );
+
+        const row = {
+          tokenId,
+          tokenName,
+          serverId,
+          recruit,
+          diamond,
+          goldRod,
+          diamondTotal,
+          boxPoint,
+          chests,
+          chestScore,
+          boxScore,
+        };
+
+        const reasons = [];
+        if (recruit < recruitMin)
+          reasons.push(`招募令 ${fmtNum(recruit)} < ${fmtNum(recruitMin)}`);
+        if (diamondTotal < diamondPlusRodMin)
+          reasons.push(
+            `金砖+鱼竿×${rodUnit} = ${fmtNum(diamondTotal)} < ${fmtNum(diamondPlusRodMin)}`,
+          );
+        if (boxScore < boxPointMin)
+          reasons.push(
+            `有效宝箱积分 ${fmtNum(boxScore)} < ${fmtNum(boxPointMin)}`,
+          );
+
+        if (reasons.length === 0) {
+          summary.qualified.push(row);
+          tokenStatus.value[tokenId] = "completed";
+          log(
+            tokenName,
+            `达标 ✓ 招募令 ${fmtNum(recruit)} / 金砖 ${fmtNum(diamond)} + 黄金鱼竿 ${fmtNum(goldRod)}×${rodUnit} = ${fmtNum(diamondTotal)} / 有效宝箱积分 ${fmtNum(boxPoint)}×${boxPointFactor} + 宝箱 ${fmtNum(chestScore)} = ${fmtNum(boxScore)}`,
+            "success",
+          );
+        } else {
+          summary.unqualified.push({ ...row, reasons });
+          tokenStatus.value[tokenId] = "completed";
+          log(tokenName, `不达标：${reasons.join("；")}`, "warning");
+        }
+      } catch (error) {
+        summary.failed.push({
+          tokenId,
+          tokenName,
+          serverId,
+          reason: error?.message || String(error),
+        });
+        tokenStatus.value[tokenId] = "failed";
+        log(tokenName, `检测金鱼号失败: ${error?.message || "未知错误"}`, "error");
+      } finally {
+        tokenStore.closeWebSocketConnection(tokenId);
+        releaseConnectionSlot();
+        log(
+          tokenName,
+          `连接已关闭  (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
+        );
+      }
+    });
+
+    await Promise.all(taskPromises);
+
+    syncGoldenfishGroup(summary);
+
+    currentRunningTokenId.value = null;
+    isRunning.value = false;
+    shouldStop.value = false;
+
+    addLog?.({
+      time: nowText(),
+      message:
+        `=== 检测金鱼号结束：达标 ${summary.qualified.length} 个，不达标 ${summary.unqualified.length} 个，` +
+        `例外跳过 ${summary.excluded.length} 个，失败 ${summary.failed.length} 个 ===`,
+      type: "info",
+    });
+    message.success(
+      `检测完成：达标 ${summary.qualified.length} 个，已同步到「${GOLDENFISH_GROUP_NAME}」（现有 ${summary.groupSize} 个）`,
+    );
+
+    return summary;
+  };
+
+  return {
+    goldenfishUseItem,
+    goldenfishSetShopList,
+    detectGoldenfishAccounts,
+  };
 }
 
 export default { createTasksGoldenfish };

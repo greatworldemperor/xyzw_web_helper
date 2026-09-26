@@ -863,6 +863,59 @@
             </n-tab-pane>
             <n-tab-pane name="goldenfish" tab="金鱼">
               <n-space vertical :size="8">
+                <!-- 检测金鱼号：达标账号自动进固定分组「金鱼组」 -->
+                <n-space align="center" :size="8" wrap>
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="runDetectGoldenfishAccounts"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    检测金鱼号
+                  </n-button>
+                  <n-input
+                    v-model:value="goldenfishExcludeServers"
+                    size="small"
+                    class="goldenfish-exclude-input"
+                    placeholder="例外 server id，逗号分隔"
+                    :disabled="isRunning"
+                  />
+                </n-space>
+                <span class="xiaoyaojin-hint">
+                  达标条件（全部满足才入组）：招募令 ≥ 3,000；金砖 + 黄金鱼竿×600
+                  ≥ 640,000；有效宝箱积分 ≥ 30,000（= 未兑换积分×0.52 + 木箱×1 +
+                  青铜×10 + 黄金×20 + 铂金×50，钻石箱不计分）。达标账号自动加入固定分组「{{
+                    GOLDENFISH_GROUP_NAME
+                  }}」，在上方「分组选择」点选它即可批量跑金鱼任务；例外
+                  server id 里的区服一律不检测、不入组。
+                </span>
+                <div
+                  v-if="goldenfishDetectSummary"
+                  class="goldenfish-detect-summary"
+                >
+                  <span>
+                    上次检测：达标
+                    <b>{{ goldenfishDetectSummary.qualified }}</b> 个 / 不达标
+                    {{ goldenfishDetectSummary.unqualified }} 个 / 例外跳过
+                    {{ goldenfishDetectSummary.excluded }} 个 / 失败
+                    {{ goldenfishDetectSummary.failed }} 个；「{{
+                      GOLDENFISH_GROUP_NAME
+                    }}」现有 {{ goldenfishDetectSummary.groupSize }} 个
+                  </span>
+                  <div
+                    v-if="goldenfishDetectSummary.qualifiedNames.length > 0"
+                    class="goldenfish-detect-names"
+                  >
+                    <n-tag
+                      v-for="name in goldenfishDetectSummary.qualifiedNames"
+                      :key="name"
+                      size="small"
+                      type="success"
+                    >
+                      {{ name }}
+                    </n-tag>
+                  </div>
+                </div>
                 <n-space align="center" :size="8">
                   <n-input-number
                     v-model:value="goldenfishCount"
@@ -3801,6 +3854,8 @@ import {
   createTasksXianMaster,
   createTasksGoldenfish,
   GOLDENFISH_SHOP_DEFAULTS,
+  GOLDENFISH_GROUP_NAME,
+  DEFAULT_GOLDENFISH_EXCLUDE_SERVERS,
   resolveDefaultBlackMarketKeys,
 } from "@/utils/batch";
 
@@ -7960,7 +8015,49 @@ const {
 // 金鱼（秋季活动）：投道具，协议见 local-data/goldenfish 抓包
 const goldenfishCount = ref(1);
 const tasksGoldenfish = createTasksGoldenfish(createTaskDeps());
-const { goldenfishUseItem, goldenfishSetShopList } = tasksGoldenfish;
+const {
+  goldenfishUseItem,
+  goldenfishSetShopList,
+  detectGoldenfishAccounts,
+} = tasksGoldenfish;
+
+// 检测金鱼号：例外（排除）server id + 上次检测结果
+const GOLDENFISH_EXCLUDE_SERVERS_KEY = "goldenfishExcludeServers";
+const loadGoldenfishExcludeServers = () => {
+  try {
+    const saved = localStorage.getItem(GOLDENFISH_EXCLUDE_SERVERS_KEY);
+    if (saved === null) return DEFAULT_GOLDENFISH_EXCLUDE_SERVERS;
+    return saved;
+  } catch {
+    return DEFAULT_GOLDENFISH_EXCLUDE_SERVERS;
+  }
+};
+const goldenfishExcludeServers = ref(loadGoldenfishExcludeServers());
+watch(goldenfishExcludeServers, (val) => {
+  try {
+    localStorage.setItem(GOLDENFISH_EXCLUDE_SERVERS_KEY, val ?? "");
+  } catch {
+    /* 存储不可用时静默：仅影响下次记忆 */
+  }
+});
+
+const goldenfishDetectSummary = ref(null);
+const runDetectGoldenfishAccounts = async () => {
+  const result = await detectGoldenfishAccounts({
+    excludeServers: goldenfishExcludeServers.value,
+  });
+  if (!result) return;
+  goldenfishDetectSummary.value = {
+    qualified: result.qualified.length,
+    unqualified: result.unqualified.length,
+    excluded: result.excluded.length,
+    failed: result.failed.length,
+    groupSize: result.groupSize,
+    qualifiedNames: result.qualified.map((row) =>
+      row.serverId ? `${row.tokenName}（${row.serverId}服）` : row.tokenName,
+    ),
+  };
+};
 
 // 金鱼商店购物列表（「金鱼模式」预设；09-25 抓包 store_setpurchase 验证，详见 docs/goldenfish-autumn-protocol.md）
 const GOLDENFISH_SHOP_STORAGE_KEY = "goldenfishShopSettings";
@@ -9338,6 +9435,29 @@ const stopBatch = () => {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* 检测金鱼号：例外 server id 输入框 + 结果摘要 */
+.goldenfish-exclude-input {
+  width: 240px;
+}
+
+.goldenfish-detect-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  background: #fafafa;
+  font-size: 12px;
+  color: #4e5969;
+}
+
+.goldenfish-detect-names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 /* Responsive Design */

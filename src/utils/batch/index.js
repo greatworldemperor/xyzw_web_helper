@@ -36,5 +36,9 @@ export { createTasksXiaoyaojin } from './tasksXiaoyaojin.js';
 export {
   createTasksGoldenfish,
   GOLDENFISH_SHOP_DEFAULTS,
+  GOLDENFISH_GROUP_NAME,
+  GOLDENFISH_CHECK_RULES,
+  DEFAULT_GOLDENFISH_EXCLUDE_SERVERS,
+  parseServerIdList,
 } from './tasksGoldenfish.js';
 export * from './campChallengePlanner.js';
