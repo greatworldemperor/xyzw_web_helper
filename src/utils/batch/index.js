@@ -33,5 +33,14 @@ export { createTasksCampChallengeStrategy } from './tasksCampChallengeStrategy.j
 export { createTasksSaltField, battlefieldQueue } from './tasksSaltField.js';
 export { createTasksXianMaster } from './tasksXianMaster.js';
 export { createTasksXiaoyaojin } from './tasksXiaoyaojin.js';
+export {
+  createTasksGoldenfish,
+  GOLDENFISH_SHOP_DEFAULTS,
+  GOLDENFISH_GROUP_NAME,
+  GOLDENFISH_CHECK_RULES,
+  GOLDENFISH_CONSUME_DEFAULTS,
+  DEFAULT_GOLDENFISH_EXCLUDE_SERVERS,
+  parseServerIdList,
+} from './tasksGoldenfish.js';
 export { createTasksWhiteJadePkroom } from './tasksWhiteJadePkroom.js';
 export * from './campChallengePlanner.js';

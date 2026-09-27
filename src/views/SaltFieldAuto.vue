@@ -283,6 +283,7 @@ import { useMessage } from "naive-ui";
 import { useTokenStore, gameTokens } from "@/stores/tokenStore";
 import { createConnectionManager } from "@/utils/batch/connectionManager";
 import { createTasksSaltField } from "@/utils/batch/tasksSaltField";
+import { isDeployedState } from "@/utils/legionWarState";
 import * as cfg from "@/utils/saltFieldConfig";
 
 const message = useMessage();
@@ -500,7 +501,8 @@ const statusClass = (team) => {
   const cid = liveCid(team);
   const role = cid != null ? liveByTeam.value[team.id]?.roles?.[String(cid)] : null;
   if (!role) return "dot--idle";
-  return role.state && role.state !== "watching" ? "dot--ok" : "dot--warn";
+  // 2026-09-26 复盘：teaming/watching 都不算已就绪，只有真登场才亮绿点
+  return isDeployedState(role.state) ? "dot--ok" : "dot--warn";
 };
 
 const formatPower = (p) => {
@@ -774,7 +776,10 @@ const teamStatus = (team) => {
   if (run.error && !run.ok) return { text: "失败: " + String(run.error).slice(0, 16), cls: "st--err" };
   const fs = run.finalState || {};
   const leader = fs.leaderState;
-  if (leader && leader !== "watching") return { text: "已登场", cls: "st--ok" };
+  // 2026-09-26 复盘：只有真登场状态（idle/combat/march）才算「已登场」；
+  // teaming=组队中（放置期），watching=已组队未登场 —— 旧判据把 teaming 显示成已登场是假象
+  if (leader && isDeployedState(leader)) return { text: "已登场", cls: "st--ok" };
+  if (leader === "teaming") return { text: "组队中", cls: "st--team" };
   if ((fs.teamMembers?.length || 0) > 1) return { text: "已组队·未登场", cls: "st--team" };
   const now = Math.floor(Date.now() / 1000);
   const reviving = Object.values(fs.roles || {}).some((r) => Number(r.reviveTime || 0) > now);

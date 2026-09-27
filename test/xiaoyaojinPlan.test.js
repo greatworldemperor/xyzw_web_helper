@@ -2,8 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  DAY_MS,
   XIAOYAOJIN_ALL_STEPS,
+  XIAOYAOJIN_COOKIE_PRICE,
+  XIAOYAOJIN_COUPON_ITEM_ID,
+  XIAOYAOJIN_CUMULATIVE_ID_MAX,
   XIAOYAOJIN_DEFAULT_DRAWS,
+  XIAOYAOJIN_REVIVE_PRICE,
+  XIAOYAOJIN_EXCHANGE_ITEM_ID,
   XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
   XIAOYAOJIN_MAX_ACTIVITY_AGE_DAYS,
   XIAOYAOJIN_MAX_DRAWS,
@@ -15,13 +21,22 @@ import {
   describePassTiers,
   getActivityDateHead,
   isDailyMissionId,
+  listPendingCumulativeIds,
   listPendingDailyClaims,
   listPendingPassRewards,
   parseActivityDateHead,
+  pickLotteryInfo,
+  planCouponPurchase,
+  planLotteryBatches,
+  readCumulativeClaimed,
+  readItemQuantity,
+  readRewardQuantity,
+  resolveExchangeTimes,
   resolveLotteryDraws,
   resolvePassTierCount,
   resolvePassTierMissionId,
   resolveXiaoyaojinActivityId,
+  summarizeLottery,
   summarizePassRewards,
 } from "../src/utils/xiaoyaojinPlan.js";
 
@@ -346,7 +361,7 @@ test("完整计划：活动未开启时给出可读原因，不抛异常", () =>
     now: CAPTURE_NOW,
   });
   assert.equal(plan.ok, false);
-  assert.match(plan.reason, /未在 warOrderActivityInfo 中找到逍遥津活动实例/);
+  assert.match(plan.reason, /未在 warOrderActivityInfo .* commonActivityInfo 中找到逍遥津活动实例/);
 });
 
 test("抽奖次数：受配置与抽奖券余额双重约束", () => {
@@ -391,11 +406,16 @@ test("一键全套的步骤顺序是协议约束：先等级奖励、后一键�
   // 宝箱与礼包都产抽奖券 5283
   assert.ok(at("passChest") < at("lottery"), "宝箱必须在抽奖之前");
   assert.ok(at("oneTimeGift") < at("lottery"), "礼包必须在抽奖之前");
-  // 抽奖排最后（用券的都在它前面）
-  assert.equal(steps[steps.length - 1], "lottery");
-  // 步骤集合固定为这 6 步
+  // 兑换消耗的是**抽奖产出**的 5284（每 50 抽 1 个）→ 必须排在抽奖之后
+  assert.ok(at("lottery") < at("exchange"), "碎片兑换必须在抽奖之后");
+  // 券兑换花的是 5285（抽奖掉落 + 累计奖励每档 ×5）→ 也必须在抽奖之后，排在最后
+  assert.ok(at("lottery") < at("couponExchange"), "券兑换必须在抽奖之后");
+  assert.equal(steps[steps.length - 1], "couponExchange");
+  // 步骤集合固定为这 7 步
   assert.deepEqual([...steps].sort(), [
+    "couponExchange",
     "dailyTask",
+    "exchange",
     "lottery",
     "oneTimeGift",
     "passChest",
@@ -578,4 +598,422 @@ test("兼容裸 body 形态：res.activity / res.data.activity / 已取出的根
     assert.equal(plan.ok, true);
     assert.equal(plan.warOrderActivityId, "2609191");
   });
+});
+
+// ---------------------------------------------------------------------------
+// 玄武灵契（抽奖券 5283）闭环 —— 2026-09-25 抓包 local-data/xiaoyaojin/xiaoyaojin_full.jsonl
+// 账号「特别老实」@9724，本期 2609191（活动第 7 天）
+//   activity_lottery {times:10} → 扣 5283 ×10（40→30→20→10→0）
+//   activity_claimlotterycumulative {id} → 每档固定 +2 张 5283（id 11~15 全是 ×2）
+//   activity_exchange {activityId:2609196, goodsId:260919602, quantity:1} → 消耗 5284 得 1023×10
+// ---------------------------------------------------------------------------
+
+test("★ 十连优先：券余额拆成 [10,10,10,...] 批次（40 张 → 4 批十连）", () => {
+  assert.deepEqual(planLotteryBatches(40).batches, [10, 10, 10, 10]);
+  assert.deepEqual(planLotteryBatches(23).batches, [10, 10, 3]);
+  assert.deepEqual(planLotteryBatches(3).batches, [3]);
+  assert.deepEqual(planLotteryBatches(1).batches, [1]);
+  // 单抽模式（界面把每批调成 1）
+  assert.deepEqual(planLotteryBatches(5, { perBatch: 1 }).batches, [
+    1, 1, 1, 1, 1,
+  ]);
+  // 每批张数被夹到 1~10
+  assert.deepEqual(planLotteryBatches(30, { perBatch: 99 }).batches, [
+    10, 10, 10,
+  ]);
+  assert.deepEqual(planLotteryBatches(30, { perBatch: 0 }).batches, [10, 10, 10]);
+});
+
+test("★ 券余额为 0 → 不抽奖（[]）；余额未知 → 给一批试探（不能误判成 0）", () => {
+  assert.deepEqual(planLotteryBatches(0).batches, []);
+  assert.equal(planLotteryBatches(0).tickets, 0);
+  // ⚠️ Number(null)===0 陷阱：null/undefined/"" 必须是「未知」而不是 0
+  assert.deepEqual(planLotteryBatches(null).batches, [10]);
+  assert.equal(planLotteryBatches(null).tickets, null);
+  assert.equal(planLotteryBatches(undefined).tickets, null);
+  assert.equal(planLotteryBatches("").tickets, null);
+});
+
+test("★ 读道具数量：显式 null = 归零，键缺失 = 未知（两种都踩过坑）", () => {
+  // 券抽光：items["5283"] = null（BON patch 的删除语义）
+  assert.equal(
+    readItemQuantity({ role: { items: { 5283: null } } }, 5283),
+    0,
+  );
+  // 兑换材料换光：items["5284"] = null
+  assert.equal(
+    readItemQuantity(
+      { body: { role: { items: { 1023: { quantity: 4957 }, 5284: null } } } },
+      XIAOYAOJIN_EXCHANGE_ITEM_ID,
+    ),
+    0,
+  );
+  // 键缺失 → 未知（不能当 0，否则会被误判成「没券」而跳过抽奖）
+  assert.equal(readItemQuantity({ role: { items: {} } }, 5283), null);
+  assert.equal(readItemQuantity({ role: {} }, 5283), null);
+  assert.equal(readItemQuantity(null, 5283), null);
+  // 正常值
+  assert.equal(
+    readItemQuantity(
+      { role: { items: { 5283: { itemId: 5283, quantity: 2, ext: null } } } },
+      5283,
+    ),
+    2,
+  );
+});
+
+test("累计抽奖奖励：已领 id 从 cumulativeClaimedMap 读，响应只回本次那一个", () => {
+  // 抓包首帧 15:03:49：累计 59 次、前 10 档已领
+  const info = {
+    lotteryNum: 59,
+    fragProgress: 9,
+    boxPackIdList: [],
+    cumulativeClaimedMap: {
+      1: true, 2: true, 3: true, 4: true, 5: true,
+      6: true, 7: true, 8: true, 9: true, 10: true,
+    },
+  };
+  const claimed = readCumulativeClaimed(info);
+  assert.equal(claimed.size, 10);
+  assert.equal(claimed.has(10), true);
+  assert.equal(claimed.has(11), false);
+
+  // ⚠️ 响应只回本次领的那一个（{"11":true}）→ 不能拿新响应覆盖，必须并集
+  const justClaimed = readCumulativeClaimed({ cumulativeClaimedMap: { 11: true } });
+  assert.equal(justClaimed.size, 1);
+  const merged = new Set(claimed);
+  justClaimed.forEach((id) => merged.add(id));
+  assert.equal(merged.size, 11);
+
+  // 待试 id：跳过已领的（1~11），从第一个未领的 12 开始
+  const pending = listPendingCumulativeIds(null, merged);
+  assert.equal(pending[0], 12);
+  assert.equal(pending.length, XIAOYAOJIN_CUMULATIVE_ID_MAX - 11);
+  // 上界可配（测试用小上界，别把 30 写死在断言里）
+  assert.deepEqual(listPendingCumulativeIds(null, merged, { max: 14 }), [
+    12, 13, 14,
+  ]);
+  // 没有 map 时从 1 开始
+  assert.equal(listPendingCumulativeIds(null, new Set())[0], 1);
+  assert.equal(listPendingCumulativeIds(null, undefined)[0], 1);
+});
+
+test("★ 抽奖摘要：累计次数 / 碎片 / 已领档位（抓包首帧与末帧对照）", () => {
+  const first = {
+    lotteryNum: 59,
+    fragProgress: 9,
+    cumulativeClaimedMap: { 1: true, 2: true, 3: true },
+  };
+  const s1 = summarizeLottery(first, null);
+  assert.equal(s1.draws, 59);
+  assert.equal(s1.frag, 9);
+  assert.deepEqual(s1.claimedCumulative, [1, 2, 3]);
+  assert.equal(s1.pendingCumulative, XIAOYAOJIN_CUMULATIVE_ID_MAX - 3);
+
+  // 会话内累积：领到 15 档后
+  const accumulated = new Set([1, 2, 3, 11, 12, 13, 14, 15]);
+  const s2 = summarizeLottery(first, accumulated);
+  assert.deepEqual(s2.claimedCumulative, [1, 2, 3, 11, 12, 13, 14, 15]);
+  assert.equal(s2.pendingCumulative, XIAOYAOJIN_CUMULATIVE_ID_MAX - 8);
+
+  // 空/非法输入不抛
+  assert.equal(summarizeLottery(null, null).draws, null);
+  assert.equal(summarizeLottery(null, null).frag, null);
+  assert.deepEqual(summarizeLottery(null, null).claimedCumulative, []);
+  // pickLotteryInfo 兼容 body 层
+  assert.equal(pickLotteryInfo({ body: { lotteryInfo: first } }).lotteryNum, 59);
+  assert.equal(pickLotteryInfo({ lotteryInfo: first }).lotteryNum, 59);
+  assert.equal(pickLotteryInfo(null), null);
+});
+
+test("★ 奖励解析：累计奖励每档给 2 张玄武灵契（id 11~15 实测）", () => {
+  const resp = {
+    role: { items: { 5283: { quantity: 2 }, 5285: { quantity: 28 } } },
+    reward: [
+      { type: 3, itemId: 5283, value: 2, ext: 0 },
+      { type: 3, itemId: 5285, value: 5, ext: 0 },
+    ],
+    lotteryInfo: { cumulativeClaimedMap: { 11: true } },
+  };
+  assert.equal(readRewardQuantity(resp, XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID), 2);
+  assert.equal(readRewardQuantity(resp, 5285), 5);
+  // 没有该道具 → 0（不是 null）
+  assert.equal(readRewardQuantity(resp, 9999), 0);
+  assert.equal(readRewardQuantity(null, 5283), 0);
+  assert.equal(readRewardQuantity({}, 5283), 0);
+  // 多个条目累加（十连里 5285 出现多次）
+  assert.equal(
+    readRewardQuantity(
+      { reward: [{ itemId: 5285, value: 1 }, { itemId: 5285, value: 4 }] },
+      5285,
+    ),
+    5,
+  );
+});
+
+test("兑换次数：有多少 5284 换多少次；读不到余额 → null（由调用方试探 1 次）", () => {
+  assert.equal(resolveExchangeTimes(3), 3);
+  assert.equal(resolveExchangeTimes(0), 0);
+  assert.equal(resolveExchangeTimes(null), null);
+  assert.equal(resolveExchangeTimes(undefined), null);
+  assert.equal(resolveExchangeTimes(""), null);
+  assert.equal(resolveExchangeTimes("5"), 5);
+  // 上限保护（防死循环）
+  assert.equal(resolveExchangeTimes(99999), 50);
+});
+
+test("派生 ID 含兑换商店（功能位 6）：2609196 / 商品 260919602", () => {
+  const ids = deriveXiaoyaojinIds("260919");
+  assert.equal(ids.exchangeActivityId, "2609196");
+  assert.equal(ids.exchangeGoodsId, "260919602");
+  // 与抓包里 activity_exchange 的请求体逐字段一致
+  assert.deepEqual(
+    {
+      activityId: Number(ids.exchangeActivityId),
+      goodsId: Number(ids.exchangeGoodsId),
+      quantity: 1,
+    },
+    { activityId: 2609196, goodsId: 260919602, quantity: 1 },
+  );
+  // 手工覆盖
+  const manual = deriveXiaoyaojinIds("260919", {
+    exchangeGoodsId: "260919603",
+  });
+  assert.equal(manual.exchangeGoodsId, "260919603");
+});
+
+// ---------------------------------------------------------------------------
+// 券兑换商店 —— 2026-09-25 抓包 local-data/xiaoyaojin/xiaoyaojin_redemption.jsonl
+// 账号 21a @9721，本期 2609193（功能位 3）
+//   43 张兑换券(5285) → 饼干 quantity:8（花 40，得 15001×40000）→ 余 3 → 复活丹 ×1（得 1017×1）
+// ---------------------------------------------------------------------------
+
+test("★ 券兑换方案：43 券 → 8 个饼干（花 40）+ 1 个复活丹（花 3），余 0", () => {
+  const plan = planCouponPurchase(43);
+  assert.equal(plan.cookies, 8);
+  assert.equal(plan.cookieCost, 40);
+  assert.equal(plan.remaining, 3);
+  assert.equal(plan.revive, 1);
+  assert.equal(plan.reviveCost, 3);
+  assert.equal(plan.tickets - plan.cookieCost - plan.reviveCost, 0);
+  assert.equal(XIAOYAOJIN_COOKIE_PRICE, 5);
+  assert.equal(XIAOYAOJIN_REVIVE_PRICE, 3);
+  assert.equal(XIAOYAOJIN_COUPON_ITEM_ID, 5285);
+});
+
+test("券兑换边界：不够 5 券不买饼干；余券够 3 才换复活丹", () => {
+  // 4 券：买不了饼干，但够换 1 个复活丹
+  const few = planCouponPurchase(4);
+  assert.equal(few.cookies, 0);
+  assert.equal(few.remaining, 4);
+  assert.equal(few.revive, 1);
+
+  // 2 券：啥也买不了
+  const tiny = planCouponPurchase(2);
+  assert.equal(tiny.cookies, 0);
+  assert.equal(tiny.revive, 0);
+
+  // 5 → 1 个饼干，余 0，不换复活丹
+  const exact = planCouponPurchase(5);
+  assert.equal(exact.cookies, 1);
+  assert.equal(exact.remaining, 0);
+  assert.equal(exact.revive, 0);
+
+  // 8 → 1 个饼干，余 3 → 换复活丹
+  const eight = planCouponPurchase(8);
+  assert.equal(eight.cookies, 1);
+  assert.equal(eight.remaining, 3);
+  assert.equal(eight.revive, 1);
+
+  // 7 → 1 个饼干，余 2 → 不换
+  assert.equal(planCouponPurchase(7).revive, 0);
+  // 0 券
+  assert.equal(planCouponPurchase(0).cookies, 0);
+  assert.equal(planCouponPurchase(0).revive, 0);
+});
+
+test("★ 券余额读不到 → 一个都不买（不能瞎买）", () => {
+  for (const unknown of [null, undefined, ""]) {
+    const plan = planCouponPurchase(unknown);
+    assert.equal(plan.tickets, null);
+    assert.equal(plan.cookies, 0);
+    assert.equal(plan.revive, 0);
+  }
+  // 字符串数字也能算
+  assert.equal(planCouponPurchase("43").cookies, 8);
+});
+
+test("派生 ID 含券兑换商店（功能位 3）：2609193 / 饼干 02 / 复活丹 03", () => {
+  const ids = deriveXiaoyaojinIds("260919");
+  assert.equal(ids.couponActivityId, "2609193");
+  assert.equal(ids.couponCookieGoodsId, "260919302");
+  assert.equal(ids.couponReviveGoodsId, "260919303");
+  // 与抓包里两条 activity_exchange 的请求体逐字段一致
+  assert.deepEqual(
+    {
+      activityId: Number(ids.couponActivityId),
+      goodsId: Number(ids.couponCookieGoodsId),
+      quantity: 8,
+    },
+    { activityId: 2609193, goodsId: 260919302, quantity: 8 },
+  );
+  assert.deepEqual(
+    {
+      activityId: Number(ids.couponActivityId),
+      goodsId: Number(ids.couponReviveGoodsId),
+      quantity: 1,
+    },
+    { activityId: 2609193, goodsId: 260919303, quantity: 1 },
+  );
+});
+
+test("一键全套：券兑换排在抽奖与碎片兑换之后（券来自抽奖/累计奖励）", () => {
+  const steps = [...XIAOYAOJIN_ALL_STEPS];
+  assert.ok(steps.indexOf("lottery") < steps.indexOf("couponExchange"));
+  assert.ok(steps.indexOf("couponExchange") > steps.indexOf("exchange"));
+  assert.equal(steps[steps.length - 1], "couponExchange");
+  assert.equal(Object.isFrozen(XIAOYAOJIN_ALL_STEPS), true);
+});
+
+// ---------------------------------------------------------------------------
+// 活动结束后（只剩兑换延时）：warOrderActivityInfo 被清空，只剩 commonActivityInfo
+// 实证 2026-09-26 00:44 xiaoyaojin_redemption1.jsonl —— activity_exchange 仍成功，
+// 响应回 commonActivityInfo["2609193"]，但 activity_get 已拿不到战令实例。
+// ---------------------------------------------------------------------------
+const ENDED_NOW = CAPTURE_NOW + 7 * DAY_MS; // 09-26（活动开启后第 7 天）
+
+test("★ 战令表被清空时，从 commonActivityInfo 反推日期头（活动结束仍能兑换）", () => {
+  const plan = buildXiaoyaojinPlan(
+    {
+      activity: {
+        warOrderActivityInfo: {}, // ← 活动结束后服务端不再推送战令
+        commonActivityInfo: {
+          2609193: { record: { 260919302: 8 }, task: {}, isBought: false },
+          2609194: { record: { 26091941: 1 }, task: {}, isBought: false },
+          2609195: { record: { 1: 1789754264 }, task: {}, isBought: false },
+          2609196: { record: { 260919602: 2 }, task: {}, isBought: false },
+        },
+      },
+    },
+    { now: ENDED_NOW },
+  );
+
+  assert.equal(plan.ok, true);
+  assert.equal(plan.source, "common");
+  assert.equal(plan.head, "260919");
+  // 所有派生 ID 都能用 → 券兑换照样能跑
+  assert.equal(plan.ids.couponActivityId, "2609193");
+  assert.equal(plan.ids.couponCookieGoodsId, "260919302");
+  assert.equal(plan.ids.couponReviveGoodsId, "260919303");
+  assert.equal(plan.ids.exchangeActivityId, "2609196");
+  assert.equal(plan.commonConfirmed.coupon, true);
+  assert.equal(plan.commonConfirmed.exchange, true);
+  // 战令数据没了 → 判定已结束 → 全套只跑兑换
+  assert.equal(plan.warOrderInfo, null);
+  assert.equal(plan.ended, true);
+  assert.deepEqual(plan.dailyClaims, []);
+  assert.equal(plan.passRewards.pending, 0);
+});
+
+test("活动结束判定：ageDays>=7 或 战令表已清空，二者取其一", () => {
+  // ① 战令还在但已过期（第 8 天）
+  const stale = buildXiaoyaojinPlan(
+    {
+      activity: {
+        warOrderActivityInfo: { 2609191: buildWarOrderInfo() },
+        commonActivityInfo: {},
+      },
+    },
+    { now: CAPTURE_NOW + 8 * DAY_MS },
+  );
+  assert.equal(stale.ok, true);
+  assert.equal(stale.source, "auto");
+  assert.equal(stale.ended, true);
+
+  // ② 活动期内：战令在、ageDays<7 → 未结束
+  const running = buildXiaoyaojinPlan(
+    {
+      activity: {
+        warOrderActivityInfo: { 2609191: buildWarOrderInfo() },
+        commonActivityInfo: {},
+      },
+    },
+    { now: CAPTURE_NOW },
+  );
+  assert.equal(running.ended, false);
+
+  // ③ 手工填日期头（连 commonActivityInfo 都没有）→ source=manual
+  const manual = buildXiaoyaojinPlan(
+    { activity: { warOrderActivityInfo: {}, commonActivityInfo: {} } },
+    { now: ENDED_NOW, overrides: { head: "260919" } },
+  );
+  assert.equal(manual.ok, true);
+  assert.equal(manual.source, "manual");
+  assert.equal(manual.ids.couponActivityId, "2609193");
+  assert.equal(manual.ended, true); // 战令数据为空 → 判定已结束
+});
+
+test("★ 手工日期头压过自动探测（上一期兑券延时 vs 已开的新一期）", () => {
+  // 09-26：上一期 260919 的兑换延时未过，但新一期 260925 已经开了 →
+  // commonActivityInfo 里两期的键都有，自动探测「取日期头最大者」会选中新一期
+  const bothPeriods = {
+    activity: {
+      warOrderActivityInfo: {},
+      commonActivityInfo: {
+        2609193: { record: { 260919302: 8 }, task: {}, isBought: false },
+        2609253: { record: {}, task: {}, isBought: false },
+        2609255: { record: {}, task: {}, isBought: false },
+      },
+    },
+  };
+  const auto = buildXiaoyaojinPlan(bothPeriods, { now: ENDED_NOW });
+  assert.equal(auto.head, "260925"); // ← 自动探测会选新一期（不是我们想要的）
+  assert.equal(auto.ids.couponActivityId, "2609253");
+
+  // 用户手工填上一期 → 必须压过自动探测
+  const manual = buildXiaoyaojinPlan(bothPeriods, {
+    now: ENDED_NOW,
+    overrides: { head: "260919" },
+  });
+  assert.equal(manual.head, "260919");
+  assert.equal(manual.source, "manual");
+  assert.equal(manual.ids.couponActivityId, "2609193");
+  assert.equal(manual.ids.couponCookieGoodsId, "260919302");
+  assert.equal(manual.ids.couponReviveGoodsId, "260919303");
+});
+
+test("日期头优先级：手工战令ID > 战令表探测 > 公共活动表反推 > 手工 head", () => {
+  const snapshot = {
+    activity: {
+      warOrderActivityInfo: { 2609191: buildWarOrderInfo() },
+      commonActivityInfo: { 2609193: { record: {}, task: {}, isBought: false } },
+    },
+  };
+  // 战令表可用 → 优先用它
+  assert.equal(buildXiaoyaojinPlan(snapshot, { now: ENDED_NOW }).source, "auto");
+  // 手工指定战令 ID 覆盖
+  assert.equal(
+    buildXiaoyaojinPlan(snapshot, {
+      now: ENDED_NOW,
+      overrides: { warOrderActivityId: "2609191" },
+    }).source,
+    "manual",
+  );
+});
+
+test("交换记录：commonActivityInfo 里能读到本期已兑换次数", () => {
+  const plan = buildXiaoyaojinPlan(
+    {
+      activity: {
+        warOrderActivityInfo: { 2609191: buildWarOrderInfo() },
+        commonActivityInfo: {
+          2609196: { record: { 260919602: 2 }, task: {}, isBought: false },
+        },
+      },
+    },
+    { now: CAPTURE_NOW },
+  );
+  assert.equal(plan.ok, true);
+  assert.equal(plan.commonConfirmed.exchange, true);
+  assert.equal(plan.commonConfirmed.exchangeTimes, 2);
 });

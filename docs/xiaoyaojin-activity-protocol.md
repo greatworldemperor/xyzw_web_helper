@@ -110,11 +110,13 @@ commonActivityInfo = {
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/utils/xiaoyaojinPlan.js` | 纯逻辑：活动实例探测（7 位 YYMMDD 键 + 存活窗口取最新）、同族 ID 派生、每日任务清单、**战令等级奖励候选**、抽奖次数约束。**可被 node 测试直接导入** |
-| `src/utils/batch/tasksXiaoyaojin.js` | 批量任务：7 个入口（全套/每日任务/战令宝箱/战令等级奖励/一次性礼包/7 天登录/抽奖）+ `inspectXiaoyaojin` 预览 |
-| `src/utils/xyzwWebSocket.js` | 注册 7 条命令 + 响应映射（`activity_warorderclaimresp` 一响应四命令、`syncrewardresp` 增 `activity_commonbuygoods`） |
+| `src/utils/xiaoyaojinPlan.js` | 纯逻辑：活动实例探测（7 位 YYMMDD 键 + 存活窗口取最新）、同族 ID 派生（含**兑换 = 功能位 6**）、每日任务清单、**战令等级奖励候选**、十连批次拆分、累计奖励 id 枚举、道具余额读取。**可被 node 测试直接导入** |
+| `src/utils/batch/tasksXiaoyaojin.js` | 批量任务：9 个入口（全套/每日任务/战令宝箱/战令等级奖励/一次性礼包/7 天登录/**抽奖（抽光为止闭环）**/**累计抽奖奖励**/**兑换**）+ `inspectXiaoyaojin` 预览 |
+| `src/utils/xyzwWebSocket.js` | 注册 9 条命令 + 响应映射（`activity_warorderclaimresp` 一响应四命令、`syncrewardresp` 含 `activity_commonbuygoods`、新增 `activity_claimlotterycumulativeresp` 与 `commonrewardresp`） |
 | `src/views/BatchDailyTasks.vue` | 批量任务页底部「临时活动」标签页；任务分组 / 自由模板分组同步 |
-| `test/xiaoyaojinPlan.test.js` | 18 例回归（含两份真实抓包快照） |
+| `test/xiaoyaojinPlan.test.js` | 31 例回归（含三份真实抓包快照） |
+| `local-data/xiaoyaojin/_dec2.mjs` | 抓包解码（x/lx 解密 + BON）→ `_dec2_out.txt` |
+| `local-data/xiaoyaojin/_verify_new_cmds.mjs` | 请求体逐字节复现校验（10/10） |
 
 ### 关键实现选择
 
@@ -329,8 +331,85 @@ master 随后给出的 UI 事实（总积分 3100 可见、哪些档已领可见
 - 线上 `/game/index.html` 的 boot 脚本（`patch.decrypted_readable.js` / `main.*.js` / `xh.js` / `settings` / `game-defines`）
   都不含活动代码 —— 真正的活动逻辑在**动态加载的 Cocos 资源**里，要按需抓取 + 反混淆才可能拿到档位表
 
+---
+
+## 6. 第三次抓包 `xiaoyaojin_full.jsonl`（2026-09-25 23:05，特别老实 @9724，活动第 7 天）
+
+解码脚本 `local-data/xiaoyaojin/_dec2.mjs`（输出 `_dec2_out.txt`）；
+**请求体逐字节复现 `local-data/xiaoyaojin/_verify_new_cmds.mjs` → 10/10 OK、0 失败**。
+
+### 6.1 两条新命令
+
+| 命令 | 请求体 | 响应 | 作用 |
+| --- | --- | --- | --- |
+| `activity_claimlotterycumulative` | `{id}` | `Activity_ClaimLotteryCumulativeResp` | **累计抽奖次数达标奖励**，每档固定 `5283×2 + 5285×5` |
+| `activity_exchange` | `{activityId, goodsId, quantity}` | `Common_RewardResp` | 兑换商店，消耗 `5284` 换道具（`1023×10`） |
+
+响应映射（新增）：`activity_claimlotterycumulativeresp` / `commonrewardresp`。
+
+### 6.2 玄武灵契（5283）的闭环 —— 「反复领取、反复消耗」
+
+```
+40 张券 → 十连×4 抽光 → 领累计 11/12/13/14 各 +2 → 单抽 8 次 → 领累计 15 +2 → 继续抽
+```
+
+| 时点 | 5283 | lotteryNum | fragProgress | 说明 |
+| --- | --- | --- | --- | --- |
+| 15:03:46 宝箱 | 40 | — | — | `warorderrewardclaim` 给 `5283×2` |
+| 15:03:49 查状态 | — | 59 | 9 | `cumulativeClaimedMap` = 1~10 全 true |
+| 十连 ×4 | 30→20→10→**0**（`null`） | 69→…→99 | 19→…→49 | `times:10` 一次扣 10 张 |
+| 领累计 11~14 | 2→4→6→8 | 99 | — | 每档 `5283×2` |
+| 单抽 ×8 | 7→…→0 | 100→107 | 0→7 | 跨过 100 时 frag 归零并发 `5284×1` |
+| 领累计 15 | 2 | 107 | — | 门槛在 100~107 之间 |
+
+**关键结论**：累计奖励是**唯一稳定的补券来源**，且门槛随 id 递增
+（11/12/13/14 在 99 次时连领，15 要等到 107 次）→
+**第一个不可领的 id 之后必然也都不可领，扫到失败即停**，不需要傻扫 30 次。
+
+⚠️ `cumulativeClaimedMap` 每次只回**本次领的那一个** id（`{"11":true}`）→
+实现必须自己维护 `claimedIds` 集合并取并集，**不能用新响应覆盖**。
+
+### 6.3 `times:10` 十连实测可行
+
+`activity_lottery {times:10}` 与抓包逐字节一致，一次扣 10 张券、回 10 条 reward。
+（`times` 的其它取值未见抓包，实现里「十连后余量」会发 `times:余额`，属**未实证**但语义显然的推断。）
+
+### 6.4 道具口径修正
+
+| 道具 | 含义 | 证据 |
+| --- | --- | --- |
+| **5283** | 玄武灵契（抽奖券），抽奖按 `times` 扣 | 40→30→20→10→0 |
+| **5284** | 兑换材料；`role.pack[奖池ID][5284]` ≡ `lotteryInfo.fragProgress`，**每抽 +1，满 50 归零并发 1 个进背包** | num 99/frag 49 → 抽 1 → num 100/frag 0，`reward 5284×1` |
+| **5285** | 抽奖副产物；累计奖励每档另给 ×5 | 20→21→…→49 |
+
+⚠️ **BON patch 语义**：`items["5283"] = null` = **归零**（不是「没报告」）；**键不存在** = 服务端这次没提这个道具。
+`readItemQuantity()` 对前者返回 0、后者返回 `null`，两者必须区分（否则会把「抽光」误判成「读不到」而反复重试）。
+
+### 6.5 兑换商店 = 功能位 6
+
+```
+activity_exchange { activityId: 2609196, goodsId: 260919602, quantity: 1 }
+  → Common_RewardResp { role.items: {1023: 4947, 5284: null}, reward: [1023×10] }
+```
+
+- `activityId = YYMMDD + 6`、`goodsId = activityId + "02"`（与礼包 `+1`、签到 `+5` 同族同日期头）
+- 消耗的是**背包里的 5284**（响应里显式 `null` = 换光）
+- 已兑换次数在 `commonActivityInfo[2609196].record[260919602]`（实测 1 → 2）
+- 抓包只出现这一个商品 → **商品列表未知**，实现只换抓到的这一个
+
+### 6.6 战令 `complete` 的另一处实证
+
+`complete[260919150…169]` **恒等于 `lotteryInfo.lotteryNum`（累计抽奖次数）**：
+59 → 69 → 79 → … → 109。所以序号 50~69 是「累计抽奖次数」档位奖励，
+与 §5.9 的积分档位（147~149）是**两套东西**；`141/142/143 = 45650` 又是第三类。
+→ 再次印证「本地圈 `complete>0` 候选 + 服务端裁定」是唯一可行做法。
+
 ### 已知缺口
 
+- 累计抽奖奖励的**门槛表**未拿到（每档需多少次），只能逐个试；id 上界暂定 30。
+- 兑换商店的**商品列表**只有 `…602` 一个样本，其余 goodsId 未知。
+- `times` 非 1/10 的取值未实证。
+- 5285 的用途未知（疑似另一条兑换轨的货币）。
 - `activity_warorderget` 已注册但批量流程未使用（`activity_get` 已含完整 `warOrderActivityInfo`）；
   保留注册是为了后续「只刷战令」的轻量调用。
 - `rewardClaimed` 的 4 位奖励 ID（1221/1222/1223）**语义未知**（疑似按等级解锁的宝箱档位），

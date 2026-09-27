@@ -326,7 +326,8 @@
         <n-card title="批量功能列表" style="margin-top: 16px">
           <n-tabs type="line" animated>
             <n-tab-pane name="daily" tab="日常">
-              <n-space>
+              <n-space vertical :size="8">
+                <n-space>
                 <n-button
                   size="small"
                   @click="claimHangUpRewards"
@@ -427,6 +428,75 @@
                     营地挑战({{ campChallengeModeLabel }})
                   </n-button>
                 </n-popselect>
+                </n-space>
+                <n-divider style="margin: 4px 0" />
+                <span class="xiaoyaojin-hint">
+                  商店购物列表（「金鱼模式」预设：青铜宝箱 5 折 / 黄金宝箱 5 折 / 铂金宝箱 8 折 /
+                  招募令 10 折原价 / 黄金鱼竿 8 折；可微调折扣后批量下发，金鱼等活动的商店通用）
+                </span>
+                <n-space align="center" :size="8">
+                  <span class="xiaoyaojin-hint">刷新次数</span>
+                  <n-input-number
+                    v-model:value="goldenfishShopSettings.purchaseCnt"
+                    size="small"
+                    :min="1"
+                    :max="999"
+                    :precision="0"
+                    :show-button="false"
+                    style="width: 90px"
+                    :disabled="isRunning"
+                  />
+                  <span class="xiaoyaojin-hint">
+                    （即游戏内 purchaseCnt，随列表一起下发；抓包提交值 15）
+                  </span>
+                </n-space>
+                <n-space vertical :size="4">
+                  <div
+                    v-for="item in goldenfishShopItems"
+                    :key="item.itemId"
+                    class="goldenfish-shop-row"
+                  >
+                    <n-checkbox
+                      v-model:checked="item.enabled"
+                      size="small"
+                      :disabled="isRunning"
+                    >
+                      {{ item.name }}（{{ item.itemId }}）
+                    </n-checkbox>
+                    <n-input-number
+                      v-model:value="item.discount"
+                      size="small"
+                      :min="1"
+                      :max="10"
+                      :precision="0"
+                      :show-button="false"
+                      style="width: 72px"
+                      :disabled="isRunning || !item.enabled"
+                    />
+                    <span class="xiaoyaojin-hint">折（10 = 原价）</span>
+                  </div>
+                </n-space>
+                <n-space :size="8">
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="applyGoldenfishShopList"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    设置购物列表
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="resetGoldenfishShopDefaults"
+                    :disabled="isRunning"
+                  >
+                    恢复金鱼模式默认
+                  </n-button>
+                </n-space>
+                <span class="xiaoyaojin-hint">
+                  流程：store_getpurchase 读当前列表（页面刷新次数未配置时沿用服务端现值）→
+                  store_setpurchase 写入勾选项 + 刷新次数；响应回显一致才记成功，未勾选的商品不在自动购买列表。
+                </span>
               </n-space>
             </n-tab-pane>
             <n-tab-pane name="dungeon" tab="副本">
@@ -798,87 +868,184 @@
               </n-space>
             </n-tab-pane>
             <n-tab-pane name="temporary" tab="临时活动">
+              <!-- 空壳：限时临时活动都挂在这里，当前没有进行中的活动 -->
+              <n-empty
+                description="暂无进行中的临时活动"
+                size="small"
+                class="temporary-activity-empty"
+              />
+            </n-tab-pane>
+            <n-tab-pane name="goldenfish" tab="金鱼">
               <n-space vertical :size="8">
+                <!-- 检测金鱼号：达标账号自动进固定分组「金鱼组」 -->
+                <n-space align="center" :size="8" wrap>
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="runDetectGoldenfishAccounts"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    检测金鱼号
+                  </n-button>
+                  <n-input
+                    v-model:value="goldenfishExcludeServers"
+                    size="small"
+                    class="goldenfish-exclude-input"
+                    placeholder="例外 server id，逗号分隔"
+                    :disabled="isRunning"
+                  />
+                </n-space>
+                <span class="xiaoyaojin-hint">
+                  达标条件（全部满足才入组）：招募令 ≥ 3,000；金砖 + 黄金鱼竿×600
+                  ≥ 640,000；有效宝箱积分 ≥ 30,000（= 未兑换积分×0.52 + 木箱×1 +
+                  青铜×10 + 黄金×20 + 铂金×50，钻石箱不计分）。达标账号合并进固定分组「{{
+                    GOLDENFISH_GROUP_NAME
+                  }}」：只加不删，老成员本次不达标也保留；想全量重建，在上方「管理分组」里删掉本组再重新检测。
+                  「分组选择」点选「{{ GOLDENFISH_GROUP_NAME }}」即可整组跑金鱼任务；例外
+                  server id 里的区服不检测、不入组。
+                </span>
+                <div
+                  v-if="goldenfishDetectSummary"
+                  class="goldenfish-detect-summary"
+                >
+                  <span>
+                    上次检测：达标
+                    <b>{{ goldenfishDetectSummary.qualified }}</b> 个 / 不达标
+                    {{ goldenfishDetectSummary.unqualified }} 个 / 例外跳过
+                    {{ goldenfishDetectSummary.excluded }} 个 / 失败
+                    {{ goldenfishDetectSummary.failed }} 个；「{{
+                      GOLDENFISH_GROUP_NAME
+                    }}」现有 {{ goldenfishDetectSummary.groupSize }} 个
+                  </span>
+                  <div
+                    v-if="goldenfishDetectSummary.qualifiedNames.length > 0"
+                    class="goldenfish-detect-names"
+                  >
+                    <n-tag
+                      v-for="name in goldenfishDetectSummary.qualifiedNames"
+                      :key="name"
+                      size="small"
+                      type="success"
+                    >
+                      {{ name }}
+                    </n-tag>
+                  </div>
+                </div>
                 <n-space align="center" :size="8">
                   <n-input-number
-                    v-model:value="xiaoyaojinDraws"
+                    v-model:value="goldenfishCount"
                     class="xiaoyaojin-draws-input"
                     size="small"
                     :min="1"
-                    :max="10"
+                    :max="999"
                     :precision="0"
                     :show-button="false"
-                    placeholder="抽奖次数"
+                    placeholder="投掷数量"
                     :disabled="isRunning"
                   />
-                  <span class="xiaoyaojin-hint">抽奖次数（受抽奖券余额限制）</span>
+                  <span class="xiaoyaojin-hint">投掷数量（单发 itemNum，N>1 待实测）</span>
                 </n-space>
                 <n-space :size="8">
                   <n-button
                     size="small"
                     type="primary"
-                    @click="xiaoyaojinAll"
+                    @click="goldenfishUseItem(goldenfishCount)"
                     :disabled="isRunning || selectedTokens.length === 0"
                   >
-                    逍遥津一键全套
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinDailyTask"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    每日任务奖励
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinPassChest"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    战令奖励宝箱
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinPassRewards"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    战令等级奖励
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinOneTimeGift"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    一次性奖励
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinSignReward"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    7天登录奖励
-                  </n-button>
-                  <n-button
-                    size="small"
-                    @click="xiaoyaojinLottery"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    抽奖
-                  </n-button>
-                  <n-button
-                    size="small"
-                    type="info"
-                    ghost
-                    :loading="xiaoyaojinInspecting"
-                    @click="inspectXiaoyaojinActivity"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    探测活动实例
+                    投道具
                   </n-button>
                 </n-space>
                 <span class="xiaoyaojin-hint">
-                  逍遥津为限时活动：活动实例 ID（YYMMDD+功能位）由 activity_get 现场探测，
-                  逐账号解析；已领取/未达成均视为正常结束。「战令等级奖励」本地按
-                  complete&gt;0 且未领取圈候选、逐个交给服务端裁定（候选多时较慢）。
+                  金鱼为秋季限时活动：autumn_useitem {'{'}itemNum: N{'}'}，单发按数量投掷，
+                  服务端自动扣减并返回奖励与前进距离；道具不足/活动未开视为正常跳过。
+                  完整自动金鱼开发中——协议见 docs/goldenfish-autumn-protocol.md。
+                  商店购物列表已移至「日常」栏目（金鱼活动的商店也用它）。
+                </span>
+
+                <!-- 金鱼消耗（第一步 2026-09-26）：招募 → 宝箱积分 → 钓鱼（黄金竿） -->
+                <n-divider style="margin: 6px 0 2px" />
+                <n-space align="center" :size="8" wrap>
+                  <span class="xiaoyaojin-hint" style="white-space: nowrap"
+                    >招募目标</span
+                  >
+                  <n-input-number
+                    v-model:value="goldenfishConsumeSettings.recruitTarget"
+                    class="xiaoyaojin-draws-input"
+                    size="small"
+                    :min="0"
+                    :max="999999"
+                    :precision="0"
+                    :show-button="false"
+                    :disabled="isRunning"
+                  />
+                  <span class="xiaoyaojin-hint" style="white-space: nowrap"
+                    >宝箱积分目标</span
+                  >
+                  <n-input-number
+                    v-model:value="goldenfishConsumeSettings.boxTarget"
+                    class="xiaoyaojin-draws-input"
+                    size="small"
+                    :min="0"
+                    :max="9999999"
+                    :precision="0"
+                    :show-button="false"
+                    :disabled="isRunning"
+                  />
+                  <span class="xiaoyaojin-hint" style="white-space: nowrap"
+                    >钓鱼目标</span
+                  >
+                  <n-input-number
+                    v-model:value="goldenfishConsumeSettings.fishTarget"
+                    class="xiaoyaojin-draws-input"
+                    size="small"
+                    :min="0"
+                    :max="999999"
+                    :precision="0"
+                    :show-button="false"
+                    :disabled="isRunning"
+                  />
+                </n-space>
+                <n-space :size="8" wrap>
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="runGoldenfishConsumeAll"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    一键消耗（招募→宝箱→钓鱼）
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="runGoldenfishRecruit"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    只跑招募
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="runGoldenfishBoxes"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    只跑宝箱
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="runGoldenfishFish"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    只跑钓鱼
+                  </n-button>
+                </n-space>
+                <span class="xiaoyaojin-hint">
+                  金鱼消耗（每账号先查活动进度再补差值，可分多天断点续跑）：招募
+                  hero_recruit 消耗招募令 1001（≥3900，不足即停等黑市补货）；宝箱
+                  item_openbox + 积分兑换 item_claimboxpointreward
+                  迭代推进到目标（钻石宝箱一律不开、木箱保留 200
+                  个，退出后差值精确开箱，剩余积分不兑换留活动结束）；钓鱼
+                  artifact_lottery 只用黄金鱼竿 1012（不足即停等商店 8
+                  折补货）。触发限流(400340)会弹框：更换 IP
+                  后点「继续」立即重试，「中止」停止全部；120
+                  秒无确认自动重试。⚠️ 活动累积进度字段待活动面板抓包接入，接入前会提示「进度不可读」并跳过。
                 </span>
               </n-space>
             </n-tab-pane>
@@ -3678,6 +3845,27 @@
         <WeirdTowerShareCard embedded />
       </div>
     </n-modal>
+
+    <!-- 金鱼限流弹框（400340）：换 IP 后继续 / 中止；120s 无确认自动重试 -->
+    <n-modal
+      v-model:show="goldenfishRateLimitShow"
+      preset="dialog"
+      type="warning"
+      title="触发限流 (400340)"
+      positive-text="已更换 IP，继续"
+      negative-text="中止任务"
+      :mask-closable="false"
+      :closable="false"
+      @positive-click="resolveGoldenfishRateLimit('continue')"
+      @negative-click="resolveGoldenfishRateLimit('stop')"
+    >
+      <span>
+        {{ goldenfishRateLimit?.tokenName }} 发送
+        {{ goldenfishRateLimit?.cmd }} 时触发限流(400340)。请更换 IP
+        （切换代理 / 热点）后点「继续」立即重试当前命令；点「中止」停止全部账号任务；
+        {{ GOLDENFISH_RATE_LIMIT_AUTO_MS / 1000 }} 秒无确认将自动重试（冷却自然过）。
+      </span>
+    </n-modal>
   </div>
 </template>
 
@@ -3786,8 +3974,12 @@ import {
   createTasksApex,
   createTasksCampChallengeStrategy,
   createTasksXianMaster,
-  createTasksXiaoyaojin,
   createTasksWhiteJadePkroom,
+  createTasksGoldenfish,
+  GOLDENFISH_SHOP_DEFAULTS,
+  GOLDENFISH_GROUP_NAME,
+  GOLDENFISH_CONSUME_DEFAULTS,
+  DEFAULT_GOLDENFISH_EXCLUDE_SERVERS,
   resolveDefaultBlackMarketKeys,
 } from "@/utils/batch";
 
@@ -3798,18 +3990,6 @@ const tokenStore = useTokenStore();
 const message = useMessage();
 const dialog = useDialog();
 const weirdTowerMaxClimb = ref(DEFAULT_WEIRD_TOWER_MAX_CLIMB);
-
-// —— 逍遥津（限时临时活动，入口在批量任务底部「临时活动」标签页）——
-// 协议与结论见 docs/xiaoyaojin-activity-protocol.md；纯逻辑见 utils/xiaoyaojinPlan.js
-/** 单账号本次抽奖次数上限（默认 1，与抓包一致；实际还会被抽奖券余额收紧） */
-const xiaoyaojinDraws = ref(1);
-/** 「探测活动实例」按钮的 loading */
-const xiaoyaojinInspecting = ref(false);
-/** 传给任务模块的运行时选项（手工覆盖活动 ID 时填 overrides） */
-const xiaoyaojinOptions = reactive({ draws: 1, overrides: {} });
-watch(xiaoyaojinDraws, (value) => {
-  xiaoyaojinOptions.draws = value;
-});
 
 // —— 怪异塔助力：批量日常页的 3 个按钮（关系表见 docs/weird-tower-share-assist-design.md §3） ——
 const assistPlan = computed(() => normalizeAssistPlan(weirdTowerAssistPlan.value));
@@ -5092,16 +5272,13 @@ const taskGroupDefinitions = [
     tasks: ["batchTopUpFish", "batchTopUpArena"],
   },
   {
-    name: "temporary",
-    label: "临时活动",
+    name: "goldenfish",
+    label: "金鱼",
     tasks: [
-      "xiaoyaojinAll",
-      "xiaoyaojinDailyTask",
-      "xiaoyaojinPassChest",
-      "xiaoyaojinPassRewards",
-      "xiaoyaojinOneTimeGift",
-      "xiaoyaojinSignReward",
-      "xiaoyaojinLottery",
+      "goldenfishUseItem",
+      "goldenfishRecruit",
+      "goldenfishBoxes",
+      "goldenfishFish",
     ],
   },
 ];
@@ -7683,6 +7860,44 @@ const ensureConnection = async (
   return true;
 };
 
+// 金鱼限流弹框（2026-09-26 master 口径）：400340 → 提示换 IP，「继续」重试当前命令，
+// 「中止」全局停止；120s 无确认自动 continue（人不在时冷却自然过）。IP 共享 → 弹框全局一份。
+const GOLDENFISH_RATE_LIMIT_AUTO_MS = 120000;
+const goldenfishRateLimit = ref(null); // { tokenName, cmd, resolve }
+let goldenfishRateLimitTimer = null;
+const goldenfishRateLimitShow = computed({
+  get: () => goldenfishRateLimit.value != null,
+  set: (v) => {
+    if (!v) resolveGoldenfishRateLimit("continue");
+  },
+});
+const onRateLimitPause = (tokenName, cmd) =>
+  new Promise((resolve) => {
+    // 已有弹框挂着（前一个账号刚弹过）：自动 continue，避免连环弹框
+    if (goldenfishRateLimit.value) {
+      resolve("continue");
+      return;
+    }
+    goldenfishRateLimit.value = { tokenName, cmd, resolve };
+    clearTimeout(goldenfishRateLimitTimer);
+    goldenfishRateLimitTimer = setTimeout(() => {
+      if (goldenfishRateLimit.value) {
+        goldenfishRateLimit.value.resolve("continue");
+        goldenfishRateLimit.value = null;
+      }
+    }, GOLDENFISH_RATE_LIMIT_AUTO_MS);
+  });
+const resolveGoldenfishRateLimit = (verdict) => {
+  clearTimeout(goldenfishRateLimitTimer);
+  goldenfishRateLimit.value?.resolve(verdict);
+  goldenfishRateLimit.value = null;
+};
+onBeforeUnmount(() => {
+  clearTimeout(goldenfishRateLimitTimer);
+  goldenfishRateLimit.value?.resolve("stop");
+  goldenfishRateLimit.value = null;
+});
+
 const createTaskDeps = () => ({
   selectedTokens,
   tokens,
@@ -7721,8 +7936,6 @@ const createTaskDeps = () => ({
   currentSettings,
   helperSettings,
   weirdTowerMaxClimb,
-  // 逍遥津（临时活动）：抽奖次数 + 手工覆盖活动 ID
-  xiaoyaojinOptions,
   // 功法赠送相关
   recipientIdInput,
   recipientInfo,
@@ -7735,6 +7948,8 @@ const createTaskDeps = () => ({
   calculateMonthProgress,
   // 营地挑战计划确认弹框
   confirmCampPlan,
+  // 金鱼限流弹框（400340 → 换 IP 继续 / 中止 / 120s 自动重试）
+  onRateLimitPause,
   // 配置加载函数
   loadSettings,
 });
@@ -7968,18 +8183,18 @@ const {
   batchCampDiagnose,
 } = tasksCampChallenge;
 
-// 逍遥津（临时活动）：模块内部按 activity_get 现场探测活动实例，无需额外参数
-const tasksXiaoyaojin = createTasksXiaoyaojin(createTaskDeps());
+// 金鱼（秋季活动）：投道具，协议见 local-data/goldenfish 抓包
+const goldenfishCount = ref(1);
+const tasksGoldenfish = createTasksGoldenfish(createTaskDeps());
 const {
-  xiaoyaojinAll,
-  xiaoyaojinDailyTask,
-  xiaoyaojinPassChest,
-  xiaoyaojinPassRewards,
-  xiaoyaojinOneTimeGift,
-  xiaoyaojinSignReward,
-  xiaoyaojinLottery,
-  inspectXiaoyaojin,
-} = tasksXiaoyaojin;
+  goldenfishUseItem,
+  goldenfishSetShopList,
+  detectGoldenfishAccounts,
+  goldenfishConsumeAll,
+  goldenfishRecruit,
+  goldenfishBoxes,
+  goldenfishFish,
+} = tasksGoldenfish;
 
 // 周一白玉 / 预约比赛：两个命令都不需要额外参数
 // （白玉的「每周一」闸门在服务端，预约的目标房由服务端认定）
@@ -7987,77 +8202,159 @@ const tasksWhiteJadePkroom = createTasksWhiteJadePkroom(createTaskDeps());
 const { claimMondayWhiteJade, appointPkRoomForGoldBrick } =
   tasksWhiteJadePkroom;
 
-/** 「探测活动实例」：对第一个选中账号跑一次 activity_get，把探测结果写进日志 */
-const inspectXiaoyaojinActivity = async () => {
-  if (selectedTokens.value.length === 0) {
-    message.warning("请先选择账号");
-    return;
-  }
-  const tokenId = selectedTokens.value[0];
-  const token = tokens.value.find((item) => item.id === tokenId);
-  const tokenName = token?.name || tokenId;
-  xiaoyaojinInspecting.value = true;
+// 检测金鱼号：例外（排除）server id + 上次检测结果
+const GOLDENFISH_EXCLUDE_SERVERS_KEY = "goldenfishExcludeServers";
+const loadGoldenfishExcludeServers = () => {
   try {
-    await ensureConnection(tokenId);
-    const plan = await inspectXiaoyaojin(tokenId, tokenName);
-    if (!plan?.ok) {
-      addLog({
-        time: new Date().toLocaleTimeString(),
-        message: `${tokenName} 逍遥津未探测到：${plan?.reason || "未知原因"}`,
-        type: "warning",
-      });
-      return;
-    }
-    const giftState = plan.commonConfirmed.giftBought
-      ? "本期已领"
-      : plan.commonConfirmed.gift
-        ? "可领"
-        : "推送中未见（将直接尝试领取）";
-    addLog({
-      time: new Date().toLocaleTimeString(),
-      message:
-        `${tokenName} 逍遥津活动实例 ${plan.warOrderActivityId}` +
-        `（${plan.source === "manual" ? "手工指定" : `开启于 ${plan.ageDays} 天前`}）；` +
-        `签到活动 ${plan.ids.signActivityId}` +
-        (plan.commonConfirmed.sign
-          ? `（已记录第 ${plan.commonConfirmed.signDays.join("/") || "?"} 天）`
-          : "（推送中未见，将直接尝试领取）") +
-        `；礼包活动 ${plan.ids.giftActivityId} / 商品 ${plan.ids.giftGoodsId}（${giftState}）；` +
-        `每日任务待领 ${plan.dailyClaims.filter((item) => item.completed).length} 个 / ` +
-        `未达成 ${plan.dailyClaims.filter((item) => !item.completed).length} 个；` +
-        `战令候选条目 ${plan.passRewards.pending} 个（complete>0，含未解锁档）`,
-      type: "info",
-    });
-
-    // 战令档位进度：积分 / 可达档数 / 已领哪些 / 下一档还差多少（纯读，与 UI 显示一致）
-    const tiers = plan.passTiers;
-    if (tiers && tiers.points !== null) {
-      addLog({
-        time: new Date().toLocaleTimeString(),
-        message:
-          `${tokenName} 战令：积分 ${tiers.points} → 可达 ${tiers.reachable} 档；` +
-          `已领档 ${tiers.claimedTiers.length > 0 ? tiers.claimedTiers.join("/") : "无"}` +
-          (tiers.pendingTiers.length > 0
-            ? `；待领档 ${tiers.pendingTiers.map((item) => item.tier).join("/")}`
-            : "") +
-          (tiers.nextTier
-            ? `；下一档 ${tiers.nextTier.tier}（${tiers.nextTier.missionId.slice(-3)}）还差 ${tiers.nextTier.pointsNeeded} 分`
-            : "；已到最高档"),
-        type: tiers.pendingTiers.length > 0 ? "success" : "info",
-      });
-    }
-  } catch (error) {
-    addLog({
-      time: new Date().toLocaleTimeString(),
-      message: `${tokenName} 探测逍遥津失败: ${error?.message || String(error)}`,
-      type: "error",
-    });
-  } finally {
-    xiaoyaojinInspecting.value = false;
-    tokenStore.closeWebSocketConnection(tokenId);
-    releaseConnectionSlot();
+    const saved = localStorage.getItem(GOLDENFISH_EXCLUDE_SERVERS_KEY);
+    if (saved === null) return DEFAULT_GOLDENFISH_EXCLUDE_SERVERS;
+    return saved;
+  } catch {
+    return DEFAULT_GOLDENFISH_EXCLUDE_SERVERS;
   }
 };
+const goldenfishExcludeServers = ref(loadGoldenfishExcludeServers());
+watch(goldenfishExcludeServers, (val) => {
+  try {
+    localStorage.setItem(GOLDENFISH_EXCLUDE_SERVERS_KEY, val ?? "");
+  } catch {
+    /* 存储不可用时静默：仅影响下次记忆 */
+  }
+});
+
+const goldenfishDetectSummary = ref(null);
+const runDetectGoldenfishAccounts = async () => {
+  const result = await detectGoldenfishAccounts({
+    excludeServers: goldenfishExcludeServers.value,
+  });
+  if (!result) return;
+  goldenfishDetectSummary.value = {
+    qualified: result.qualified.length,
+    unqualified: result.unqualified.length,
+    excluded: result.excluded.length,
+    failed: result.failed.length,
+    groupSize: result.groupSize,
+    qualifiedNames: result.qualified.map((row) =>
+      row.serverId ? `${row.tokenName}（${row.serverId}服）` : row.tokenName,
+    ),
+  };
+};
+
+// 金鱼商店购物列表（「金鱼模式」预设；09-25 抓包 store_setpurchase 验证，详见 docs/goldenfish-autumn-protocol.md）
+const GOLDENFISH_SHOP_STORAGE_KEY = "goldenfishShopSettings";
+const GOLDENFISH_SHOP_DEFAULT_CNT = 15; // 09-25 master 抓包提交值
+
+const loadGoldenfishShopSettings = () => {
+  const defaults = {
+    items: GOLDENFISH_SHOP_DEFAULTS.map((it) => ({ ...it })),
+    purchaseCnt: GOLDENFISH_SHOP_DEFAULT_CNT,
+  };
+  try {
+    const raw = localStorage.getItem(GOLDENFISH_SHOP_STORAGE_KEY);
+    if (!raw) return defaults;
+    const saved = JSON.parse(raw);
+    // 兼容两代存档：旧版直接存数组（无刷新次数），新版 { items, purchaseCnt }
+    const savedItems = Array.isArray(saved) ? saved : saved?.items;
+    const savedCnt = Number(Array.isArray(saved) ? NaN : saved?.purchaseCnt);
+    if (!Array.isArray(savedItems)) return defaults;
+    // 按 itemId 合并：存档缺项/多項一律以内置 5 项为准，只回填折扣与启用
+    const items = defaults.items.map((def) => {
+      const hit = savedItems.find((it) => Number(it?.itemId) === def.itemId);
+      if (!hit) return { ...def };
+      const discount = Number(hit.discount);
+      return {
+        ...def,
+        discount:
+          Number.isFinite(discount) && discount >= 1 && discount <= 10
+            ? Math.floor(discount)
+            : def.discount,
+        enabled: hit.enabled !== false,
+      };
+    });
+    const purchaseCnt =
+      Number.isInteger(savedCnt) && savedCnt >= 1
+        ? savedCnt
+        : GOLDENFISH_SHOP_DEFAULT_CNT;
+    return { items, purchaseCnt };
+  } catch {
+    return defaults;
+  }
+};
+
+const goldenfishShopSettings = ref(loadGoldenfishShopSettings());
+const goldenfishShopItems = computed(() => goldenfishShopSettings.value.items);
+
+watch(
+  goldenfishShopSettings,
+  (val) => {
+    try {
+      localStorage.setItem(GOLDENFISH_SHOP_STORAGE_KEY, JSON.stringify(val));
+    } catch {
+      /* 存储不可用时静默：仅影响下次记忆 */
+    }
+  },
+  { deep: true },
+);
+
+const applyGoldenfishShopList = () =>
+  goldenfishSetShopList({
+    items: goldenfishShopSettings.value.items.map((it) => ({ ...it })),
+    purchaseCnt: goldenfishShopSettings.value.purchaseCnt,
+  });
+
+const resetGoldenfishShopDefaults = () => {
+  goldenfishShopSettings.value = {
+    items: GOLDENFISH_SHOP_DEFAULTS.map((it) => ({ ...it })),
+    purchaseCnt: GOLDENFISH_SHOP_DEFAULT_CNT,
+  };
+  message.success("已恢复金鱼模式默认购物列表");
+};
+
+// 金鱼消耗任务（第一步「初步消耗」，2026-09-26）：招募 3900 / 宝箱 99000 / 钓鱼(黄金竿) 1150。
+// 纯逻辑 src/utils/goldenfishConsumePlan.js；活动累积进度字段待面板抓包接入（阶段 B）。
+const GOLDENFISH_CONSUME_STORAGE_KEY = "goldenfishConsumeSettings";
+const loadGoldenfishConsumeSettings = () => {
+  const fallback = { ...GOLDENFISH_CONSUME_DEFAULTS };
+  try {
+    const raw = localStorage.getItem(GOLDENFISH_CONSUME_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    // Number(null)===0 陷阱：非法/缺失值一律回退默认（显式判）
+    const num = (v, d) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n >= 0 ? Math.floor(n) : d;
+    };
+    return {
+      recruitTarget: num(parsed?.recruitTarget, fallback.recruitTarget),
+      boxTarget: num(parsed?.boxTarget, fallback.boxTarget),
+      fishTarget: num(parsed?.fishTarget, fallback.fishTarget),
+    };
+  } catch {
+    return fallback;
+  }
+};
+const goldenfishConsumeSettings = ref(loadGoldenfishConsumeSettings());
+watch(
+  goldenfishConsumeSettings,
+  (val) => {
+    try {
+      localStorage.setItem(GOLDENFISH_CONSUME_STORAGE_KEY, JSON.stringify(val));
+    } catch {
+      /* 忽略持久化失败 */
+    }
+  },
+  { deep: true },
+);
+const goldenfishConsumeConfig = () => ({
+  recruitTarget: goldenfishConsumeSettings.value.recruitTarget,
+  boxTarget: goldenfishConsumeSettings.value.boxTarget,
+  fishTarget: goldenfishConsumeSettings.value.fishTarget,
+});
+const runGoldenfishConsumeAll = () =>
+  goldenfishConsumeAll(goldenfishConsumeConfig());
+const runGoldenfishRecruit = () => goldenfishRecruit(goldenfishConsumeConfig());
+const runGoldenfishBoxes = () => goldenfishBoxes(goldenfishConsumeConfig());
+const runGoldenfishFish = () => goldenfishFish(goldenfishConsumeConfig());
 
 const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksHangUp(deps),
@@ -8070,7 +8367,9 @@ const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksLegacy(deps),
   ...createTasksFootball(deps),
   ...createTasksCampChallengeStrategy(deps),
-  ...createTasksXiaoyaojin(deps),
+  // 逍遥津已于 2026-09-26 活动结束后下线（UI 已摘除；源码与测试保留在
+  // utils/batch/tasksXiaoyaojin.js + utils/xiaoyaojinPlan.js，下期接回只需恢复接线）
+  ...createTasksGoldenfish(deps),
   ...createTasksWhiteJadePkroom(deps),
 });
 
@@ -9341,7 +9640,8 @@ const stopBatch = () => {
   font-size: 14px;
 }
 
-/* 逍遥津（临时活动）标签页 */
+/* 「临时活动」系列标签页共用的小输入框 / 提示文字样式
+   （类名沿用 xiaoyaojin-*：现在由金鱼标签页与金鱼商店区块共用；改名会牵动多处，故保留） */
 .xiaoyaojin-draws-input {
   width: 96px;
   flex-shrink: 0;
@@ -9351,6 +9651,41 @@ const stopBatch = () => {
   color: #86909c;
   font-size: 12px;
   line-height: 1.6;
+}
+
+/* 「临时活动」空壳占位 */
+.temporary-activity-empty {
+  padding: 24px 0;
+}
+
+/* 金鱼商店购物列表行：勾选 + 折扣输入横排 */
+.goldenfish-shop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 检测金鱼号：例外 server id 输入框 + 结果摘要 */
+.goldenfish-exclude-input {
+  width: 240px;
+}
+
+.goldenfish-detect-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  background: #fafafa;
+  font-size: 12px;
+  color: #4e5969;
+}
+
+.goldenfish-detect-names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 /* Responsive Design */

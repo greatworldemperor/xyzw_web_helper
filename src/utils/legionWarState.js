@@ -213,6 +213,26 @@ export function getRole(state, cid) {
 }
 
 /**
+ * 真登场状态（2026-09-26 复盘定稿，runtime 抓包实锤）：
+ *   idle   = 落位待机（war_setbattleteam 成功确认）
+ *   combat / march = 登场后的战斗 / 行军
+ * ⚠️ watching = 已组队未登场（可点登场）/ 未组队可被邀请；teaming = 邀请放置期 —— 都不是登场。
+ * 旧 deploy 判据 state!=='watching' 把 teaming 当成已登场 → dp.ok 同步 true →
+ * 毫秒级 closeProbe 在 50ms 发送 tick 前关连接 → war_setbattleteam 从未上线（09-26 盐场 0 登场根因）。
+ */
+export const DEPLOYED_STATES = ["idle", "combat", "march"];
+
+export function isDeployedState(state) {
+  return DEPLOYED_STATES.includes(state);
+}
+
+/** deploy 成功判据：某 cId 是否已真登场 */
+export function isRoleDeployed(state, cid) {
+  const r = getRole(state, cid);
+  return !!r && isDeployedState(r.state);
+}
+
+/**
  * 活动窗口是否已开放（用于 UI 置灰「一键执行」）
  * 战场时间来自 body.battlefield.{readyTime,openTime,endTime}（秒）
  */

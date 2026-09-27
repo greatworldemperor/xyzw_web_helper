@@ -17,13 +17,23 @@
  * 活动实例 ID 规则（同一期全服一致、跨账号一致；详见 docs/xiaoyaojin-activity-protocol.md）：
  *
  *   YYMMDD + 功能位    1 = 战令（= warOrderActivityInfo 的键）/ 2 = 抽奖奖池 pack /
- *                      4 = 一次性礼包 / 5 = 7 天登录
+ *                      4 = 一次性礼包 / 5 = 7 天登录 / 6 = 兑换商店
  *
- *   例：#2026-09-19 期 → 战令 2609191 / 礼包活动 2609194（商品 26091941）/ 签到 2609195
+ *   例：#2026-09-19 期 → 战令 2609191 / 礼包活动 2609194（商品 26091941）/ 签到 2609195 /
+ *                        兑换 2609196（商品 260919602）
  *
  * 战令内部 ID = 战令实例 ID + 2 位序号：
  *   01~30 → 每日任务（出现在 `taskClaimed` 里，`complete[id] >= 1` 才可领）
  *   41+   → 战令等级奖励（出现在 `rewardClaimed` 里；本工具暂不处理）
+ *
+ * ## 玄武灵契（抽奖券 5283）的「领 → 耗 → 再领」闭环（2026-09-25 抓包实证）
+ *
+ *   activity_lottery { times: N }           → 扣 5283 ×N（**N=10 十连实测可行**）
+ *   activity_claimlotterycumulative { id }  → **每档固定 +2 张 5283**（id 11~15 全部 5283×2）+ 5285×5
+ *   activity_exchange { activityId, goodsId, quantity } → 消耗 5284 换道具（1023×10）
+ *
+ * 所以「抽光为止」= 反复 { 抽 → 券尽 → 扫累计奖励补券 → 再抽 }，
+ * 其中累计奖励的门槛随 id 递增 → **第一个不可领的 id 之后必然也都不可领，可安全停止**。
  */
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
@@ -35,15 +45,81 @@ export const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
 export const XIAOYAOJIN_SLOTS = Object.freeze({
   warOrder: "1",
   lottery: "2",
+  /** 券兑换商店：花 5285「兑换券」买道具（2026-09-25 `xiaoyaojin_redemption.jsonl` 实证） */
+  coupon: "3",
   gift: "4",
   sign: "5",
+  /** 碎片兑换：花 5284（每 50 抽产出 1 个）换道具（activityId = 2609196） */
+  exchange: "6",
 });
+
+/**
+ * 券兑换商店的两个商品号后缀（= 券活动 ID + 两位序号）
+ *
+ * 实证：`260919302` = 饼干（单价 5 券，`quantity:8` 一次买 8 个，得 15001×40000）；
+ *       `260919303` = 复活丹（单价 3 券，`quantity:1` 买 1 个，得 1017×1）。
+ */
+export const XIAOYAOJIN_COUPON_COOKIE_SUFFIX = "02";
+export const XIAOYAOJIN_COUPON_REVIVE_SUFFIX = "03";
 
 /** 一次性礼包商品号 = 礼包活动 ID + 该序号（2609194 → 26091941） */
 export const XIAOYAOJIN_GIFT_GOODS_SUFFIX = "1";
 
+/** 兑换商店商品号 = 兑换活动 ID + 该序号（2609196 → 260919602） */
+export const XIAOYAOJIN_EXCHANGE_GOODS_SUFFIX = "02";
+
 /** 抽奖券道具 ID（抓包实证：礼包掉落 5283 ×1，抽奖后 5283 归零） */
 export const XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID = 5283;
+
+/**
+ * 兑换材料道具 ID（5284）
+ *
+ * 实证（2026-09-25）：`role.pack[奖池ID][5284]` 与 `lotteryInfo.fragProgress` 同步，**每抽 1 次 +1**；
+ * 满 50 归零并把 1 个 5284 发进背包（`num 99/frag 49 → 抽 1 次 → num 100/frag 0，reward 5284×1`）。
+ * `activity_exchange` 消耗的就是背包里的 5284（响应里 `role.items["5284"] = null`）。
+ */
+export const XIAOYAOJIN_EXCHANGE_ITEM_ID = 5284;
+
+/**
+ * **兑换券道具 ID（5285）** —— 券兑换商店（功能位 3）的货币
+ *
+ * 2026-09-25 `xiaoyaojin_redemption.jsonl` 实证（账号 21a @9721）：
+ *   43 张券 → 买 8 个饼干（`quantity:8` 一次搞定）→ `5285: 3`（43 − 8×5）
+ *           → 再买 1 个复活丹 → `5285: null`（3 − 3 = 0）
+ * 来源：抽奖掉落 + 累计抽奖奖励每档 ×5。
+ * ⚠️ v1 曾把它标注成「抽奖副产物」，其实是**兑换券**。
+ */
+export const XIAOYAOJIN_COUPON_ITEM_ID = 5285;
+
+/** 饼干单价（兑换券/个） */
+export const XIAOYAOJIN_COOKIE_PRICE = 5;
+
+/** 复活丹单价（兑换券/个） */
+export const XIAOYAOJIN_REVIVE_PRICE = 3;
+
+/**
+ * 累计抽奖奖励（`activity_claimlotterycumulative`）的 id 扫描上界
+ *
+ * 已领的 id 能从 `lotteryInfo.cumulativeClaimedMap` 读到；未领的只能逐个试。
+ * 本期实证见到 1~15，门槛随 id 递增 → 遇到第一个不可领的 id 即停，不会刷到 30。
+ */
+export const XIAOYAOJIN_CUMULATIVE_ID_MAX = 30;
+
+/** 「抽光为止」循环的迭代上限（防死循环；正常跑不到） */
+export const XIAOYAOJIN_LOTTERY_LOOP_MAX_ROUNDS = 200;
+
+/**
+ * 「一键全套」的**外层轮次上限**
+ *
+ * 为什么需要外层循环（2026-09-25 抓包实证 #105→#127）：
+ *   抽奖把 `lotteryNum` 推高 → 战令「累计抽奖次数」档位（序号 50~69）解锁 →
+ *   领战令档位奖励 → 战令宝箱又给 5283 → **又有券了，可以再抽** → 再出兑换材料 → 再兑换。
+ * 所以「一套」跑完可能又冒出新的可领项，必须再转一轮；零进展才停。
+ */
+export const XIAOYAOJIN_ALL_ROUNDS_MAX = 3;
+
+/** 单次「抽光为止」最多发多少次兑换请求（防死循环） */
+export const XIAOYAOJIN_EXCHANGE_MAX_TIMES = 50;
 
 /**
  * 战令「积分」道具 ID（= master 截图右下角那个数）
@@ -139,6 +215,27 @@ export function describePassTiers(warOrderInfo, options = {}) {
  */
 export const XIAOYAOJIN_MAX_ACTIVITY_AGE_DAYS = 21;
 
+/**
+ * 逍遥津活动时长（天）。`ageDays >= 7` = 抽奖/战令等玩法已结束，
+ * 只剩兑换延时（通常还有 4 小时）→ 全套应自动只跑两个兑换步骤，别再抽奖。
+ */
+export const XIAOYAOJIN_ACTIVITY_DAYS = 7;
+
+/** 活动结束后（只剩兑换延时）仍要跑的步骤 */
+export const XIAOYAOJIN_EXCHANGE_ONLY_STEPS = Object.freeze([
+  "exchange",
+  "couponExchange",
+]);
+
+/**
+ * 活动是否已结束（只剩兑换延时）
+ * @param {number|null} ageDays `buildXiaoyaojinPlan` 探测出的「开启于 N 天前」
+ */
+export function isXiaoyaojinEnded(ageDays) {
+  const value = Number(ageDays);
+  return Number.isFinite(value) && value >= XIAOYAOJIN_ACTIVITY_DAYS;
+}
+
 /** 每日任务序号上界（01~30 为每日任务，41+ 为战令等级奖励） */
 export const XIAOYAOJIN_DAILY_MISSION_SUFFIX_MAX = 30;
 
@@ -153,6 +250,9 @@ export const XIAOYAOJIN_MAX_DRAWS = 10;
  *    09-19 两份抓包对比实证 —— 账号A「先宝箱后等级」需要调两次才拿全（1221 → 1222/1223），
  *    账号B「先等级后宝箱」一次就拿全 1221+1222+1223。
  * 2. `oneTimeGift`（礼包）与 `passChest`（宝箱）都产抽奖券 5283，**都必须在 `lottery` 之前**。
+ * 3. `exchange`（碎片兑换，花 5284）与 `couponExchange`（券兑换，花 5285）都消耗
+ *    **抽奖产出**（5284 每 50 抽 1 个；5285 抽奖掉落 + 累计奖励每档 ×5）
+ *    → **都必须排在 `lottery` 之后**，且排在最后。
  */
 export const XIAOYAOJIN_ALL_STEPS = Object.freeze([
   "dailyTask",
@@ -161,6 +261,8 @@ export const XIAOYAOJIN_ALL_STEPS = Object.freeze([
   "oneTimeGift",
   "signReward",
   "lottery",
+  "exchange",
+  "couponExchange",
 ]);
 
 const toText = (value) =>
@@ -199,6 +301,34 @@ export function parseActivityDateHead(head) {
   }
   return utcMidnight - BEIJING_OFFSET_MS;
 }
+
+/**
+ * 日期头往前/往后挪 N 天（`260925` - 6 → `260919`）
+ *
+ * 用途：**上一期遗留的券要回上一期商店花**。逍遥津两期间隔实测 6 天
+ * （260919 开 → 260925 开），自动探测只会拿到最新的那一期，兑换会报
+ * 「物品不存在 / 兑换数量超上限」→ 需要能自动回退到更早的期。
+ *
+ * @param {string} head 6 位 YYMMDD
+ * @param {number} days 正数向后、负数向前
+ * @returns {string|null}
+ */
+export function shiftActivityDateHead(head, days) {
+  const base = parseActivityDateHead(head);
+  const offset = Number(days);
+  if (base === null || !Number.isFinite(offset)) return null;
+  const utcMidnight = base + BEIJING_OFFSET_MS + Math.trunc(offset) * DAY_MS;
+  const date = new Date(utcMidnight);
+  const year = date.getUTCFullYear() % 100;
+  const month = date.getUTCMonth() + 1;
+  const day = date.getUTCDate();
+  return `${String(year).padStart(2, "0")}${String(month).padStart(2, "0")}${String(day).padStart(2, "0")}`;
+}
+
+/**
+ * 券兑换找不到能用的商品时，往前回退多少天再试（覆盖「间隔 6 天」和「间隔 7 天」两种排期）
+ */
+export const XIAOYAOJIN_COUPON_HEAD_FALLBACK_DAYS = Object.freeze([6, 7]);
 
 /** 某时刻所属「北京自然日」的起点毫秒时间戳 */
 export function beijingDayStart(now) {
@@ -268,18 +398,30 @@ export function resolveXiaoyaojinActivityId(warOrderActivityInfo, options = {}) 
 export function deriveXiaoyaojinIds(head, overrides = {}) {
   const base = toText(head);
   const manual = (value) => toText(value) || null;
-  const { warOrder, lottery, gift, sign } = XIAOYAOJIN_SLOTS;
+  const { warOrder, lottery, coupon, gift, sign, exchange } = XIAOYAOJIN_SLOTS;
 
   return {
     head: base,
     warOrderActivityId:
       manual(overrides.warOrderActivityId) || `${base}${warOrder}`,
     lotteryPackId: manual(overrides.lotteryPackId) || `${base}${lottery}`,
+    couponActivityId: manual(overrides.couponActivityId) || `${base}${coupon}`,
+    couponCookieGoodsId:
+      manual(overrides.couponCookieGoodsId) ||
+      `${base}${coupon}${XIAOYAOJIN_COUPON_COOKIE_SUFFIX}`,
+    couponReviveGoodsId:
+      manual(overrides.couponReviveGoodsId) ||
+      `${base}${coupon}${XIAOYAOJIN_COUPON_REVIVE_SUFFIX}`,
     giftActivityId: manual(overrides.giftActivityId) || `${base}${gift}`,
     giftGoodsId:
       manual(overrides.giftGoodsId) ||
       `${base}${gift}${XIAOYAOJIN_GIFT_GOODS_SUFFIX}`,
     signActivityId: manual(overrides.signActivityId) || `${base}${sign}`,
+    exchangeActivityId:
+      manual(overrides.exchangeActivityId) || `${base}${exchange}`,
+    exchangeGoodsId:
+      manual(overrides.exchangeGoodsId) ||
+      `${base}${exchange}${XIAOYAOJIN_EXCHANGE_GOODS_SUFFIX}`,
   };
 }
 
@@ -423,6 +565,246 @@ export function resolveLotteryDraws(options = {}) {
 }
 
 /**
+ * 读响应里的道具数量（`body.role.items[itemId].quantity`）
+ *
+ * ⚠️ 三个坑（都踩过）：
+ * - `Number(null) === 0` → 「读不到」必须返回 `null`，不能返回 0（会把未知当成「没有券」而跳过抽奖）
+ * - **键存在且值为 `null` = 归零**（2026-09-25 实证：券抽光时 `items["5283"] = null`，
+ *   兑换材料用光时 `items["5284"] = null`）→ 这种情况必须返回 **0**，不是「未知」
+ * - **键不存在** = 服务端这次没报告这个道具（BON 省略未变化字段）→ 返回 `null`
+ *
+ * 兼容 `role` / `body.role` / `data.role` 三种形态。
+ *
+ * @returns {number|null}
+ */
+export function readItemQuantity(response, itemId) {
+  if (!response || typeof response !== "object") return null;
+  const candidates = [
+    response.role,
+    response.data?.role,
+    response.body?.role,
+    response.body?.data?.role,
+    response.role?.role,
+  ];
+  const key = String(itemId);
+  for (const role of candidates) {
+    if (!role || typeof role !== "object") continue;
+    const items = role.items;
+    if (!items || typeof items !== "object") continue;
+    if (!Object.prototype.hasOwnProperty.call(items, key)) continue;
+
+    const entry = items[key];
+    // 显式 null = 该道具已归零（patch 语义里的「删除」）
+    if (entry === null || entry === undefined) return 0;
+    const raw = entry && typeof entry === "object" ? entry.quantity : entry;
+    if (raw === null || raw === undefined || raw === "") return 0;
+    const value = Number(raw);
+    return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+  }
+  return null; // 键不存在 = 未知
+}
+
+/**
+ * 读响应 `body.reward[]` 里某道具的**总数量**（抽奖/领取都用它算「这次拿到了多少券」）
+ * @returns {number} 没有该道具 → 0
+ */
+export function readRewardQuantity(response, itemId) {
+  if (!response || typeof response !== "object") return 0;
+  const lists = [response.reward, response.body?.reward, response.data?.reward];
+  let total = 0;
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue;
+      if (String(item.itemId) !== String(itemId)) continue;
+      const value = Number(item.value ?? item.num ?? item.quantity);
+      if (Number.isFinite(value)) total += value;
+    }
+  }
+  return total;
+}
+
+/**
+ * 从各类响应里取 `lotteryInfo`
+ * （`Activity_GetLotteryInfoResp` 与 `Activity_LotteryResp` 都带，键就在 `body.lotteryInfo`）
+ */
+export function pickLotteryInfo(response) {
+  if (!response || typeof response !== "object") return null;
+  const candidates = [
+    response.lotteryInfo,
+    response.data?.lotteryInfo,
+    response.body?.lotteryInfo,
+    response.body?.data?.lotteryInfo,
+  ];
+  for (const info of candidates) {
+    if (info && typeof info === "object") return info;
+  }
+  return null;
+}
+
+/**
+ * 已领取的累计抽奖奖励 id 集合（`lotteryInfo.cumulativeClaimedMap`）
+ *
+ * 实证：`{"1":true,…,"10":true}` = 前 10 档已领；`activity_claimlotterycumulative`
+ * 的响应只回**本次领的那一个** id（`{"11":true}`）→ 调用方必须自己累积，不能拿新响应覆盖。
+ *
+ * @returns {Set<number>}
+ */
+export function readCumulativeClaimed(lotteryInfo) {
+  const info = lotteryInfo && typeof lotteryInfo === "object" ? lotteryInfo : {};
+  const map =
+    info.cumulativeClaimedMap && typeof info.cumulativeClaimedMap === "object"
+      ? info.cumulativeClaimedMap
+      : {};
+  const claimed = new Set();
+  for (const key of Object.keys(map)) {
+    const id = Number(key);
+    if (Number.isFinite(id) && map[key] === true) claimed.add(Math.trunc(id));
+  }
+  return claimed;
+}
+
+/**
+ * 待尝试领取的累计抽奖奖励 id（升序，跳过已领）
+ *
+ * 门槛随 id 递增 → 调用方在**第一个失败**的 id 上停即可（后面的必然也不可领）。
+ *
+ * @param {object|null} lotteryInfo
+ * @param {Set<number>} [claimed] 会话内自己累积的已领集合（会与 `cumulativeClaimedMap` 取并集）
+ * @param {{max?:number}} [options]
+ * @returns {number[]}
+ */
+export function listPendingCumulativeIds(lotteryInfo, claimed, options = {}) {
+  const fromServer = readCumulativeClaimed(lotteryInfo);
+  const merged = new Set(fromServer);
+  if (claimed instanceof Set) {
+    claimed.forEach((id) => merged.add(id));
+  }
+  const max = Number.isFinite(Number(options.max))
+    ? Math.trunc(Number(options.max))
+    : XIAOYAOJIN_CUMULATIVE_ID_MAX;
+  const ids = [];
+  for (let id = 1; id <= max; id += 1) {
+    if (!merged.has(id)) ids.push(id);
+  }
+  return ids;
+}
+
+/**
+ * 把「券余额」拆成一串抽奖批次 —— **十连优先**
+ *
+ * 实证：`activity_lottery {times:10}` 一次扣 10 张（40→30→20→10→0），与抓包逐字节一致。
+ *
+ * @param {number|null|undefined} ticketCount 券余额；`null/undefined/""` = 未知
+ * @param {{perBatch?:number}} [options] 每批张数（1~10，默认 10）
+ * @returns {{batches:number[], tickets:number|null}}
+ *          余额未知时给一批 `perBatch`（由服务端裁定，循环靠响应里的余额变化收敛）
+ */
+export function planLotteryBatches(ticketCount, options = {}) {
+  const per = Math.min(
+    XIAOYAOJIN_MAX_DRAWS,
+    Math.max(1, Math.trunc(Number(options.perBatch) || XIAOYAOJIN_MAX_DRAWS)),
+  );
+
+  const raw = ticketCount;
+  const hasValue = raw !== null && raw !== undefined && raw !== "";
+  const tickets =
+    hasValue && Number.isFinite(Number(raw))
+      ? Math.max(0, Math.trunc(Number(raw)))
+      : null;
+
+  if (tickets === null) return { batches: [per], tickets: null };
+  if (tickets <= 0) return { batches: [], tickets };
+
+  const batches = [];
+  for (let left = tickets; left > 0; left -= per) {
+    batches.push(Math.min(per, left));
+  }
+  return { batches, tickets };
+}
+
+/**
+ * 券兑换商店的购买方案：**先尽量多买饼干，余券够 3 就再换 1 个复活丹**
+ *
+ * 实证（43 张券）：43 ÷ 5 = **8 个饼干**（花 40）→ 余 3 ≥ 3 → **1 个复活丹**（花 3）→ 余 0。
+ *
+ * ⚠️ `quantity` 支持一次买多个（抓包 `quantity:8` 一次买 8 个饼干）→ 饼干**一条请求发完**，
+ * 不用逐个买。复活丹固定 1 个（master 口径：只换一个）。
+ *
+ * @param {number|null|undefined} ticketCount 兑换券（5285）余额
+ * @returns {{tickets:number|null, cookies:number, cookieCost:number,
+ *            remaining:number|null, revive:number, reviveCost:number}}
+ *          余额未知（null）→ cookies/revive 都是 0（**不能瞎买**）
+ */
+export function planCouponPurchase(ticketCount) {
+  const raw = ticketCount;
+  const hasValue = raw !== null && raw !== undefined && raw !== "";
+  const tickets =
+    hasValue && Number.isFinite(Number(raw))
+      ? Math.max(0, Math.trunc(Number(raw)))
+      : null;
+
+  if (tickets === null) {
+    return {
+      tickets: null,
+      cookies: 0,
+      cookieCost: 0,
+      remaining: null,
+      revive: 0,
+      reviveCost: 0,
+    };
+  }
+
+  const cookies = Math.floor(tickets / XIAOYAOJIN_COOKIE_PRICE);
+  const cookieCost = cookies * XIAOYAOJIN_COOKIE_PRICE;
+  const remaining = tickets - cookieCost;
+  const revive =
+    remaining >= XIAOYAOJIN_REVIVE_PRICE ? 1 : 0;
+
+  return {
+    tickets,
+    cookies,
+    cookieCost,
+    remaining,
+    revive,
+    reviveCost: revive * XIAOYAOJIN_REVIVE_PRICE,
+  };
+}
+
+/**
+ * 兑换次数：有多少 5284 换多少次
+ *
+ * @param {number|null|undefined} fragCount
+ * @returns {number|null} null = 读不到余额（调用方按 1 次试探）
+ */
+export function resolveExchangeTimes(fragCount) {
+  const raw = fragCount;
+  const hasValue = raw !== null && raw !== undefined && raw !== "";
+  if (!hasValue || !Number.isFinite(Number(raw))) return null;
+  const value = Math.max(0, Math.trunc(Number(raw)));
+  return Math.min(value, XIAOYAOJIN_EXCHANGE_MAX_TIMES);
+}
+
+/**
+ * 抽奖状态人类可读摘要（纯读，用于日志）
+ * @returns {{draws:number|null, frag:number|null, claimedCumulative:number[], pendingCumulative:number}}
+ */
+export function summarizeLottery(lotteryInfo, claimed) {
+  const info = lotteryInfo && typeof lotteryInfo === "object" ? lotteryInfo : {};
+  const num = Number(info.lotteryNum);
+  const frag = Number(info.fragProgress);
+  const fromServer = readCumulativeClaimed(info);
+  const merged = new Set(fromServer);
+  if (claimed instanceof Set) claimed.forEach((id) => merged.add(id));
+  return {
+    draws: Number.isFinite(num) ? num : null,
+    frag: Number.isFinite(frag) ? frag : null,
+    claimedCumulative: [...merged].sort((a, b) => a - b),
+    pendingCumulative: listPendingCumulativeIds(info, claimed).length,
+  };
+}
+
+/**
  * 汇总 activity_get → 逍遥津执行计划
  *
  * @param {object} response  activity_get 的 Promise 返回值
@@ -461,21 +843,47 @@ export function buildXiaoyaojinPlan(response, options = {}) {
     maxAgeDays: options.maxAgeDays,
   });
 
-  const warOrderActivityId = manualWarOrderId || detected?.activityId || null;
-  const head =
-    getActivityDateHead(warOrderActivityId) ||
+  /**
+   * ⚠️ 兜底：活动结束后 `warOrderActivityInfo` 会被服务端清掉（战令数据没了），
+   * 但 **`commonActivityInfo` 里券兑换(…3)/礼包(…4)/签到(…5)/碎片兑换(…6) 的键还在**。
+   *
+   * 实证（2026-09-26 00:44 `xiaoyaojin_redemption1.jsonl`）：兑换延时期内
+   * `activity_exchange` 仍然成功（响应回 `commonActivityInfo["2609193"]`），
+   * 但 `activity_get` 已经拿不到战令实例 → 旧实现直接判「未找到活动实例」而跳过兑换。
+   * → 日期头可以从 `commonActivityInfo` 的 7 位键反推（同一套 YYMMDD+功能位 规则）。
+   */
+  const detectedCommon = detected
+    ? null
+    : resolveXiaoyaojinActivityId(commonActivityInfo, {
+        now,
+        maxAgeDays: options.maxAgeDays,
+      });
+
+  /**
+   * ⚠️ 手工填的日期头**优先级最高**。
+   *
+   * 实证（2026-09-26 00:52）：上一期（260919）的兑换延时还剩几小时，但新一期（260925）
+   * 已经开了 → `commonActivityInfo` 里两期的键都有，而「取日期头最大者」会选中**新一期**，
+   * 于是券被拿去换新一期的商品 → `兑换数量超上限`（新一期限购更严）。
+   * 用户手工填 `260919` 就是「我要花上一期的券」这一明确意图，必须压过自动探测。
+   */
+  const headFromManual =
+    getActivityDateHead(manualWarOrderId) ||
     (toText(overrides.head).length === 6 ? toText(overrides.head) : null);
+  const head = headFromManual || detected?.head || detectedCommon?.head;
 
   if (!head) {
     return {
       ok: false,
-      reason: warOrderActivityId
-        ? `活动实例 ${warOrderActivityId} 不是 YYMMDD+功能位 形式，且未手工指定签到/礼包 ID`
-        : "未在 warOrderActivityInfo 中找到逍遥津活动实例（活动可能未开启或已结束）",
+      reason: manualWarOrderId
+        ? `活动实例 ${manualWarOrderId} 不是 YYMMDD+功能位 形式，且未手工指定日期头`
+        : "未在 warOrderActivityInfo / commonActivityInfo 中找到逍遥津活动实例（活动可能未开启或已结束）；可手工填「活动日期头」",
     };
   }
 
   const ids = deriveXiaoyaojinIds(head, overrides);
+  // 探测到日期头后，战令 ID 也随之派生（战令数据可能已被清空，但 ID 规则不变）
+  const warOrderActivityId = manualWarOrderId || ids.warOrderActivityId;
   const warOrderInfo = warOrderActivityInfo[warOrderActivityId] || null;
   const commonKeys = Object.keys(commonActivityInfo);
 
@@ -489,11 +897,23 @@ export function buildXiaoyaojinPlan(response, options = {}) {
       .map((key) => Number(key))
       .filter((value) => Number.isFinite(value));
 
+  const ageDays = detected?.ageDays ?? detectedCommon?.ageDays ?? null;
+
   return {
     ok: true,
-    source: manualWarOrderId ? "manual" : "auto",
+    source: headFromManual
+      ? "manual"
+      : detected
+        ? "auto"
+        : "common",
     head,
-    ageDays: detected?.ageDays ?? null,
+    ageDays,
+    /**
+     * 活动是否已结束（只剩兑换延时）
+     * 判据二选一：① 开启日已过 ≥7 天 ② **战令数据已被服务端清掉**
+     * —— 第 ② 条是关键：活动结束后 warOrderActivityInfo 里就没这个实例了。
+     */
+    ended: isXiaoyaojinEnded(ageDays) || !warOrderInfo,
     warOrderActivityId,
     ids,
     warOrderInfo,
@@ -503,10 +923,21 @@ export function buildXiaoyaojinPlan(response, options = {}) {
     commonConfirmed: {
       gift: commonKeys.includes(ids.giftActivityId),
       sign: commonKeys.includes(ids.signActivityId),
+      exchange: commonKeys.includes(ids.exchangeActivityId),
+      coupon: commonKeys.includes(ids.couponActivityId),
       /** 一次性礼包本期是否已领（服务端 record 里已有该商品记录） */
       giftBought: Number(giftRecord[ids.giftGoodsId]) >= 1,
       /** 7 天登录已记录的日期序号（1 起） */
       signDays: recordDays(signRecord),
+      /**
+       * 兑换商店本期已兑换次数（`commonActivityInfo[兑换活动ID].record[goodsId]`）
+       * 实证：连换两次 → 1 → 2。仅作日志佐证，兑换次数由背包 5284 余额决定。
+       */
+      exchangeTimes: Number(
+        (commonActivityInfo[ids.exchangeActivityId]?.record || {})[
+          ids.exchangeGoodsId
+        ],
+      ) || 0,
       keys: commonKeys,
     },
   };
@@ -515,12 +946,25 @@ export function buildXiaoyaojinPlan(response, options = {}) {
 export default {
   XIAOYAOJIN_SLOTS,
   XIAOYAOJIN_LOTTERY_TICKET_ITEM_ID,
+  XIAOYAOJIN_COUPON_ITEM_ID,
+  XIAOYAOJIN_EXCHANGE_ITEM_ID,
   buildXiaoyaojinPlan,
   deriveXiaoyaojinIds,
   getActivityDateHead,
   isDailyMissionId,
+  isXiaoyaojinEnded,
+  listPendingCumulativeIds,
   listPendingDailyClaims,
+  pickLotteryInfo,
+  planCouponPurchase,
+  planLotteryBatches,
+  readCumulativeClaimed,
+  readItemQuantity,
+  readRewardQuantity,
+  resolveExchangeTimes,
+  shiftActivityDateHead,
   resolveLotteryDraws,
   resolveXiaoyaojinActivityId,
+  summarizeLottery,
   summarizePassRewards,
 };

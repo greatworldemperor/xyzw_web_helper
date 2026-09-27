@@ -159,6 +159,13 @@ export function registerDefaultCommands(reg) {
     .register("store_buy", { goodsId: 1 })
     .register("store_purchase", { goodsId: 1 })
     .register("store_refresh", { storeId: 1 })
+    // 商店自动购买列表（金鱼等活动商店；09-25 抓包 shop_list.jsonl）
+    .register("store_getpurchase", {})
+    .register("store_setpurchase", { purchaseCnt: 15, purchaseItemList: [] })
+
+    // 金鱼/秋季活动（09-25 抓包 use_one_item.jsonl；漏注册会让帧根本发不出去→请求超时）
+    .register("autumn_useitem", { itemNum: 1 })
+    .register("autumn_getrolerank", {})
 
     // 军团
     .register("legion_getinfo")
@@ -304,6 +311,14 @@ export function registerDefaultCommands(reg) {
     .register("activity_claimsignreward", { activityId: 0, patchDay: 0 })
     .register("activity_getlotteryinfo")
     .register("activity_lottery", { times: 1 })
+    // 累计抽奖奖励：每档固定 +2 张抽奖券 5283（2026-09-25 抓包实证 id 11~15）
+    .register("activity_claimlotterycumulative", { id: 0 })
+    // 兑换商店：消耗 5284（每 50 抽产出 1 个）换道具
+    .register("activity_exchange", {
+      activityId: 0,
+      goodsId: 0,
+      quantity: 0,
+    })
     .register("activity_buystoregoods", {
       activityId: 6,
       goodsIndex: 0,
@@ -1154,6 +1169,9 @@ export class XyzwWebSocketClient {
       activity_rewardresp: "activity_claimsignreward",
       activity_getlotteryinforesp: "activity_getlotteryinfo",
       activity_lotteryresp: "activity_lottery",
+      activity_claimlotterycumulativeresp: "activity_claimlotterycumulative",
+      // 兑换商店回的是通用奖励响应 Common_RewardResp
+      commonrewardresp: "activity_exchange",
       arena_getarearankresp: "arena_getarearank",
       bosstower_gethelprankresp: "bosstower_gethelprank",
       // 功法相关响应映射
