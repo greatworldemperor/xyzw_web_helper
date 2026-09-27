@@ -86,6 +86,9 @@ export const availableTasks = [
   { label: "一键购买梦境商品", value: "batchBuyDreamItems" },
   // 逍遥津任务已于 2026-09-26 活动结束后下线（源码保留在 utils/batch/tasksXiaoyaojin.js）
   { label: "金鱼投道具", value: "goldenfishUseItem" },
+  { label: "金鱼消耗(招募3900)", value: "goldenfishRecruit" },
+  { label: "金鱼消耗(宝箱99000)", value: "goldenfishBoxes" },
+  { label: "金鱼消耗(钓鱼1150)", value: "goldenfishFish" },
 ];
 
 // 月度任务目标

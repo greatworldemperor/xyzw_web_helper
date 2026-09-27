@@ -947,6 +947,92 @@
                   完整自动金鱼开发中——协议见 docs/goldenfish-autumn-protocol.md。
                   商店购物列表已移至「日常」栏目（金鱼活动的商店也用它）。
                 </span>
+
+                <!-- 金鱼消耗（第一步 2026-09-26）：招募 → 宝箱积分 → 钓鱼（黄金竿） -->
+                <n-divider style="margin: 6px 0 2px" />
+                <n-space align="center" :size="8" wrap>
+                  <span class="xiaoyaojin-hint" style="white-space: nowrap"
+                    >招募目标</span
+                  >
+                  <n-input-number
+                    v-model:value="goldenfishConsumeSettings.recruitTarget"
+                    class="xiaoyaojin-draws-input"
+                    size="small"
+                    :min="0"
+                    :max="999999"
+                    :precision="0"
+                    :show-button="false"
+                    :disabled="isRunning"
+                  />
+                  <span class="xiaoyaojin-hint" style="white-space: nowrap"
+                    >宝箱积分目标</span
+                  >
+                  <n-input-number
+                    v-model:value="goldenfishConsumeSettings.boxTarget"
+                    class="xiaoyaojin-draws-input"
+                    size="small"
+                    :min="0"
+                    :max="9999999"
+                    :precision="0"
+                    :show-button="false"
+                    :disabled="isRunning"
+                  />
+                  <span class="xiaoyaojin-hint" style="white-space: nowrap"
+                    >钓鱼目标</span
+                  >
+                  <n-input-number
+                    v-model:value="goldenfishConsumeSettings.fishTarget"
+                    class="xiaoyaojin-draws-input"
+                    size="small"
+                    :min="0"
+                    :max="999999"
+                    :precision="0"
+                    :show-button="false"
+                    :disabled="isRunning"
+                  />
+                </n-space>
+                <n-space :size="8" wrap>
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="runGoldenfishConsumeAll"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    一键消耗（招募→宝箱→钓鱼）
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="runGoldenfishRecruit"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    只跑招募
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="runGoldenfishBoxes"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    只跑宝箱
+                  </n-button>
+                  <n-button
+                    size="small"
+                    @click="runGoldenfishFish"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    只跑钓鱼
+                  </n-button>
+                </n-space>
+                <span class="xiaoyaojin-hint">
+                  金鱼消耗（每账号先查活动进度再补差值，可分多天断点续跑）：招募
+                  hero_recruit 消耗招募令 1001（≥3900，不足即停等黑市补货）；宝箱
+                  item_openbox + 积分兑换 item_claimboxpointreward
+                  迭代推进到目标（钻石宝箱一律不开、木箱保留 200
+                  个，退出后差值精确开箱，剩余积分不兑换留活动结束）；钓鱼
+                  artifact_lottery 只用黄金鱼竿 1012（不足即停等商店 8
+                  折补货）。触发限流(400340)会弹框：更换 IP
+                  后点「继续」立即重试，「中止」停止全部；120
+                  秒无确认自动重试。⚠️ 活动累积进度字段待活动面板抓包接入，接入前会提示「进度不可读」并跳过。
+                </span>
               </n-space>
             </n-tab-pane>
           </n-tabs>
@@ -3745,6 +3831,27 @@
         <WeirdTowerShareCard embedded />
       </div>
     </n-modal>
+
+    <!-- 金鱼限流弹框（400340）：换 IP 后继续 / 中止；120s 无确认自动重试 -->
+    <n-modal
+      v-model:show="goldenfishRateLimitShow"
+      preset="dialog"
+      type="warning"
+      title="触发限流 (400340)"
+      positive-text="已更换 IP，继续"
+      negative-text="中止任务"
+      :mask-closable="false"
+      :closable="false"
+      @positive-click="resolveGoldenfishRateLimit('continue')"
+      @negative-click="resolveGoldenfishRateLimit('stop')"
+    >
+      <span>
+        {{ goldenfishRateLimit?.tokenName }} 发送
+        {{ goldenfishRateLimit?.cmd }} 时触发限流(400340)。请更换 IP
+        （切换代理 / 热点）后点「继续」立即重试当前命令；点「中止」停止全部账号任务；
+        {{ GOLDENFISH_RATE_LIMIT_AUTO_MS / 1000 }} 秒无确认将自动重试（冷却自然过）。
+      </span>
+    </n-modal>
   </div>
 </template>
 
@@ -3856,6 +3963,7 @@ import {
   createTasksGoldenfish,
   GOLDENFISH_SHOP_DEFAULTS,
   GOLDENFISH_GROUP_NAME,
+  GOLDENFISH_CONSUME_DEFAULTS,
   DEFAULT_GOLDENFISH_EXCLUDE_SERVERS,
   resolveDefaultBlackMarketKeys,
 } from "@/utils/batch";
@@ -5149,7 +5257,12 @@ const taskGroupDefinitions = [
   {
     name: "goldenfish",
     label: "金鱼",
-    tasks: ["goldenfishUseItem"],
+    tasks: [
+      "goldenfishUseItem",
+      "goldenfishRecruit",
+      "goldenfishBoxes",
+      "goldenfishFish",
+    ],
   },
 ];
 
@@ -7730,6 +7843,44 @@ const ensureConnection = async (
   return true;
 };
 
+// 金鱼限流弹框（2026-09-26 master 口径）：400340 → 提示换 IP，「继续」重试当前命令，
+// 「中止」全局停止；120s 无确认自动 continue（人不在时冷却自然过）。IP 共享 → 弹框全局一份。
+const GOLDENFISH_RATE_LIMIT_AUTO_MS = 120000;
+const goldenfishRateLimit = ref(null); // { tokenName, cmd, resolve }
+let goldenfishRateLimitTimer = null;
+const goldenfishRateLimitShow = computed({
+  get: () => goldenfishRateLimit.value != null,
+  set: (v) => {
+    if (!v) resolveGoldenfishRateLimit("continue");
+  },
+});
+const onRateLimitPause = (tokenName, cmd) =>
+  new Promise((resolve) => {
+    // 已有弹框挂着（前一个账号刚弹过）：自动 continue，避免连环弹框
+    if (goldenfishRateLimit.value) {
+      resolve("continue");
+      return;
+    }
+    goldenfishRateLimit.value = { tokenName, cmd, resolve };
+    clearTimeout(goldenfishRateLimitTimer);
+    goldenfishRateLimitTimer = setTimeout(() => {
+      if (goldenfishRateLimit.value) {
+        goldenfishRateLimit.value.resolve("continue");
+        goldenfishRateLimit.value = null;
+      }
+    }, GOLDENFISH_RATE_LIMIT_AUTO_MS);
+  });
+const resolveGoldenfishRateLimit = (verdict) => {
+  clearTimeout(goldenfishRateLimitTimer);
+  goldenfishRateLimit.value?.resolve(verdict);
+  goldenfishRateLimit.value = null;
+};
+onBeforeUnmount(() => {
+  clearTimeout(goldenfishRateLimitTimer);
+  goldenfishRateLimit.value?.resolve("stop");
+  goldenfishRateLimit.value = null;
+});
+
 const createTaskDeps = () => ({
   selectedTokens,
   tokens,
@@ -7780,6 +7931,8 @@ const createTaskDeps = () => ({
   calculateMonthProgress,
   // 营地挑战计划确认弹框
   confirmCampPlan,
+  // 金鱼限流弹框（400340 → 换 IP 继续 / 中止 / 120s 自动重试）
+  onRateLimitPause,
   // 配置加载函数
   loadSettings,
 });
@@ -8020,6 +8173,10 @@ const {
   goldenfishUseItem,
   goldenfishSetShopList,
   detectGoldenfishAccounts,
+  goldenfishConsumeAll,
+  goldenfishRecruit,
+  goldenfishBoxes,
+  goldenfishFish,
 } = tasksGoldenfish;
 
 // 检测金鱼号：例外（排除）server id + 上次检测结果
@@ -8129,6 +8286,52 @@ const resetGoldenfishShopDefaults = () => {
   };
   message.success("已恢复金鱼模式默认购物列表");
 };
+
+// 金鱼消耗任务（第一步「初步消耗」，2026-09-26）：招募 3900 / 宝箱 99000 / 钓鱼(黄金竿) 1150。
+// 纯逻辑 src/utils/goldenfishConsumePlan.js；活动累积进度字段待面板抓包接入（阶段 B）。
+const GOLDENFISH_CONSUME_STORAGE_KEY = "goldenfishConsumeSettings";
+const loadGoldenfishConsumeSettings = () => {
+  const fallback = { ...GOLDENFISH_CONSUME_DEFAULTS };
+  try {
+    const raw = localStorage.getItem(GOLDENFISH_CONSUME_STORAGE_KEY);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    // Number(null)===0 陷阱：非法/缺失值一律回退默认（显式判）
+    const num = (v, d) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n >= 0 ? Math.floor(n) : d;
+    };
+    return {
+      recruitTarget: num(parsed?.recruitTarget, fallback.recruitTarget),
+      boxTarget: num(parsed?.boxTarget, fallback.boxTarget),
+      fishTarget: num(parsed?.fishTarget, fallback.fishTarget),
+    };
+  } catch {
+    return fallback;
+  }
+};
+const goldenfishConsumeSettings = ref(loadGoldenfishConsumeSettings());
+watch(
+  goldenfishConsumeSettings,
+  (val) => {
+    try {
+      localStorage.setItem(GOLDENFISH_CONSUME_STORAGE_KEY, JSON.stringify(val));
+    } catch {
+      /* 忽略持久化失败 */
+    }
+  },
+  { deep: true },
+);
+const goldenfishConsumeConfig = () => ({
+  recruitTarget: goldenfishConsumeSettings.value.recruitTarget,
+  boxTarget: goldenfishConsumeSettings.value.boxTarget,
+  fishTarget: goldenfishConsumeSettings.value.fishTarget,
+});
+const runGoldenfishConsumeAll = () =>
+  goldenfishConsumeAll(goldenfishConsumeConfig());
+const runGoldenfishRecruit = () => goldenfishRecruit(goldenfishConsumeConfig());
+const runGoldenfishBoxes = () => goldenfishBoxes(goldenfishConsumeConfig());
+const runGoldenfishFish = () => goldenfishFish(goldenfishConsumeConfig());
 
 const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksHangUp(deps),

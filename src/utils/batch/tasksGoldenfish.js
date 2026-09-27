@@ -27,6 +27,35 @@
 
 const nowText = () => new Date().toLocaleTimeString();
 
+/**
+ * 金鱼消耗任务（第一步「初步消耗」，2026-09-26）：
+ *   招募 → 3900 / 宝箱积分 → 99000 / 钓鱼（黄金竿 1012）→ 1150。
+ * 纯逻辑见 src/utils/goldenfishConsumePlan.js；master 拍板口径：
+ *   - 钓鱼只用黄金鱼竿（1012 / artifact_lottery type:2）；
+ *   - 钻石宝箱(2005)一律不开，木制宝箱(2001)全程保留 200 个；
+ *   - 限流 400340：弹框换 IP 后继续，长时间无确认自动重试（onRateLimitPause 钩子）；
+ *   - 每账号先查活动进度再算差值（断点续跑）；进度不可读时宁可不跑（阶段 B 接入真实字段）。
+ */
+import {
+  BOX_POINT_STEP_COSTS,
+  chunkBatches,
+  planCountConsume,
+  planOpenAll,
+  planPreciseOpen,
+  readActivityProgress,
+  shouldKeepLooping,
+} from "../goldenfishConsumePlan.js";
+
+/** 金鱼消耗目标默认值（页面可调） */
+export const GOLDENFISH_CONSUME_DEFAULTS = {
+  recruitTarget: 3900,
+  boxTarget: 99000,
+  fishTarget: 1150,
+};
+
+/** 限流弹框无确认时的自动重试等待（master：时间长了冷却自然过） */
+const RATE_LIMIT_AUTO_RETRY_MS = 120000;
+
 /** 「金鱼模式」默认购物列表（09-25 master 口径，抓包 store_setpurchase 验证） */
 export const GOLDENFISH_SHOP_DEFAULTS = [
   { itemId: 2002, name: "青铜宝箱", discount: 5, enabled: true },
@@ -195,6 +224,7 @@ export function createTasksGoldenfish(deps) {
     message,
     currentRunningTokenId,
     delayConfig,
+    onRateLimitPause,
   } = deps;
 
   /** 取角色信息（批量页注入的带限流重试版本优先） */
@@ -308,9 +338,18 @@ export function createTasksGoldenfish(deps) {
     );
   };
 
-  const STEPS = { useOneItem, setShopList };
+  const STEPS = {
+    useOneItem,
+    setShopList,
+    consumeRecruit: null, // 下方赋值（引用 sendWithRateLimit 等闭包）
+    consumeBoxes: null,
+    consumeFish: null,
+  };
 
   // ------------------------------------------------------------------ 批量框架
+
+  /** 限流中止信号（跨账号共享；runGoldenfish 收尾会重置 shouldStop，故用独立标志） */
+  let consumeAbortAll = false;
 
   const runGoldenfish = async (stepIds, title, count = 1, config = null) => {
     if (selectedTokens.value.length === 0) {
@@ -318,6 +357,7 @@ export function createTasksGoldenfish(deps) {
       return;
     }
 
+    consumeAbortAll = false;
     isRunning.value = true;
     shouldStop.value = false;
     selectedTokens.value.forEach((id) => {
@@ -325,7 +365,7 @@ export function createTasksGoldenfish(deps) {
     });
 
     const taskPromises = selectedTokens.value.map(async (tokenId) => {
-      if (shouldStop.value) return;
+      if (shouldStop.value || consumeAbortAll) return;
 
       tokenStatus.value[tokenId] = "running";
       const token = tokens.value.find((item) => item.id === tokenId);
@@ -341,12 +381,19 @@ export function createTasksGoldenfish(deps) {
         await ensureConnection(tokenId);
 
         for (const stepId of stepIds) {
-          if (shouldStop.value) break;
+          if (shouldStop.value || consumeAbortAll) break;
           const step = STEPS[stepId];
           if (!step) continue;
           try {
             await step({ tokenId, token, count, config });
           } catch (error) {
+            if (error?.code === "RATE_LIMIT_STOPPED") {
+              // 限流弹框「中止」：IP 共享，全局停止所有账号
+              consumeAbortAll = true;
+              shouldStop.value = true;
+              log(tokenName, "限流弹框选择中止，停止全部任务", "warning");
+              break;
+            }
             if (isRateLimitError(error)) {
               log(tokenName, `触发限流(400340)，下次再试`, "warning");
               break;
@@ -403,6 +450,345 @@ export function createTasksGoldenfish(deps) {
 
   const goldenfishSetShopList = (config) =>
     runGoldenfish(["setShopList"], "金鱼商店购物列表", 1, config);
+
+  // ------------------------------------------------------- 金鱼消耗（第一步）
+
+  /**
+   * 限流暂停钩子：返回 "continue"（重试当前命令）或 "stop"（中止全部任务）。
+   * 默认实现（无 UI 弹框环境）：等 120s 自动重试 —— master 口径「时间长了冷却自然过」。
+   * BatchDailyTasks.vue 注入弹框版本：换 IP 后点继续立即重试，点中止全局停止，
+   * 120s 无确认同样自动重试。
+   */
+  const onRateLimitPauseRef =
+    onRateLimitPause ||
+    (async (tokenName, cmd) => {
+      log(
+        tokenName,
+        `触发限流(400340)：${cmd}，${RATE_LIMIT_AUTO_RETRY_MS / 1000}s 后自动重试`,
+        "warning",
+      );
+      await sleep(RATE_LIMIT_AUTO_RETRY_MS);
+      return "continue";
+    });
+
+  /** 限流中止信号（外层捕获后置 shouldStop 停全部账号） */
+  const rateLimitStopError = () => {
+    const err = new Error("用户在限流弹框选择中止");
+    err.code = "RATE_LIMIT_STOPPED";
+    return err;
+  };
+
+  /**
+   * 带限流重试的命令发送：400340 → 弹框/等待 → 重试同一命令；
+   * stop → 抛 RATE_LIMIT_STOPPED（外层置 shouldStop 全局停止）。
+   */
+  const sendWithRateLimit = async (tokenId, cmd, params, token, timeout = 8000) => {
+    for (;;) {
+      try {
+        return await tokenStore.sendMessageWithPromise(tokenId, cmd, params, timeout);
+      } catch (error) {
+        if (Number(error?.code) !== 400340) throw error;
+        const verdict = await onRateLimitPauseRef(token?.name || tokenId, cmd);
+        if (verdict === "stop") throw rateLimitStopError();
+        log(token?.name || tokenId, `限流后重试 ${cmd}`, "info");
+      }
+    }
+  };
+
+  /** 拉最新 role（带限流重试） */
+  const fetchRoleWithLimit = async (tokenId, token) => {
+    try {
+      const response = await sendWithRateLimit(
+        tokenId,
+        "role_getroleinfo",
+        {},
+        token,
+        15000,
+      );
+      return extractRole(response);
+    } catch (error) {
+      if (Number(error?.code) === 400340) throw error;
+      throw error;
+    }
+  };
+
+  /** 活动进度读取：默认用 goldenfishConsumePlan 的占位（返回 null）；
+   *  测试/阶段 B 可通过 deps.readActivityProgress 注入覆盖 */
+  const readProgressRef = deps.readActivityProgress || readActivityProgress;
+
+  /** 活动进度可读性检查：占位 readActivityProgress 返回 null → 必须跳过（阶段 B 接入后生效） */
+  const readProgressOrSkip = (role, tokenName, stepName) => {
+    const progress = readProgressRef(role);
+    if (!progress) {
+      log(
+        tokenName,
+        `${stepName}跳过：活动累积进度不可读（等待活动面板抓包接入 readActivityProgress）`,
+        "warning",
+      );
+      return null;
+    }
+    return progress;
+  };
+
+  /** 进度日志三元组（skill 规范：目标/当前/差值/库存 + 错误原文） */
+  const progressText = (target, done, stock, stockName) =>
+    `目标 ${fmtNum(target)} / 已做 ${fmtNum(done)} / 差值 ${fmtNum(Math.max(0, target - done))} / ${stockName}库存 ${fmtNum(stock)}`;
+
+  /**
+   * 消耗 step：招募（hero_recruit recruitType:1，10/发+余数，消耗招募令 1001）
+   * 库存不足 = 正常暂停（黑市购物列表 10 折自动补货后再跑）
+   */
+  const consumeRecruitStep = async ({ tokenId, token, config }) => {
+    const target = clampCount(config?.recruitTarget ?? GOLDENFISH_CONSUME_DEFAULTS.recruitTarget);
+    const role = await fetchRoleWithLimit(tokenId, token);
+    const progress = readProgressOrSkip(role, token.name, "招募消耗");
+    if (!progress) return;
+
+    const stock = readItemCount(role?.items, ITEM_RECRUIT);
+    const plan = planCountConsume({
+      done: progress.recruitDone,
+      target,
+      stock,
+      batchSize: 10,
+    });
+    if (!plan.ok) {
+      log(token.name, `招募消耗跳过：进度不可读（${progressText(target, null, stock, "招募令")}）`, "warning");
+      return;
+    }
+    if (plan.reached) {
+      log(token.name, `招募消耗已达目标（${progressText(target, progress.recruitDone, stock, "招募令")}）`, "success");
+      return;
+    }
+    log(token.name, `招募消耗开始：${progressText(target, progress.recruitDone, stock, "招募令")}`, "info");
+
+    let done = progress.recruitDone;
+    let sent = 0;
+    for (const n of plan.batches) {
+      if (shouldStop.value) return;
+      await sendWithRateLimit(
+        tokenId,
+        "hero_recruit",
+        { recruitType: 1, recruitNumber: n },
+        token,
+      );
+      done += n;
+      sent += 1;
+      if (sent % 50 === 0) {
+        log(token.name, `招募消耗进度：${fmtNum(done)}/${fmtNum(target)}（已发 ${sent} 帧）`, "info");
+      }
+      await sleep();
+    }
+    log(
+      token.name,
+      `招募消耗结束：本次 ${fmtNum(plan.willDo)}，累计 ${fmtNum(done)}/${fmtNum(target)}` +
+        (plan.stockShort
+          ? `；⚠️ 招募令不足，还差 ${fmtNum(plan.remaining - plan.willDo)} 次，等黑市补货后再跑`
+          : ""),
+      plan.stockShort ? "warning" : "success",
+    );
+  };
+
+  /**
+   * 消耗 step：钓鱼（artifact_lottery type:2 = 黄金鱼竿 1012，10/发+余数）
+   * master 口径：只用黄金鱼竿；库存不足 = 正常暂停（商店 8 折自动补货后再跑）
+   */
+  const consumeFishStep = async ({ tokenId, token, config }) => {
+    const target = clampCount(config?.fishTarget ?? GOLDENFISH_CONSUME_DEFAULTS.fishTarget);
+    const role = await fetchRoleWithLimit(tokenId, token);
+    const progress = readProgressOrSkip(role, token.name, "钓鱼消耗");
+    if (!progress) return;
+
+    const stock = readItemCount(role?.items, ITEM_GOLD_ROD);
+    const plan = planCountConsume({
+      done: progress.fishDone,
+      target,
+      stock,
+      batchSize: 10,
+    });
+    if (!plan.ok) {
+      log(token.name, `钓鱼消耗跳过：进度不可读（${progressText(target, null, stock, "黄金鱼竿")}）`, "warning");
+      return;
+    }
+    if (plan.reached) {
+      log(token.name, `钓鱼消耗已达目标（${progressText(target, progress.fishDone, stock, "黄金鱼竿")}）`, "success");
+      return;
+    }
+    log(token.name, `钓鱼消耗开始：${progressText(target, progress.fishDone, stock, "黄金鱼竿")}`, "info");
+
+    let done = progress.fishDone;
+    let sent = 0;
+    for (const n of plan.batches) {
+      if (shouldStop.value) return;
+      await sendWithRateLimit(
+        tokenId,
+        "artifact_lottery",
+        { type: 2, lotteryNumber: n, newFree: true },
+        token,
+      );
+      done += n;
+      sent += 1;
+      if (sent % 20 === 0) {
+        log(token.name, `钓鱼消耗进度：${fmtNum(done)}/${fmtNum(target)}（已发 ${sent} 帧）`, "info");
+      }
+      await sleep();
+    }
+    log(
+      token.name,
+      `钓鱼消耗结束：本次 ${fmtNum(plan.willDo)}，累计 ${fmtNum(done)}/${fmtNum(target)}` +
+        (plan.stockShort
+          ? `；⚠️ 黄金鱼竿不足，还差 ${fmtNum(plan.remaining - plan.willDo)} 次，等商店补货后再跑`
+          : ""),
+      plan.stockShort ? "warning" : "success",
+    );
+  };
+
+  /** 积分兑换：从当前档位逐档 claim 到付不起下一档（响应驱动 boxPoint/boxPointLastReward） */
+  const exchangeAllScore = async ({ tokenId, token, role }) => {
+    let boxPoint = Number(role?.boxPoint ?? 0) || 0;
+    let pos = Number(role?.boxPointLastReward ?? 0) || 0;
+    let claimed = 0;
+    for (;;) {
+      if (pos < 0 || pos >= BOX_POINT_STEP_COSTS.length || claimed >= 3000) break;
+      const cost = BOX_POINT_STEP_COSTS[pos];
+      if (boxPoint < cost) break;
+      const resp = await sendWithRateLimit(tokenId, "item_claimboxpointreward", {}, token, 8000);
+      claimed += 1;
+      const r = resp?.role ?? {};
+      if (typeof r.boxPoint === "number") {
+        boxPoint = r.boxPoint;
+      } else {
+        boxPoint -= cost;
+      }
+      if (typeof r.boxPointLastReward === "number") {
+        pos = r.boxPointLastReward;
+      } else {
+        pos = (pos + 1) % BOX_POINT_STEP_COSTS.length;
+      }
+      if (claimed % 20 === 0) {
+        log(token.name, `积分兑换进度：已兑 ${claimed} 档，剩余积分 ${fmtNum(boxPoint)}`, "info");
+      }
+    }
+    log(token.name, `积分兑换完成：本次兑换 ${claimed} 档，剩余未兑换积分 ${fmtNum(boxPoint)}`, "success");
+    return claimed;
+  };
+
+  /** 开箱计划逐批发送（10/发+余数），返回最后一份带 role 的响应 */
+  const sendOpenBoxSteps = async ({ tokenId, token, steps }) => {
+    let lastResp = null;
+    let total = 0;
+    for (const step of steps) {
+      for (const n of chunkBatches(step.number, 10)) {
+        if (shouldStop.value) return lastResp;
+        lastResp = await sendWithRateLimit(
+          tokenId,
+          "item_openbox",
+          { itemId: step.itemId, number: n },
+          token,
+          8000,
+        );
+        total += n;
+        await sleep();
+      }
+    }
+    if (total > 0) {
+      log(token.name, `开箱完成：本次共开 ${fmtNum(total)} 个`, "info");
+    }
+    return lastResp;
+  };
+
+  /**
+   * 消耗 step：宝箱（master 伪代码完整实现）
+   * while(累积 + 可开分 < 目标) { 全开(钻石不开/木箱留200) → 积分全兑 → 重查 }
+   * 退出后差值精确开（铂金→黄金→青铜→木箱），剩余积分不兑换（利润最大化）
+   */
+  const consumeBoxesStep = async ({ tokenId, token, config }) => {
+    const target = clampCount(config?.boxTarget ?? GOLDENFISH_CONSUME_DEFAULTS.boxTarget);
+    let role = await fetchRoleWithLimit(tokenId, token);
+    let progress = readProgressOrSkip(role, token.name, "宝箱消耗");
+    if (!progress) return;
+    if (progress.boxScoreDone == null) {
+      log(token.name, "宝箱消耗跳过：宝箱累积积分字段缺失（阶段 B 接入后生效）", "warning");
+      return;
+    }
+
+    let accumulated = Math.max(0, Math.floor(Number(progress.boxScoreDone) || 0));
+    log(token.name, `宝箱消耗开始：${progressText(target, accumulated, "-", "宝箱")}`, "info");
+
+    // 推进循环（防死循环双保险：轮次上限 + 两轮零增长中止）
+    let round = 0;
+    let noGrowthRounds = 0;
+    while (shouldKeepLooping(accumulated, role?.items, target) && !shouldStop.value) {
+      round += 1;
+      if (round > 200) {
+        log(token.name, `宝箱推进循环超 200 轮，中止（请检查进度字段口径，当前累积 ${fmtNum(accumulated)}）`, "warning");
+        return;
+      }
+      const openPlan = planOpenAll(role?.items);
+      if (openPlan.length === 0) {
+        log(
+          token.name,
+          `宝箱消耗暂停：积分不足且无箱可开（累积 ${fmtNum(accumulated)}/${fmtNum(target)}），等商店补货后再跑`,
+          "warning",
+        );
+        return;
+      }
+      const lastResp = await sendOpenBoxSteps({ tokenId, token, steps: openPlan });
+      await exchangeAllScore({ tokenId, token, role: lastResp?.role ?? role });
+
+      role = await fetchRoleWithLimit(tokenId, token);
+      progress = readProgressRef(role);
+      if (!progress || progress.boxScoreDone == null) {
+        log(token.name, "宝箱消耗中止：循环中进度变得不可读", "warning");
+        return;
+      }
+      const next = Math.max(0, Math.floor(Number(progress.boxScoreDone) || 0));
+      if (next === accumulated) {
+        noGrowthRounds += 1;
+        if (noGrowthRounds >= 2) {
+          log(token.name, `宝箱累积积分两轮无增长（仍 ${fmtNum(accumulated)}），中止以防死循环（疑似进度字段口径不符）`, "warning");
+          return;
+        }
+      } else {
+        noGrowthRounds = 0;
+      }
+      accumulated = next;
+      log(token.name, `宝箱推进第 ${round} 轮完成：累积 ${fmtNum(accumulated)}/${fmtNum(target)}`, "info");
+    }
+
+    // 差值精确开箱（不兑换，剩余积分留活动结束）
+    if (accumulated < target && !shouldStop.value) {
+      const remaining = target - accumulated;
+      const { steps, remainingScore } = planPreciseOpen(remaining, role?.items);
+      log(token.name, `宝箱差值精确开箱：差 ${fmtNum(remaining)} 分，计划开 ${steps.map((s) => `${s.itemId}×${s.number}`).join("、") || "无"}`, "info");
+      if (steps.length > 0) {
+        await sendOpenBoxSteps({ tokenId, token, steps });
+      }
+      if (remainingScore > 0) {
+        log(token.name, `宝箱消耗暂停：库存不足，还差 ${fmtNum(remainingScore)} 分，等商店补货后再跑`, "warning");
+        return;
+      }
+    }
+    log(token.name, `宝箱消耗结束：累积 ${fmtNum(accumulated)}/${fmtNum(target)}（剩余积分保留不兑换）`, "success");
+  };
+
+  STEPS.consumeRecruit = consumeRecruitStep;
+  STEPS.consumeBoxes = consumeBoxesStep;
+  STEPS.consumeFish = consumeFishStep;
+
+  /** 金鱼消耗一键编排：招募 → 宝箱 → 钓鱼（与介绍文档叙述顺序一致） */
+  const goldenfishConsumeAll = (config) =>
+    runGoldenfish(
+      ["consumeRecruit", "consumeBoxes", "consumeFish"],
+      "金鱼消耗（招募→宝箱→钓鱼）",
+      1,
+      config,
+    );
+  const goldenfishRecruit = (config) =>
+    runGoldenfish(["consumeRecruit"], "金鱼招募消耗", 1, config);
+  const goldenfishBoxes = (config) =>
+    runGoldenfish(["consumeBoxes"], "金鱼宝箱消耗", 1, config);
+  const goldenfishFish = (config) =>
+    runGoldenfish(["consumeFish"], "金鱼钓鱼消耗", 1, config);
 
   // ---------------------------------------------------------------- 金鱼号检测
 
@@ -644,6 +1030,10 @@ export function createTasksGoldenfish(deps) {
     goldenfishUseItem,
     goldenfishSetShopList,
     detectGoldenfishAccounts,
+    goldenfishConsumeAll,
+    goldenfishRecruit,
+    goldenfishBoxes,
+    goldenfishFish,
   };
 }
 

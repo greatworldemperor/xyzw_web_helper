@@ -56,6 +56,37 @@ RESP Store_SetPurchaseResp  回显设置后的列表（按 itemId 升序，与�
   localStorage `goldenfishShopSettings` 记忆（旧版纯数组存档兼容读取）。其他商品 itemId 未抓到，暂不支持自定义添加。
 - 回归：`test/goldenfishShop.test.js` —— 默认配置构造的 setpurchase body 与抓包 #525 帧逐字节一致。
 
+## 金鱼消耗任务（第一步「初步消耗」，2026-09-26）
+
+需求：`local-data/goldenfish/a_brief_introduction.txt`。目标：招募累积 3900 次 /
+宝箱累积 99000 分 / 钓鱼（黄金竿 1012）累积 1150 次；金砖消耗 10 月 1 日收尾再做；
+收罐子自然完成。全部复用既有命令，**零新协议**：
+
+| 操作 | 命令 | 备注 |
+| --- | --- | --- |
+| 招募 | `hero_recruit { recruitType:1, recruitNumber:N }` | 10/发+余数，消耗招募令 1001 |
+| 开宝箱 | `item_openbox { itemId, number:N }` | 10/发+余数；铂金 50/黄金 20/青铜 10/木质 1 分 |
+| 积分兑宝箱 | `item_claimboxpointreward {}` | 一轮 9 档共 500 分，第 9 档必得钻石宝箱(2005) |
+| 未兑换积分 | `role.boxPoint` / `role.boxPointLastReward` | 下一档索引 0~8 |
+| 钓鱼 | `artifact_lottery { type:2, lotteryNumber:N, newFree:true }` | 只用黄金鱼竿 1012（master 拍板） |
+
+算法（master 伪代码，`src/utils/goldenfishConsumePlan.js` 纯逻辑实现）：
+`while(累积 + 手里可开分 < 目标) { 全开 → 积分全兑 → 重查 }`，退出后差值精确开箱
+（铂金→黄金→青铜→木质，ceil 保证达标，超出留在未兑换积分不兑换）。
+**钻石宝箱一律不开；木箱全程保留 200 个**（2026-09-26 master 拍板）。
+
+- 实现：`tasksGoldenfish.js` 三个 step + `goldenfishConsumeAll` 一键（招募→宝箱→钓鱼）；
+  每账号先查活动进度再补差值（断点续跑，分多天跑自动吸收每日任务的自然推进）。
+- 库存不足（招募令/黄金鱼竿/宝箱）= 正常暂停，等商店购物列表自动补货后再跑。
+- 限流 400340 → 弹框（`onRateLimitPause` deps 钩子）：换 IP 点「继续」重试同一命令，
+  「中止」全局停止（跨账号 `consumeAbortAll` 标志，收尾重置 shouldStop 不影响）；
+  120s 无确认自动重试。
+- ⚠️ **唯一缺口**：五类任务的活动累积进度字段——现有抓包没有，等「金鱼活动面板」抓包
+  （阶段 B）。接入前 `readActivityProgress` 占位返回 null → 消耗 step 一律跳过
+  （宁可不跑不可盲跑）。测试可经 `deps.readActivityProgress` 注入。
+- 回归：`test/goldenfishConsumePlan.test.js`（纯逻辑 21 条）+
+  `test/tasksGoldenfishConsume.test.js`（端到端 10 条，mock tokenStore 断言命令序列）。
+
 ## 实现要点
 
 - 每账号每次调用发 1 次 `{ itemNum: N }`（N 默认 1，页面可调；抓包只实测过 N=1）；
