@@ -33,4 +33,5 @@ export { createTasksCampChallengeStrategy } from './tasksCampChallengeStrategy.j
 export { createTasksSaltField, battlefieldQueue } from './tasksSaltField.js';
 export { createTasksXianMaster } from './tasksXianMaster.js';
 export { createTasksXiaoyaojin } from './tasksXiaoyaojin.js';
+export { createTasksWhiteJadePkroom } from './tasksWhiteJadePkroom.js';
 export * from './campChallengePlanner.js';

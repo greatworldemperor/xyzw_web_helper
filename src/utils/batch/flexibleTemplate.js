@@ -83,6 +83,8 @@ export const flexibleTaskGroups = [
     name: "resource",
     label: "资源",
     tasks: [
+      batchTask("claimMondayWhiteJade", "领取周一白玉"),
+      batchTask("appointPkRoomForGoldBrick", "预约比赛拿金砖"),
       batchTask("activityBuyRecruitWeekReward", "招募周一次性奖励"),
       batchTask("activityClaimBoxWeekFreeRewards", "宝箱周免费奖励"),
       batchTask("activityBuyBlackMarketWeek", "黑市周奖励"),

@@ -50,6 +50,8 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
   ];
   const batchActions = [
     "batchStudy",
+    "claimMondayWhiteJade",
+    "appointPkRoomForGoldBrick",
     "activityBuyRecruitWeekReward",
     "activityClaimBoxWeekFreeRewards",
     "activityBuyBlackMarketWeek",

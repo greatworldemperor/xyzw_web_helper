@@ -5,6 +5,11 @@
  *   { seq, ack, time, resp, code, error }
  * 其中 `code` 是数字错误码、`error` 是服务端自带的中文文案。
  *
+ * ⚠️ 并非所有错误信封都带 `resp`。实测 `pkroom_appoint` 的信封是
+ *    { seq, ack, time, code, error } —— **没有 resp 也没有 cmd**，
+ *    因此既不会命中基于 resp 的匹配，也不会命中基于 cmd 的匹配，会被直接忽略。
+ *    该场景的语义见 `pkroomAppoint.js`（11900050 是「已受理」而非失败）。
+ *
  * 抽成独立模块的原因：`xyzwWebSocket.js` 依赖 `@/` 别名，node 测试无法直接导入，
  * 而错误语义（尤其幻塔助力的两个码）需要被回归测试锁住。
  */

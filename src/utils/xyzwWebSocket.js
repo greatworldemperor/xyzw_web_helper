@@ -310,6 +310,11 @@ export function registerDefaultCommands(reg) {
       buyNum: 1,
     }) // 招募周一次性奖励（5个招募令）
     .register("activity_claimredquenchreward")
+    // 周一白玉（免费卡包）：服务端按 statisticsTime["night:mare:buy:<id>"] 判「每周一」，
+    // 客户端无需判星期，重复领由服务端挡。见 docs/monday-jade-and-pkroom-appoint-protocol.md
+    .register("activity_claimrolluppack", { id: 17 })
+    // PK 房预约：body 全空，服务端自行认定当前房；成功后回 SyncResp（非 *Resp）
+    .register("pkroom_appoint")
     .register("legion_getpayloadtask")
     .register("legion_getpayloadkillrecord")
     .register("legion_getpayloadbf")
@@ -1160,6 +1165,8 @@ export class XyzwWebSocketClient {
       saltcup26_getbetinforesp: "saltcup26_getbetinfo",
       saltcup26_placebetresp: "saltcup26_placebet",
       activity_takeegamerewardresp: "activity_startactegame",
+      // 周一白玉：响应 Activity_ClaimRollUpPackResp
+      activity_claimrolluppackresp: "activity_claimrolluppack",
       // 换皮闯关相关响应映射
       towers_getinforesp: "towers_getinfo",
       towers_startresp: "towers_start",
@@ -1178,6 +1185,11 @@ export class XyzwWebSocketClient {
         "hero_gointobattle",
         "hero_gobackbattle",
         "lordweapon_changedefaultweapon",
+        // PK 房预约：成功后回 SyncResp（不是 pkroom_appointresp），
+        // 房号在 body.role.statistics["pk:appoint:room:id"]。
+        // ⚠️ 同时会有一条 {seq,ack,time,code:11900050,error:"感谢您预约本场比赛…"} 信封，
+        //    它无 resp 无 cmd → 会被 _handlePromiseResponse 直接忽略，不影响本 Promise。
+        "pkroom_appoint",
       ],
       syncrewardresp: [
         "system_buygold",

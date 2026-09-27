@@ -629,6 +629,20 @@
               <n-space>
                 <n-button
                   size="small"
+                  @click="claimMondayWhiteJade"
+                  :disabled="isRunning || selectedTokens.length === 0"
+                >
+                  领取周一白玉
+                </n-button>
+                <n-button
+                  size="small"
+                  @click="appointPkRoomForGoldBrick"
+                  :disabled="isRunning || selectedTokens.length === 0"
+                >
+                  预约比赛拿金砖
+                </n-button>
+                <n-button
+                  size="small"
                   @click="openHelperModal('box')"
                   :disabled="isRunning || selectedTokens.length === 0"
                 >
@@ -3773,6 +3787,7 @@ import {
   createTasksCampChallengeStrategy,
   createTasksXianMaster,
   createTasksXiaoyaojin,
+  createTasksWhiteJadePkroom,
   resolveDefaultBlackMarketKeys,
 } from "@/utils/batch";
 
@@ -5055,6 +5070,8 @@ const taskGroupDefinitions = [
     name: "resource",
     label: "资源",
     tasks: [
+      "claimMondayWhiteJade",
+      "appointPkRoomForGoldBrick",
       "batchOpenBox",
       "batchSmartOpenBox",
       "batchOpenBoxByPoints",
@@ -7964,6 +7981,12 @@ const {
   inspectXiaoyaojin,
 } = tasksXiaoyaojin;
 
+// 周一白玉 / 预约比赛：两个命令都不需要额外参数
+// （白玉的「每周一」闸门在服务端，预约的目标房由服务端认定）
+const tasksWhiteJadePkroom = createTasksWhiteJadePkroom(createTaskDeps());
+const { claimMondayWhiteJade, appointPkRoomForGoldBrick } =
+  tasksWhiteJadePkroom;
+
 /** 「探测活动实例」：对第一个选中账号跑一次 activity_get，把探测结果写进日志 */
 const inspectXiaoyaojinActivity = async () => {
   if (selectedTokens.value.length === 0) {
@@ -8048,6 +8071,7 @@ const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksFootball(deps),
   ...createTasksCampChallengeStrategy(deps),
   ...createTasksXiaoyaojin(deps),
+  ...createTasksWhiteJadePkroom(deps),
 });
 
 const getFlexibleTaskUnavailableReason = (taskId, settings) => {
