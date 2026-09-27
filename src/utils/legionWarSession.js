@@ -23,6 +23,7 @@ import {
   getUnsettledMembers,
   getActivityWindow,
   summarizeSnapshot,
+  isRoleDeployed,
 } from "./legionWarState";
 
 /** 战场专用连接地址（sid 是每个角色各自的一次性票据） */
@@ -174,6 +175,20 @@ export class LegionWarSession {
     this.frameWaiters.length = 0;
   }
 
+  /**
+   * 排空发送队列后再关闭连接（收尾专用）。
+   * 发送队列 50ms/tick 逐条上线；直接 close() 会把队内帧静默吞掉
+   * （09-26 盐场 war_setbattleteam 未上线的帮凶）。连接已死时帧注定发不出去，立即返回。
+   */
+  async closeAsync(timeoutMs = 2000) {
+    try {
+      await this.client.flushSendQueue(timeoutMs);
+    } catch {
+      /* ignore */
+    }
+    this.close();
+  }
+
   /* ------------------------------ 内部 ------------------------------ */
 
   _onMessage(msg) {
@@ -276,7 +291,14 @@ export class LegionWarSession {
     return { ok: !!msg, frame: msg };
   }
 
-  /** 登场：提交阵容并让角色从 watching(-1,-1) 落到地图上 */
+  /**
+   * 登场：提交阵容并让角色从 watching(-1,-1) 落到地图上。
+   * ⚠️ 成功判据 = 真登场状态（idle/combat/march，见 legionWarState.isRoleDeployed）。
+   * 旧判据 state!=='watching' 会被队长自身的 teaming 满足（自动流在最后一个队员就位的
+   * 瞬间调 deploy，队长翻 watching 的通知晚 ~1s 才到）→ dp.ok 同步 true → 毫秒级收尾
+   * 关连接 → war_setbattleteam 从未上线（09-26 盐场 0 登场根因，离线复刻测试实锤）。
+   * 等真确认期间连接保活，50ms 发送队列必然把帧送出去（runtime 实测 ~0.1s 回确认）。
+   */
   async deploy({ battleTeam, lordWeaponId, petUId }, timeoutMs = 10000) {
     this.client.send("war_setbattleteam", {
       battlefieldId: this.battlefieldId,
@@ -285,10 +307,7 @@ export class LegionWarSession {
       petUId,
     });
     const myCid = this.state.roleCodeId;
-    const ok = await this.waitForState((s) => {
-      const r = getRole(s, myCid);
-      return !!r && r.state && r.state !== "watching";
-    }, timeoutMs);
+    const ok = await this.waitForState((s) => isRoleDeployed(s, myCid), timeoutMs);
     return { ok, role: getRole(this.state, myCid) };
   }
 

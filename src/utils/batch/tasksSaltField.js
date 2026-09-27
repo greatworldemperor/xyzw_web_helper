@@ -381,12 +381,16 @@ export function createTasksSaltField(deps) {
     }
   };
 
-  /** 探测完请务必收尾，释放两条连接的槽位 */
-  const closeProbe = (probe) => {
+  /** 探测完请务必收尾，释放两条连接的槽位（先排空战场发送队列，防队内帧被竞态吞掉） */
+  const closeProbe = async (probe) => {
     try {
-      probe?.session?.close();
+      await probe?.session?.closeAsync();
     } catch {
-      /* ignore */
+      try {
+        probe?.session?.close();
+      } catch {
+        /* ignore */
+      }
     }
     releaseBattlefieldSlot();
     try {
@@ -415,7 +419,7 @@ export function createTasksSaltField(deps) {
       });
       return { probe, pool, siblingOccupied };
     } finally {
-      closeProbe(probe);
+      await closeProbe(probe);
     }
   };
 
@@ -751,7 +755,8 @@ export function createTasksSaltField(deps) {
 
       // 4) 登场（失败每 1 秒重试，窗口超时则抛错跳过该队伍）
       result.stage = "deploy";
-      await deployWithRetry(probe, lineup, t);
+      const dp = await deployWithRetry(probe, lineup, t);
+      result.deployState = dp.role?.state || null;
       result.teamMembers = probe.session.teamMemberCids(myCid);
 
       // 5) 校验
@@ -808,7 +813,7 @@ export function createTasksSaltField(deps) {
       result.error = e?.message || String(e);
       log(`${t} 执行失败（阶段 ${result.stage}）: ${result.error}`, "error");
     } finally {
-      if (probe) closeProbe(probe);
+      if (probe) await closeProbe(probe);
       result.elapsedMs = Date.now() - startedAt;
       log(`${t} 结束，用时 ${(result.elapsedMs / 1000).toFixed(1)}s，${result.ok ? "成功" : "未完全成功"}`, result.ok ? "success" : "warning");
     }

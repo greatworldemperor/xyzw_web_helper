@@ -489,11 +489,29 @@ export function registerDefaultCommands(reg) {
      })
    }
  
-   /** 发送心跳 */
-   sendHeartbeat() {
-     wsLogger.verbose('发送心跳消息')
-     this.send("heart_beat", {}, { respKey: "war_ping" })
-   }
+  /** 发送心跳 */
+  sendHeartbeat() {
+    wsLogger.verbose('发送心跳消息')
+    this.send("heart_beat", {}, { respKey: "war_ping" })
+  }
+
+  /**
+   * 等待发送队列排空（防 closeProbe 竞态吞帧）。
+   * 返回剩余未发送条数（0=全部上线）。连接已死时帧注定发不出去，直接返回，不做无谓等待。
+   */
+  flushSendQueue(timeoutMs = 2000) {
+    if (this.sendQueue.length === 0) return Promise.resolve(0)
+    if (!this.connected) return Promise.resolve(this.sendQueue.length)
+    const startedAt = Date.now()
+    return new Promise((resolve) => {
+      const tick = () => {
+        if (this.sendQueue.length === 0) return resolve(0)
+        if (Date.now() - startedAt >= timeoutMs) return resolve(this.sendQueue.length)
+        setTimeout(tick, 25)
+      }
+      tick()
+    })
+  }
  
    /** =============== 内部方法 =============== */
  
