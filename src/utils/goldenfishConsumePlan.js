@@ -78,6 +78,9 @@ export const GOLDENFISH_TASK_NAMES = Object.freeze({
 export const CHEST_POINTS = { 2001: 1, 2002: 10, 2003: 20, 2004: 50, 2005: 0 };
 
 export const WOODEN_BOX_ID = 2001;
+export const BRONZE_BOX_ID = 2002;
+export const GOLD_BOX_ID = 2003;
+export const PLATINUM_BOX_ID = 2004;
 export const DIAMOND_BOX_ID = 2005;
 /** 木制宝箱保留数量（全程不动，master 2026-09-26 口径） */
 export const WOODEN_RESERVE = 200;
@@ -92,6 +95,24 @@ export const FISH_BATCH_SIZE = 10;
 /** 宝箱积分兑换：一轮 9 档成本（合计 500 分），第 9 档必得钻石宝箱 */
 export const BOX_POINT_STEP_COSTS = [10, 20, 30, 40, 80, 100, 70, 50, 100];
 export const BOX_POINT_ROUND_TOTAL = 500;
+
+/**
+ * 每档兑换的**产出**（2026-09-28 master 补充，原文附录1「宝箱积分回收数据」）
+ *
+ * | Turn | 消耗 | 产出 | 内容 | | Turn | 消耗 | 产出 | 内容 | | Turn | 消耗 | 产出 | 内容 |
+ * |  1 |  10 | 10 | 青铜 | |  4 |  40 | 50 | 铂金 | |  7 |  70 | 20 | 黄金 |
+ * |  2 |  20 | 10 | 青铜 | |  5 |  80 | 50 | 铂金 | |  8 |  50 | 50 | 铂金 |
+ * |  3 |  30 | 20 | 黄金 | |  6 | 100 | 50 | 铂金 | |  9 | 100 |  0 | 钻石 |
+ *
+ * **每档只给 1 个宝箱**，数字是它的积分价值（10 分 = 1 个青铜 = itemId 2002 …）。
+ * 一轮合计 **500 分成本 → 260 分回收（52%）** ⇒ 兑换是**亏的**，
+ * 所以原文第 41 行要求「尽量减少兑换」，把未兑换积分留到活动结束后慢慢兑（利润最大化）。
+ */
+export const BOX_POINT_STEP_ITEMS = [2002, 2002, 2003, 2004, 2004, 2004, 2003, 2004, 2005];
+/** 每档产出的积分价值（= CHEST_POINTS[产出箱型]） */
+export const BOX_POINT_STEP_RETURN = [10, 10, 20, 50, 50, 50, 20, 50, 0];
+/** 一轮兑换的总回收分（260 / 500 = 52%） */
+export const BOX_POINT_ROUND_RETURN = 260;
 
 // ------------------------------------------------------------------ 通用工具
 

@@ -1,0 +1,2438 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>金鱼模拟器 · xyzw_web_helper_kai</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --border: #e3e6ea;
+    --border-strong: #cfd4da;
+    --text: #1f2328;
+    --text-dim: #656d76;
+    --text-faint: #8b949e;
+    --accent: #0969da;
+    --accent-soft: #ddf4ff;
+    --ok: #1a7f37;
+    --ok-soft: #dafbe1;
+    --warn: #9a6700;
+    --warn-soft: #fff8c5;
+    --err: #cf222e;
+    --err-soft: #ffebe9;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Microsoft YaHei", sans-serif;
+  }
+  .wrap { max-width: 1440px; margin: 0 auto; padding: 20px 20px 60px; }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  header p { margin: 0 0 18px; color: var(--text-dim); font-size: 13px; }
+  .layout { display: grid; grid-template-columns: 400px 1fr; gap: 18px; align-items: start; }
+  @media (max-width: 1080px) { .layout { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .panel + .panel { margin-top: 14px; }
+  .panel h2 {
+    margin: 0 0 12px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
+  .panel h2 .hint { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--text-faint); }
+
+  .field { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+  .field label { flex: 1; font-size: 13px; color: var(--text-dim); }
+  .field input {
+    width: 108px;
+    padding: 5px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    font: 13px var(--mono);
+    text-align: right;
+    background: #fff;
+    color: var(--text);
+  }
+  .field input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .field select {
+    flex: 1;
+    min-width: 0;
+    padding: 5px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Microsoft YaHei", sans-serif;
+    background: #fff;
+    color: var(--text);
+  }
+  .field select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .presets button {
+    padding: 5px 10px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--border-strong); background: #fff; color: var(--text-dim);
+    font-size: 12px;
+  }
+  .presets button:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+  .run {
+    width: 100%; padding: 11px; border: 0; border-radius: 8px; cursor: pointer;
+    background: var(--accent); color: #fff; font-size: 14px; font-weight: 600;
+  }
+  .run:hover { filter: brightness(1.06); }
+  .run:disabled { opacity: .5; cursor: default; }
+
+  .note {
+    font-size: 12px; line-height: 1.7; color: var(--text-dim);
+    border-left: 3px solid var(--warn); background: var(--warn-soft);
+    padding: 9px 11px; border-radius: 0 6px 6px 0; margin-top: 12px;
+  }
+  .note b { color: var(--warn); }
+  .note code { font: 11px var(--mono); background: rgba(0,0,0,.05); padding: 1px 4px; border-radius: 3px; }
+
+  /* ---- 判定横幅 ---- */
+  .verdict {
+    display: flex; align-items: center; gap: 14px; padding: 16px 18px;
+    border-radius: 10px; border: 1px solid var(--border); background: var(--panel);
+  }
+  .verdict .big { font-size: 15px; font-weight: 700; }
+  .verdict .sub { font-size: 12px; color: var(--text-dim); }
+  .verdict.ok { background: var(--ok-soft); border-color: #a2d8b0; }
+  .verdict.ok .big { color: var(--ok); }
+  .verdict.fail { background: var(--err-soft); border-color: #f0b4ae; }
+  .verdict.fail .big { color: var(--err); }
+  .verdict .metric { margin-left: auto; text-align: right; }
+  .verdict .metric .v { font: 700 22px var(--mono); }
+  .verdict .metric .k { font-size: 11px; color: var(--text-dim); }
+
+  /* ---- 统计条 ---- */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-top: 14px; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .stat .k { font-size: 11px; color: var(--text-dim); }
+  .stat .v { font: 600 17px var(--mono); margin-top: 2px; }
+
+  /* ---- 时间线 ---- */
+  .timeline { font: 12px/1.65 var(--mono); }
+  .tl-row { display: flex; gap: 9px; padding: 4px 0; border-bottom: 1px dashed #eef0f2; }
+  .tl-row:last-child { border-bottom: 0; }
+  .tl-phase {
+    flex: 0 0 40px; font-size: 11px; color: var(--text-faint); padding-top: 1px;
+  }
+  .tl-text { flex: 1; word-break: break-word; }
+  .tl-row.info .tl-text { color: var(--text-dim); }
+  .tl-row.success .tl-text { color: var(--ok); }
+  .tl-row.warning .tl-text { color: var(--warn); }
+  .tl-row.error .tl-text { color: var(--err); }
+
+  /* ---- 进度表 ---- */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-dim); font-size: 12px; font-weight: 600; }
+  td.num { font-family: var(--mono); text-align: right; white-space: nowrap; }
+  .bar { height: 6px; border-radius: 3px; background: #eef0f2; overflow: hidden; min-width: 90px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+  .bar.full > i { background: var(--ok); }
+
+  .kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 6px 18px; }
+  .kv div { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 4px 0; border-bottom: 1px dashed #eef0f2; }
+  .kv span:first-child { color: var(--text-dim); }
+  .kv span:last-child { font-family: var(--mono); }
+
+  .empty { color: var(--text-faint); font-size: 13px; padding: 24px 4px; text-align: center; white-space: pre-line; }
+  .src { font-size: 11px; color: var(--text-faint); font-family: var(--mono); word-break: break-all; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>🐟 金鱼活动模拟器</h1>
+    <p>
+      预设初始资源 → 完整跑一遍「消耗 → 收尾」→ 看结果。
+      引擎直接 import 生产源码 <code>goldenfishConsumePlan.js</code> / <code>goldenfishFinishPlan.js</code>，
+      命令顺序照抄 <code>tasksGoldenfish.js</code>，只把「游戏服务器」换成虚拟实现。
+      收尾严格照 <code>a_brief_introduction.txt</code> 第 129-137 行：
+      补满 4000/100000/<b>1300（下限）</b> → 领奖 → 开全部普通道具 → 按 25% 估缺口 →
+      <b>买原价鱼竿</b>（一笔支出同时推金砖+钓鱼，钓鱼可继续推到 <b>1750 全满</b>）→ 再领奖 → 再开道具。
+    </p>
+  </header>
+
+  <div class="layout">
+    <!-- ============ 左侧：输入 ============ -->
+    <div>
+      <div class="panel">
+        <h2>快捷预设</h2>
+        <div class="presets">
+          <button data-preset="capture">抓包账号（真实快照）</button>
+          <button data-preset="fresh">从零开始</button>
+          <button data-preset="nearly">快做完（运气差）</button>
+          <button data-preset="rich">资源拉满</button>
+        </div>
+
+        <h2>活动进度 <span class="hint">task[1..5]</span></h2>
+        <div class="grid2" id="grp-task"></div>
+
+        <h2>库存</h2>
+        <div class="grid2" id="grp-items"></div>
+
+        <h2>目标</h2>
+        <div class="grid2" id="grp-targets"></div>
+
+        <h2>补档策略 <span class="hint">原文第 134-135 行 + master 2026-09-28 拍板</span></h2>
+        <div class="field">
+          <label for="strategy">金砖消耗方案</label>
+          <select id="strategy">
+            <option value="twoForOne">2轮金砖换1轮钓鱼（推荐）</option>
+            <option value="master">金砖做满（不够再按钓鱼补）</option>
+            <option value="minimal">最小金砖代价</option>
+          </select>
+        </div>
+
+        <h2>已领奖记录 <span class="hint">record（每类已领的前 n 轮）</span></h2>
+        <div class="grid2" id="grp-record"></div>
+
+        <h2>模型参数 <span class="hint">（master 2026-09-28 已定口径）</span></h2>
+        <div id="grp-model"></div>
+
+        <div style="margin-top:14px">
+          <button class="run" id="run">▶ 跑一遍完整模拟</button>
+          <button class="run" id="dlJsonl" style="margin-left:8px;background:transparent;color:var(--accent)">
+            ⬇ 下载 JSONL 日志
+          </button>
+          <div class="hint" style="margin-top:6px">
+            JSONL = 每行一个 JSON 对象（meta 首行 + 档位总账 / 购买计划 / 复盘等事件全平铺），
+            下载后直接发给 master 分析，不用截图文本日志。
+          </div>
+        </div>
+
+        <div class="note">
+          <b>🔴 master 2026-09-28 四条澄清 + 「有保底」二次修正（已全部落进代码）：</b><br />
+          <b>1. 「开箱」= 开普通道具，不是开宝箱。</b>
+          宝箱只产宝箱积分，<b>对「拿金鱼」没有直接产出</b>（它只是积分/兑换的中间物）。
+          开普通道具产出特殊道具按 <b>「期望值 + 有界线性 bias」</b>建模（master 原话：
+          <i>「有保底，特殊道具数 = 普通道具数 × 0.25 + bias，bias ∈ [-5,5]，取整数，
+          bias 概率给个线性的就行了，不需要真的用正态分布」</i>）：
+          <code>base = n×0.25</code>，<code>结果 = clamp(round(base + bias), 0, n)</code>，
+          <code>bias</code> 是 <code>[-5,5]</code> 的整数、<b>概率线性</b>（峰在 0，权重 1-2-3-4-5-<b>6</b>-5-4-3-2-1）。
+          ⇒ <b>模拟器已删掉「保底次数」参数，也彻底删掉正态分布</b>（<code>normalRandom</code> 已移除）。<br />
+          &nbsp;&nbsp;<b>为什么这等价于「有保底」：</b><code>|bias| ≤ 5</code> ⇒ 偏差<b>绝对有界</b>，
+          开 1030 个道具时相对偏差 <b>≤ 1.94%</b>；且权重对称 ⇒ <code>E[bias] = 0</code>（期望不漂）。
+          对比之下正态模型的 <code>σ ≈ 13.9</code> 远大于 5，会<b>明显低估</b>成功率。<br />
+          <b>2. 「达成一轮就能领一轮」</b> ⇒ 已完成但未领的档位可以<b>逐轮补领</b>
+          （<code>missionId = (slot-1)×20 + round</code>，见下方「已领奖记录」）。<br />
+          <b>3. 买鱼竿的金砖计入活动进度</b>，这正是完成金砖消耗任务的<b>主要手段</b>。<br />
+          <b>4. 周四先补满钓鱼 1300 次（下限），再「看情况决定是否继续做下去」</b>
+          ⇒ <b>1300 是下限，不是上限</b>；钓鱼硬上限是 <b>1750（20 轮全满）</b>。<br />
+          <b>5. 鱼竿有 10% 返还率</b>（master 2026-09-28 补充）：
+          每次钓鱼期望净消耗 0.9 根 ⇒ <b>x 根鱼竿可钓 x/0.9 次</b>。
+          钓鱼补满要买的根数按 <code>次数 × 0.9</code> 折算（<b>金砖维度不变</b>——金砖任务看的是花出去的金砖，
+          返还的是鱼竿不是金砖）；库存鱼竿也按 <code>÷0.9</code> 折算成可钓次数。<br />
+          <b>6. 2 轮金砖换 1 轮钓鱼</b>（master 2026-09-28 拍板，<b>默认策略</b>）：
+          观察点 = 宝箱招募做满 + <b>金砖 38 万（轮 17）/ 钓鱼 1300（轮 17）</b> → 开道具看实际特殊数
+          → 按 25% 找任意可行解 → <b>金砖可做轮数 ≥2 且钓鱼有档，就把 2 轮金砖（8 万）的份额
+          改买 1 轮钓鱼的杆（135 根 = 8.1 万）</b> —— 杆钱计入金砖任务 ⇒ 金砖进度不减、
+          钓鱼白捡一档（24 道具）。收敛参考线 = <b>46 万（轮 19）</b>，第 20 轮金砖（4 万 → 12 道具）
+          是全链唯一低效支出，靠杆钱顺带跨过、不专门做。
+          蒙特卡洛：观察点 + 2换1 成功率 <b>100%</b>（600 种子，终态均值 252.7、区间 [250, 260]）。<br />
+          <b>最后兜底（master 2026-09-28 拍板）：</b>如果运气不好还差几个特殊道具，
+          就<b>补一轮金砖</b>（≈4 万金砖 → 12 个道具 → 期望 +3 特殊）——
+          游戏对特殊道具有<b>强控制</b>（实际出率紧贴 25%，偏差极小），
+          按 25% 找到的可行解落地后缺口只剩几个 ⇒ <b>补一轮金砖一定会够，不存在补不够的情况</b>。
+          这是 46 万收敛线的合法例外（第 20 轮平时不做，保命时随叫随到）。
+          <br />
+          <b>⇒ 由此修正的一个大结论（被修正了三次）：</b>
+          ① 把 1300 当硬上限 ⇒ 钓鱼只到 17/20 轮 ⇒ 道具上限被算成 <b>978</b>、成功率 ~20%；
+          ② 改回 1750 上限 ⇒ 本期道具上限 = <b>1050</b>；
+          ③ 把正态换成<b>有界 bias</b> ⇒ 成功率 <b>99.5%</b>（600 种子蒙特卡洛，区间 [249, 268]）。
+          钓鱼这一步<b>几乎白送</b>：金砖做满要买 ~800 根鱼竿，这些鱼竿本来就得消耗掉，
+          顺手就把钓鱼从 1300 推到 1750（1300 + 800 = 2100，早超了）。<br />
+          <b>周四执行顺序：</b>补满宝箱 100000 + 招募 4000 → <b>钓鱼先补到 1300</b> →
+          「看情况」由买鱼竿继续往 1750 推 → 领奖 → 开道具 → 补档循环。
+        </div>
+
+        <div class="note">
+          <b>来源与口径依据：</b><br />
+          ✅ <b>宝箱积分兑换产出</b> —— 附录1 逐档给出：9 档成本
+          <code>[10,20,30,40,80,100,70,50,100]</code>（一轮 500 分），
+          产出 <code>[青铜,青铜,黄金,铂金,铂金,铂金,黄金,铂金,钻石]</code> 各 1 个
+          ⇒ 一轮回收 <b>260 分（52%）</b>，<b>兑换本身是亏的</b>。<br />
+          ✅ <b>金砖消耗命令</b> —— 原文第 135 行：金砖消耗 = 买 <code>600</code> 一根的<b>原价鱼竿</b>。
+          一笔支出同时推进「金砖消耗」+「钓鱼消耗」⇒ 唯一决策变量 = 买多少根，
+          唯一代价 = <code>根数 × 600</code>（旧实现把它写成「金砖数 + 鱼竿数×600」是<b>重复计费</b>）。<br />
+          ✅ <b>开道具返还</b> —— 原文第 118-120 行（期望值）：每个道具 ≈
+          <code>0.5</code> 招募令 / <code>0.205</code> 铂金箱 / <code>107.304</code> 金砖 / <code>0.25</code> 特殊道具。<br />
+          &nbsp;&nbsp;🔴 <b>四项是「同时获取」，不是多选一</b>（master 澄清）—— 各自独立结算，
+          一个道具可以同时贡献四项，也可以四项都空。<b>「以 0.205 为准」也已确认</b>（第 80 行的「0.2」是简化写法）。<br />
+          &nbsp;&nbsp;为什么叫「期望值」：以铂金箱为例，真实分布是
+          <code>4.5%→2 个</code> / <code>1.1%→5 个</code> / <code>0.6%→10 个</code>，
+          加权和 = <b>0.205</b>（精确吻合）；而三者相加只有 <b>6.2%</b>，<b>其余 93.8% 一个都不掉</b>。
+          ⇒ <b>单次方差极大</b>，只有开成百上千个才收敛。
+          （master 口述的 6.1% 是心算滑了一下：4.5+1.1+0.6 = 6.2%。）<br />
+          <span style="opacity:.8">
+          ⚠️ 仅剩的未知（不再影响主结论）：<br />
+          &nbsp;&nbsp;1. bias 的<b>具体分布</b>是 master 指定的线性近似（<code>|bias| ≤ 5</code>，
+          权重 1-2-3-4-5-6-5-4-3-2-1），与真实服端的隐藏出货机制未必一致。
+          本模型定位是<b>验证逻辑</b>，不追求精确还原。
+          若真实分布更宽，成功率会回落 —— 正态口径 <b>72.5%</b> 可视为悲观下界参考。<br />
+          &nbsp;&nbsp;2. 「已完成未领」是否真能逐轮补领 —— master 已答「达成一轮就能领一轮」，
+          待真实服端再验一次即可。
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 右侧：输出 ============ -->
+    <div>
+      <div class="verdict" id="verdict">
+        <div>
+          <div class="big">等待运行</div>
+          <div class="sub">点左侧「跑一遍完整模拟」</div>
+        </div>
+      </div>
+
+      <div class="stats" id="stats"></div>
+
+      <div class="panel">
+        <h2>五类任务进度</h2>
+        <div id="rounds"><div class="empty">—</div></div>
+      </div>
+
+      <div class="panel">
+        <h2>收尾补档明细 <span class="hint">缺口 → 买原价鱼竿 → 再开道具</span></h2>
+        <div id="rodplan"><div class="empty">—</div></div>
+      </div>
+
+      <div class="panel">
+        <h2>开普通道具返还统计 <span class="hint">期望值口径（原文第 118-120 行）+ 有保底 bias</span></h2>
+        <div id="returns"><div class="empty">—</div></div>
+      </div>
+
+      <div class="panel">
+        <h2>剩余库存 &amp; 结果</h2>
+        <div id="inventory"><div class="empty">—</div></div>
+      </div>
+
+      <div class="panel">
+        <h2>执行时间线</h2>
+        <div class="timeline" id="timeline"><div class="empty">—</div></div>
+      </div>
+
+      <div class="panel">
+        <h2>命令统计</h2>
+        <div id="cmds"><div class="empty">—</div></div>
+        <div class="src" id="src" style="margin-top:10px"></div>
+      </div>
+
+      <div class="panel">
+        <h2>人工介入 <span class="hint">失败时导出完整记录（原文第 136 行）</span></h2>
+        <div id="dump"><div class="empty">—</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>(() => {
+  // src/utils/goldenfishConsumePlan.js
+  var GOLDENFISH_CONSUME_DEFAULTS = {
+    recruitTarget: 3900,
+    boxTarget: 99e3,
+    fishTarget: 1140
+  };
+  var GOLDENFISH_TASK_SLOTS = Object.freeze({
+    recruit: 1,
+    // 招募（消耗招募令 1001）
+    box: 2,
+    // 宝箱（积分）
+    fish: 3,
+    // 钓鱼（黄金鱼竿 1012）
+    jar: 4,
+    // 收罐子（自然完成）
+    gold: 5
+    // 金砖（收尾当天做）
+  });
+  var GOLDENFISH_TASK_NAMES = Object.freeze({
+    1: "\u62DB\u52DF",
+    2: "\u5B9D\u7BB1",
+    3: "\u9493\u9C7C",
+    4: "\u6536\u7F50\u5B50",
+    5: "\u91D1\u7816"
+  });
+  var CHEST_POINTS = { 2001: 1, 2002: 10, 2003: 20, 2004: 50, 2005: 0 };
+  var WOODEN_BOX_ID = 2001;
+  var PLATINUM_BOX_ID = 2004;
+  var WOODEN_RESERVE = 200;
+  var OPENBOX_BATCH_SIZE = 10;
+  var BOX_POINT_STEP_COSTS = [10, 20, 30, 40, 80, 100, 70, 50, 100];
+  var BOX_POINT_STEP_ITEMS = [2002, 2002, 2003, 2004, 2004, 2004, 2003, 2004, 2005];
+  var chunkBatches = (count, size = OPENBOX_BATCH_SIZE) => {
+    const total = Math.max(0, Math.floor(Number(count) || 0));
+    const step = Math.max(1, Math.floor(Number(size) || 1));
+    const out = [];
+    let left = total;
+    while (left > 0) {
+      const n = Math.min(step, left);
+      out.push(n);
+      left -= n;
+    }
+    return out;
+  };
+  var planCountConsume = ({ done, target, stock, batchSize }) => {
+    if (done == null || !Number.isFinite(Number(done))) {
+      return { ok: false, reason: "progress-unknown" };
+    }
+    const tgt = Math.max(0, Math.floor(Number(target) || 0));
+    const doneNum = Math.max(0, Math.floor(Number(done)));
+    const remaining = Math.max(0, tgt - doneNum);
+    if (remaining === 0) {
+      return { ok: true, remaining: 0, willDo: 0, batches: [], stockShort: false, reached: true };
+    }
+    const stockNum = stock == null ? Infinity : Math.max(0, Math.floor(Number(stock) || 0));
+    const willDo = Math.min(remaining, stockNum);
+    return {
+      ok: true,
+      remaining,
+      willDo,
+      batches: chunkBatches(willDo, batchSize),
+      stockShort: willDo < remaining,
+      reached: false
+    };
+  };
+  var readChestInventory = (items) => {
+    const out = {};
+    for (const id of Object.keys(CHEST_POINTS)) {
+      out[id] = 0;
+    }
+    if (!items) return out;
+    if (Array.isArray(items)) {
+      for (const it of items) {
+        const id = Number(it?.id ?? it?.itemId);
+        if (id in out) out[id] = Number(it?.num ?? it?.count ?? it?.quantity ?? 0) || 0;
+      }
+      return out;
+    }
+    if (typeof items !== "object") return out;
+    for (const id of Object.keys(CHEST_POINTS)) {
+      const node = items[id] ?? items[Number(id)];
+      if (node == null) continue;
+      out[id] = typeof node === "object" ? Number(node.quantity ?? node.num ?? node.count ?? 0) || 0 : Number(node) || 0;
+    }
+    return out;
+  };
+  var chestScoreAvailable = (inventory, { woodenReserve = WOODEN_RESERVE } = {}) => {
+    if (!inventory) return 0;
+    const inv = readChestInventory(inventory);
+    const wooden = Math.max(0, inv[WOODEN_BOX_ID] - Math.max(0, woodenReserve));
+    return inv[2004] * CHEST_POINTS[2004] + inv[2003] * CHEST_POINTS[2003] + inv[2002] * CHEST_POINTS[2002] + wooden * CHEST_POINTS[WOODEN_BOX_ID];
+  };
+  var planOpenAll = (inventory, { woodenReserve = WOODEN_RESERVE } = {}) => {
+    const inv = readChestInventory(inventory);
+    const steps = [];
+    const push = (itemId, count) => {
+      const n = Math.max(0, Math.floor(Number(count) || 0));
+      if (n > 0) steps.push({ itemId, number: n });
+    };
+    push(2004, inv[2004]);
+    push(2003, inv[2003]);
+    push(2002, inv[2002]);
+    push(WOODEN_BOX_ID, Math.max(0, inv[WOODEN_BOX_ID] - Math.max(0, woodenReserve)));
+    return steps;
+  };
+  var planPreciseOpen = (remainingScore, inventory, { woodenReserve = WOODEN_RESERVE } = {}) => {
+    const inv = readChestInventory(inventory);
+    const steps = [];
+    let remaining = Math.max(0, Math.floor(Number(remainingScore) || 0));
+    const tiers = [2004, 2003, 2002, WOODEN_BOX_ID];
+    for (const itemId of tiers) {
+      if (remaining <= 0) break;
+      const pts = CHEST_POINTS[itemId];
+      let count = inv[itemId];
+      if (itemId === WOODEN_BOX_ID) {
+        count = Math.max(0, count - Math.max(0, woodenReserve));
+      }
+      if (count <= 0) continue;
+      const totalScore = count * pts;
+      const plannedScore = Math.min(remaining, totalScore);
+      const plannedBoxes = Math.min(count, Math.ceil(plannedScore / pts));
+      steps.push({ itemId, number: plannedBoxes });
+      remaining -= plannedBoxes * pts;
+    }
+    return { steps, remainingScore: Math.max(0, remaining) };
+  };
+  var shouldKeepLooping = (accumulated, inventory, target, opts) => Math.floor(Number(accumulated) || 0) + chestScoreAvailable(inventory, opts) < Math.floor(Number(target) || 0);
+  var isActivityInstanceId = (id) => /^\d{7}$/.test(String(id ?? "").trim());
+  var isGoldenfishTaskMap = (task) => {
+    if (!task || typeof task !== "object" || Array.isArray(task)) return false;
+    const keys = Object.keys(task);
+    if (keys.length === 0) return false;
+    return keys.every((key) => {
+      const n = Number(key);
+      return Number.isInteger(n) && n >= 1 && n <= GOLDENFISH_TASK_SLOTS.gold;
+    });
+  };
+  var isFullGoldenfishTaskMap = (task) => {
+    if (!isGoldenfishTaskMap(task)) return false;
+    const unique = new Set(Object.keys(task).map((key) => Number(key)));
+    return unique.size === Object.keys(GOLDENFISH_TASK_SLOTS).length;
+  };
+  var extractCommonActivityInfo = (response) => {
+    if (!response || typeof response !== "object") return null;
+    const candidates = [
+      response.commonActivityInfo,
+      response.activity?.commonActivityInfo,
+      response.body?.commonActivityInfo,
+      response.body?.activity?.commonActivityInfo,
+      response.data?.commonActivityInfo,
+      response.data?.activity?.commonActivityInfo
+    ];
+    for (const candidate of candidates) {
+      if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
+  };
+  var resolveGoldenfishActivity = (commonActivityInfo, options = {}) => {
+    const info = commonActivityInfo && typeof commonActivityInfo === "object" ? commonActivityInfo : null;
+    if (!info) {
+      return { ok: false, reason: "\u672A\u53D6\u5230\u6D3B\u52A8\u6570\u636E\uFF08activity_get \u8FD4\u56DE\u91CC\u6CA1\u6709 commonActivityInfo\uFF09", candidates: [] };
+    }
+    const ids = Object.keys(info);
+    const candidates = ids.filter((id) => {
+      if (!isActivityInstanceId(id)) return false;
+      return isGoldenfishTaskMap(info[id]?.task);
+    });
+    const manualId = options.manualId === null || options.manualId === void 0 ? "" : String(options.manualId).trim();
+    if (manualId) {
+      if (!isActivityInstanceId(manualId)) {
+        return { ok: false, reason: `\u624B\u5DE5\u6307\u5B9A\u7684\u6D3B\u52A8 ID\u300C${manualId}\u300D\u4E0D\u662F 7 \u4F4D\u6570\u5B57\uFF08YYMMDD+\u529F\u80FD\u4F4D\uFF09`, candidates };
+      }
+      const entry2 = info[manualId];
+      if (!entry2 || typeof entry2 !== "object") {
+        return { ok: false, reason: `commonActivityInfo \u91CC\u6CA1\u6709\u6D3B\u52A8 ${manualId}\uFF08\u8BE5\u671F\u53EF\u80FD\u672A\u5F00\u542F\u6216\u5DF2\u6E05\u7406\uFF09`, candidates };
+      }
+      return {
+        ok: true,
+        activityId: manualId,
+        source: "manual",
+        entry: entry2,
+        task: entry2.task && typeof entry2.task === "object" ? entry2.task : {},
+        record: entry2.record && typeof entry2.record === "object" ? entry2.record : {},
+        candidates
+      };
+    }
+    if (candidates.length === 0) {
+      return {
+        ok: false,
+        reason: "\u672A\u627E\u5230\u91D1\u9C7C\u6D3B\u52A8\u5B9E\u4F8B\uFF08task \u952E\u5168\u90E8\u843D\u5728 1..5 \u7684\u6D3B\u52A8\uFF09\uFF1B\u6D3B\u52A8\u53EF\u80FD\u672A\u5F00\u542F/\u5DF2\u7ED3\u675F\uFF0C\u6216\u9700\u8981\u624B\u5DE5\u6307\u5B9A\u6D3B\u52A8 ID",
+        candidates
+      };
+    }
+    const full = candidates.filter((id) => isFullGoldenfishTaskMap(info[id]?.task));
+    const pool = full.length > 0 ? full : candidates;
+    const activityId = pool.reduce((best, id) => best === null || id > best ? id : best, null);
+    const entry = info[activityId];
+    return {
+      ok: true,
+      activityId,
+      source: "auto",
+      entry,
+      task: entry.task && typeof entry.task === "object" ? entry.task : {},
+      record: entry.record && typeof entry.record === "object" ? entry.record : {},
+      candidates
+    };
+  };
+  var readTaskValue = (task, slot) => {
+    if (!task || typeof task !== "object") return null;
+    const raw = task[slot] ?? task[String(slot)];
+    if (raw === null || raw === void 0 || raw === "") return null;
+    const value = Number(raw);
+    return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
+  };
+  var readActivityProgress = (response, options = {}) => {
+    const resolved = resolveGoldenfishActivity(extractCommonActivityInfo(response), options);
+    if (!resolved.ok) return null;
+    const { task } = resolved;
+    return {
+      activityId: resolved.activityId,
+      source: resolved.source,
+      recruitDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.recruit),
+      boxScoreDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.box),
+      fishDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.fish),
+      jarDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.jar),
+      goldDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.gold),
+      record: resolved.record,
+      candidates: resolved.candidates
+    };
+  };
+
+  // src/utils/goldenfishFinishPlan.js
+  var ROUNDS_PER_TASK = 20;
+  var GOLDENFISH_GOLD_UNIT = 1e4;
+  var GOLDENFISH_ROD_PRICE = 600;
+  var GOLDENFISH_FISH_MIN_TARGET = 1300;
+  var GOLDENFISH_FISH_FULL = 1750;
+  var GOLDENFISH_ROD_RETURN_RATE = 0.1;
+  var rodsToFishes = (rods, rate = GOLDENFISH_ROD_RETURN_RATE) => Math.floor(Math.max(0, Math.floor(Number(rods) || 0)) / Math.max(0.05, 1 - rate));
+  var fishesToRods = (fishes, rate = GOLDENFISH_ROD_RETURN_RATE) => Math.ceil(Math.max(0, Math.floor(Number(fishes) || 0)) * Math.min(1, Math.max(0, 1 - rate)));
+  var GOLDENFISH_PACK_RETURNS = Object.freeze({
+    recruitToken: 0.5,
+    platinumBox: 0.205,
+    gold: 107.304,
+    special: 0.25
+  });
+  var GOLDENFISH_PLATINUM_BOX_DROPS = Object.freeze([
+    { count: 2, rate: 0.045 },
+    { count: 5, rate: 0.011 },
+    { count: 10, rate: 6e-3 }
+  ]);
+  var GOLDENFISH_PLATINUM_BOX_HIT_RATE = Math.round(GOLDENFISH_PLATINUM_BOX_DROPS.reduce((s, d) => s + d.rate, 0) * 1e6) / 1e6;
+  var GOLDENFISH_TIERS = Object.freeze({
+    1: [
+      { rounds: 5, cost: 80, reward: 8 },
+      { rounds: 5, cost: 160, reward: 16 },
+      { rounds: 5, cost: 240, reward: 24 },
+      { rounds: 5, cost: 320, reward: 32 }
+    ],
+    2: [
+      { rounds: 5, cost: 2e3, reward: 4 },
+      { rounds: 5, cost: 4e3, reward: 8 },
+      { rounds: 5, cost: 6e3, reward: 12 },
+      { rounds: 5, cost: 8e3, reward: 16 }
+    ],
+    3: [
+      { rounds: 3, cost: 25, reward: 4 },
+      { rounds: 3, cost: 50, reward: 8 },
+      { rounds: 4, cost: 75, reward: 12 },
+      { rounds: 4, cost: 100, reward: 16 },
+      { rounds: 3, cost: 125, reward: 20 },
+      { rounds: 3, cost: 150, reward: 24 }
+    ],
+    4: [{ rounds: 20, cost: 3, reward: 1 }],
+    5: [
+      { rounds: 5, cost: 1, reward: 3 },
+      { rounds: 5, cost: 2, reward: 6 },
+      { rounds: 5, cost: 3, reward: 9 },
+      { rounds: 5, cost: 4, reward: 12 }
+    ]
+  });
+  var GOLDENFISH_UNIT_LABELS = Object.freeze({
+    1: "\u62DB\u52DF\u4EE4",
+    2: "\u5B9D\u7BB1\u79EF\u5206",
+    3: "\u9EC4\u91D1\u9C7C\u7AFF",
+    4: "\u7F50\u5B50",
+    5: "\u91D1\u7816"
+  });
+  var buildRoundTable = (slot) => {
+    const tiers = GOLDENFISH_TIERS[slot];
+    if (!tiers) return [];
+    const rows = [];
+    let threshold = 0;
+    let cumReward = 0;
+    let round = 0;
+    tiers.forEach((tier, tierIndex) => {
+      for (let i = 0; i < tier.rounds; i += 1) {
+        round += 1;
+        const cost = slot === 5 ? tier.cost * GOLDENFISH_GOLD_UNIT : tier.cost;
+        threshold += cost;
+        cumReward += tier.reward;
+        rows.push({
+          round,
+          tierIndex,
+          cost,
+          unit: tier.cost,
+          reward: tier.reward,
+          threshold,
+          cumReward
+        });
+      }
+    });
+    return rows;
+  };
+  var taskTotals = (slot) => {
+    const rows = buildRoundTable(slot);
+    const last = rows[rows.length - 1] ?? { threshold: 0, cumReward: 0 };
+    return { maxThreshold: last.threshold, maxReward: last.cumReward, rounds: rows.length };
+  };
+  var totalRewardAllTasks = () => Object.keys(GOLDENFISH_TIERS).reduce((sum, slot) => sum + taskTotals(Number(slot)).maxReward, 0);
+  var completedRounds = (slot, progress) => {
+    const value = Number(progress);
+    if (!Number.isFinite(value) || value <= 0) return 0;
+    const rows = buildRoundTable(slot);
+    let done = 0;
+    for (const row of rows) {
+      if (value >= row.threshold) done = row.round;
+      else break;
+    }
+    return done;
+  };
+  var costToReachRound = (slot, fromRound, toRound) => {
+    const rows = buildRoundTable(slot);
+    const from = Math.max(0, Math.floor(Number(fromRound) || 0));
+    const to = Math.max(from, Math.floor(Number(toRound) || 0));
+    let cost = 0;
+    for (const row of rows) {
+      if (row.round > from && row.round <= to) cost += row.cost;
+    }
+    return cost;
+  };
+  var rewardFromRoundTo = (slot, fromRound, toRound) => {
+    const rows = buildRoundTable(slot);
+    const from = Math.max(0, Math.floor(Number(fromRound) || 0));
+    const to = Math.max(from, Math.floor(Number(toRound) || 0));
+    let reward = 0;
+    for (const row of rows) {
+      if (row.round > from && row.round <= to) reward += row.reward;
+    }
+    return reward;
+  };
+  var toMissionId = (slot, round) => (slot - 1) * ROUNDS_PER_TASK + round;
+  var fromMissionId = (missionId) => {
+    const id = Math.floor(Number(missionId));
+    if (!Number.isFinite(id) || id < 1 || id > 5 * ROUNDS_PER_TASK) return null;
+    return {
+      slot: Math.floor((id - 1) / ROUNDS_PER_TASK) + 1,
+      round: (id - 1) % ROUNDS_PER_TASK + 1
+    };
+  };
+  var readClaimedMissionIds = (record) => {
+    const out = /* @__PURE__ */ new Set();
+    if (!record || typeof record !== "object") return out;
+    for (const key of Object.keys(record)) {
+      const id = Number(key);
+      if (Number.isFinite(id) && fromMissionId(id)) out.add(Math.trunc(id));
+    }
+    return out;
+  };
+  var rewardOfMission = (missionId) => {
+    const parsed = fromMissionId(missionId);
+    if (!parsed) return 0;
+    return buildRoundTable(parsed.slot)[parsed.round - 1]?.reward ?? 0;
+  };
+  var planClaimSweep = (progressBySlot, record, options = {}) => {
+    const claimed = record instanceof Set ? record : readClaimedMissionIds(record);
+    const maxRound = Number.isFinite(Number(options.maxRound)) ? Math.floor(Number(options.maxRound)) : ROUNDS_PER_TASK;
+    const pending = [];
+    for (const slot of Object.keys(GOLDENFISH_TIERS).map(Number)) {
+      const done = completedRounds(slot, progressBySlot?.[slot]);
+      const limit = Math.min(done, maxRound);
+      for (let round = 1; round <= limit; round += 1) {
+        const missionId = toMissionId(slot, round);
+        if (claimed.has(missionId)) continue;
+        pending.push({
+          slot,
+          round,
+          missionId,
+          reward: buildRoundTable(slot)[round - 1].reward
+        });
+      }
+    }
+    return {
+      pending,
+      items: pending.reduce((sum, item) => sum + item.reward, 0),
+      detected: pending.length,
+      alreadyClaimed: claimed.size,
+      /** 已领档位折算的道具数（与 `items` 同量纲，便于做「1050 = 已领 + 待领 + 剩余」总账） */
+      claimedItems: [...claimed].reduce((sum, id) => sum + rewardOfMission(id), 0)
+    };
+  };
+  var createRng = (seed = 20260928) => {
+    let state = Math.floor(Number(seed) || 20260928) >>> 0 || 1;
+    return () => {
+      state = state + 1831565813 >>> 0;
+      let t = state;
+      t = Math.imul(t ^ t >>> 15, t | 1);
+      t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  };
+  var GOLDENFISH_PACK_BIAS_MAX = 5;
+  var GOLDENFISH_PACK_BIAS_WEIGHTS = Object.freeze(
+    Array.from(
+      { length: GOLDENFISH_PACK_BIAS_MAX * 2 + 1 },
+      (_, i) => GOLDENFISH_PACK_BIAS_MAX + 1 - Math.abs(i - GOLDENFISH_PACK_BIAS_MAX)
+    )
+  );
+  var GOLDENFISH_PACK_BIAS_TOTAL = GOLDENFISH_PACK_BIAS_WEIGHTS.reduce(
+    (s, w) => s + w,
+    0
+  );
+  var packBias = (rng) => {
+    const roll = Number(rng()) * GOLDENFISH_PACK_BIAS_TOTAL;
+    let acc = 0;
+    for (let i = 0; i < GOLDENFISH_PACK_BIAS_WEIGHTS.length; i += 1) {
+      acc += GOLDENFISH_PACK_BIAS_WEIGHTS[i];
+      if (roll < acc) return i - GOLDENFISH_PACK_BIAS_MAX;
+    }
+    return 0;
+  };
+  var openPacks = (options = {}) => {
+    const count = Math.max(0, Math.floor(Number(options.count) || 0));
+    const p = Number.isFinite(Number(options.rate)) && Number(options.rate) >= 0 && Number(options.rate) <= 1 ? Number(options.rate) : 0.25;
+    const rng = typeof options.rng === "function" ? options.rng : createRng(options.seed);
+    const base = count * p;
+    const bias = count > 0 ? packBias(rng) : 0;
+    const raw = Math.round(base + bias);
+    const special = Math.max(0, Math.min(count, raw));
+    return {
+      special,
+      packs: count,
+      openedCount: Math.max(0, Math.floor(Number(options.openedCount) || 0)) + count,
+      base,
+      mean: base,
+      // 兼容旧字段名（= 期望值基线）
+      bias,
+      biasMax: GOLDENFISH_PACK_BIAS_MAX,
+      deviation: special - base
+      // 实际相对期望的偏移（含取整，故可达 ±5.5）
+    };
+  };
+  var packsNeededForGap = (gap, rate = 0.25) => {
+    const g = Math.max(0, Math.ceil(Number(gap) || 0));
+    const r = Number.isFinite(Number(rate)) && Number(rate) > 0 ? Number(rate) : 0.25;
+    return Math.ceil(g / r);
+  };
+  var openPackReturns = (packs) => {
+    const n = Math.max(0, Number(packs) || 0);
+    return {
+      recruitToken: n * GOLDENFISH_PACK_RETURNS.recruitToken,
+      platinumBox: n * GOLDENFISH_PACK_RETURNS.platinumBox,
+      gold: n * GOLDENFISH_PACK_RETURNS.gold,
+      special: n * GOLDENFISH_PACK_RETURNS.special
+    };
+  };
+  var planRodPurchase = (options = {}) => {
+    const progress = options.progressBySlot || {};
+    const needItems = Math.max(1, Math.ceil(Number(options.needItems) || 0));
+    const price = Number.isFinite(Number(options.rodPrice)) && Number(options.rodPrice) > 0 ? Number(options.rodPrice) : GOLDENFISH_ROD_PRICE;
+    const fishCap = Number.isFinite(Number(options.fishCap)) ? Math.max(0, Math.floor(Number(options.fishCap))) : GOLDENFISH_FISH_FULL;
+    const goldMax = Number.isFinite(Number(options.goldMax)) ? Math.max(0, Math.floor(Number(options.goldMax))) : taskTotals(5).maxThreshold;
+    const goldInStock = Number.isFinite(Number(options.goldInStock)) ? Math.max(0, Number(options.goldInStock)) : Infinity;
+    const rodsInStock = Number.isFinite(Number(options.rodsInStock)) ? Math.max(0, Math.floor(Number(options.rodsInStock))) : 0;
+    const rodReturn = Math.min(0.95, Math.max(0, Number(options.rodReturnRate ?? GOLDENFISH_ROD_RETURN_RATE) || 0));
+    const fishPerRod = 1 / (1 - rodReturn);
+    const gd = Math.max(0, Math.floor(Number(progress[5]) || 0));
+    const fd = Math.max(0, Math.floor(Number(progress[3]) || 0));
+    const goldDone0 = completedRounds(5, gd);
+    const fishDone0 = completedRounds(3, fd);
+    const goldRoom = Math.max(0, goldMax - gd);
+    const fishRoom = Math.max(0, fishCap - fd);
+    const freeFish = Math.min(rodsInStock, fishesToRods(fishRoom, rodReturn));
+    const rodsForGoldFull = Math.ceil(goldRoom / price);
+    const affordable = Number.isFinite(goldInStock) ? Math.floor(goldInStock / price) : Infinity;
+    const rodsForFishCap = Math.max(
+      0,
+      fishesToRods(fishRoom, rodReturn) - freeFish
+    );
+    const rodsWanted = Math.max(rodsForGoldFull, rodsForFishCap);
+    const maxRods = Math.min(rodsWanted, affordable);
+    const goldNeeded = rodsWanted * price;
+    const goldShortfall = Number.isFinite(goldInStock) ? Math.max(0, goldNeeded - goldInStock) : 0;
+    const goldBlocked = goldShortfall > 0;
+    const freeItems = rewardFromRoundTo(4, completedRounds(4, progress[4]), taskTotals(4).rounds);
+    const build = (rods) => {
+      const goldSpend = rods * price;
+      const goldAfter = gd + goldSpend;
+      const fishCapacity = Math.floor((rods + freeFish) * fishPerRod);
+      const fishAfter = fd + Math.min(fishCapacity, fishRoom);
+      const goldRound = completedRounds(5, goldAfter);
+      const fishRound = completedRounds(3, fishAfter);
+      const items = rewardFromRoundTo(5, goldDone0, goldRound) + rewardFromRoundTo(3, fishDone0, fishRound);
+      return {
+        rods,
+        goldSpend,
+        goldUnits: Math.floor(goldSpend / GOLDENFISH_GOLD_UNIT),
+        goldAfter,
+        fishAfter,
+        goldRound,
+        fishRound,
+        items,
+        /** 买杆收益 + 罐子白送 = 「这一轮的可得总量」 */
+        totalItems: items + freeItems,
+        weight: goldSpend,
+        // 唯一代价 = 金砖支出
+        goldFull: goldAfter >= goldMax,
+        fishCapped: fishAfter >= fishCap
+      };
+    };
+    const plans = [];
+    for (let rods = 0; rods <= maxRods; rods += 1) plans.push(build(rods));
+    const feasible = plans.filter((p) => p.totalItems >= needItems);
+    const minimal = feasible.length > 0 ? feasible.reduce((best, p) => p.goldSpend < best.goldSpend ? p : best, feasible[0]) : null;
+    const goldFullPlan = build(Math.min(rodsForGoldFull, maxRods));
+    const master = goldFullPlan.totalItems >= needItems ? goldFullPlan : build(maxRods);
+    const maxItems = plans.length > 0 ? plans[plans.length - 1].items : 0;
+    const maxTotal = maxItems + freeItems;
+    const ok = maxTotal >= needItems;
+    const reason = ok ? "" : goldRoom <= 0 && fishRoom <= 0 ? "\u91D1\u7816\u4E0E\u9493\u9C7C\u6863\u4F4D\u90FD\u5DF2\u505A\u6EE1\uFF0C\u65E0\u6863\u4F4D\u53EF\u518D\u63A8\u8FDB" : goldBlocked ? `\u91D1\u7816\u4E0D\u8DB3\uFF1A\u505A\u5230\u91D1\u7816\u6EE1\uFF08${goldMax}\uFF09\u9700\u4E70 ${rodsWanted} \u6839 = ${goldNeeded} \u91D1\u7816\uFF0C\u624B\u4E0A\u53EA\u6709 ${goldInStock}\uFF08\u5DEE ${goldShortfall}\uFF09\uFF1B\u53EA\u4E70\u5F97\u8D77 ${maxRods} \u6839 \u2192 \u6700\u591A\u518D\u62FF ${maxTotal} \u4E2A\u666E\u901A\u9053\u5177\uFF08\u9700\u8981 ${needItems}\uFF09` : `\u6863\u4F4D\u5DF2\u69A8\u5E72\uFF1A\u91D1\u7816\u505A\u6EE1\uFF08${goldMax}\uFF09+ \u9493\u9C7C\u8865\u5230 ${fishCap} \u4E5F\u53EA\u80FD\u518D\u62FF ${maxTotal} \u4E2A\u666E\u901A\u9053\u5177\uFF08\u9700\u8981 ${needItems}\uFF09`;
+    return {
+      ok,
+      reason,
+      /** "gold" = 金砖不够（可补金砖解决）｜"tiers" = 档位真的榨干｜null = 可行 */
+      blockedBy: ok ? null : goldBlocked ? "gold" : "tiers",
+      best: minimal,
+      minimal,
+      master,
+      plans,
+      /**
+       * 按任意买杆数构造同构方案（`twoForOneCandidate` 的执行器）。
+       * 参数与 `plans` 元素同构：`{ rods, goldSpend, goldAfter, fishAfter, goldRound,
+       * fishRound, items, totalItems, weight, goldFull, fishCapped }`。
+       */
+      buildAt: build,
+      maxItems,
+      /** 买杆能拿的上限 + 罐子白送的上限 = 判定「够不够」的分母 */
+      maxTotal,
+      /** 罐子（slot 4）剩余轮次的奖励（自然完成，与买杆无关） */
+      freeItems,
+      /** 「做满」需要买的根数 / 需要多少金砖 / 还差多少金砖 */
+      rodsWanted,
+      goldNeeded,
+      goldShortfall,
+      rodsAffordable: Number.isFinite(affordable) ? affordable : null,
+      rodsForGoldFull,
+      rodsForFishCap,
+      freeFish,
+      fishRoom,
+      /** 鱼竿返还率（master 2026-09-28：钓鱼 10% 返还 ⇒ x 根可钓 x/0.9 次） */
+      rodReturnRate: rodReturn,
+      caps: { goldMax, fishCap, price, goldInStock, rodsInStock },
+      progress: { gold: gd, fish: fd }
+    };
+  };
+  var twoForOneCandidate = (progressBySlot, options = {}) => {
+    const progress = progressBySlot || {};
+    const rodReturn = Math.min(
+      0.95,
+      Math.max(0, Number(options.rodReturnRate ?? GOLDENFISH_ROD_RETURN_RATE) || 0)
+    );
+    const price = Number.isFinite(Number(options.rodPrice)) && Number(options.rodPrice) > 0 ? Number(options.rodPrice) : GOLDENFISH_ROD_PRICE;
+    const goldLeft = Math.max(0, ROUNDS_PER_TASK - completedRounds(5, progress[5]));
+    const fishDone = completedRounds(3, progress[3]);
+    const fishLeft = Math.max(0, ROUNDS_PER_TASK - fishDone);
+    if (goldLeft < 2 || fishLeft <= 0) {
+      return {
+        apply: false,
+        rods: 0,
+        fishRoundCost: 0,
+        goldSpend: 0,
+        goldLeft,
+        fishLeft,
+        reason: goldLeft < 2 ? `\u91D1\u7816\u7A97\u53E3\u53EA\u5269 ${goldLeft} \u8F6E\uFF08< 2\uFF09\uFF0C\u6746\u94B1\u4F1A\u5927\u91CF\u6EA2\u51FA\uFF0C\u4E0D\u6362` : `\u9493\u9C7C\u5DF2\u65E0\u6863\u53EF\u505A\uFF08${fishLeft} \u8F6E\uFF09\uFF0C\u4E0D\u6362`
+      };
+    }
+    const fishRoundCost = costToReachRound(3, fishDone, fishDone + 1);
+    const rods = fishesToRods(fishRoundCost, rodReturn);
+    return {
+      apply: rods > 0,
+      rods,
+      fishRoundCost,
+      goldSpend: rods * price,
+      goldLeft,
+      fishLeft,
+      reason: rods > 0 ? `\u91D1\u7816\u7A97\u53E3 ${goldLeft} \u8F6E + \u9493\u9C7C\u5269 ${fishLeft} \u8F6E \u2192 \u4E70 ${rods} \u6839\u6746\uFF08${rods * price} \u91D1\u7816 \u2248 2 \u8F6E\u91D1\u7816\uFF09\u6362 1 \u8F6E\u9493\u9C7C\uFF08+${fishRoundCost} \u6B21\uFF09` : "\u4E0B\u4E00\u8F6E\u9493\u9C7C\u6D88\u8017\u4E3A 0\uFF0C\u65E0\u9700\u4EA4\u6362"
+    };
+  };
+
+  // tools/goldenfish-simulator/engine.js
+  var ITEM_RECRUIT = 1001;
+  var ITEM_GOLD_ROD = 1012;
+  var ITEM_PACK_NORMAL = 5287;
+  var ITEM_PACK_SPECIAL = 5286;
+  var ACTIVITY_ID = "2609251";
+  var createSimServer = (preset = {}) => {
+    const items = { ...preset.items || {} };
+    const task = { ...preset.task || {} };
+    const record = { ...preset.record || {} };
+    let boxPoint = Math.max(0, Math.floor(Number(preset.boxPoint) || 0));
+    let boxPointPos = Math.max(0, Math.floor(Number(preset.boxPointLastReward) || 0));
+    let gold = Math.max(0, Math.floor(Number(preset.gold) || 0));
+    const returnAcc = { recruit: 0, platinum: 0, gold: 0 };
+    const issuedReturn = { recruit: 0, platinum: 0, gold: 0 };
+    const issueReturn = (kind, amount) => {
+      const add = Number(amount);
+      if (!Number.isFinite(add) || add <= 0) return 0;
+      returnAcc[kind] += add;
+      const target = Math.floor(returnAcc[kind]);
+      const gain = target - issuedReturn[kind];
+      if (gain > 0) issuedReturn[kind] = target;
+      return gain > 0 ? gain : 0;
+    };
+    const rng = preset.rng || (() => 0.5);
+    const calls = [];
+    const bump = (itemId, delta) => {
+      const cur = Number(items[itemId]) || 0;
+      items[itemId] = Math.max(0, cur + delta);
+    };
+    const take = (itemId, want) => {
+      const cur = Math.max(0, Math.floor(Number(items[itemId]) || 0));
+      const got = Math.min(cur, Math.max(0, Math.floor(want || 0)));
+      items[itemId] = cur - got;
+      return got;
+    };
+    const activityResponse = () => ({
+      body: {
+        activity: {
+          commonActivityInfo: {
+            // 干扰项 1：同为 7 位、无 task
+            "2609252": { openTime: 1, closeTime: 2 },
+            // 干扰项 2：有 task 但键是负数
+            "2609255": { task: { "-1": 10, "-2": 20, "-4": 30, "-5": 40 } },
+            [ACTIVITY_ID]: {
+              task: { ...task },
+              record: { ...record }
+            }
+          }
+        }
+      }
+    });
+    const roleResponse = () => ({
+      role: {
+        items: { ...items },
+        gold,
+        boxPoint,
+        boxPointLastReward: boxPointPos
+      }
+    });
+    const addTask = (slot, amount) => {
+      const cur = Math.max(0, Math.floor(Number(task[slot]) || 0));
+      task[slot] = cur + Math.max(0, Math.floor(Number(amount) || 0));
+    };
+    const handle = (cmd, params = {}) => {
+      calls.push({ cmd, params: { ...params } });
+      switch (cmd) {
+        case "activity_get":
+          return activityResponse();
+        case "role_getroleinfo":
+          return roleResponse();
+        case "hero_recruit": {
+          const want = Math.max(0, Math.floor(Number(params.recruitNumber) || 0));
+          const got = take(ITEM_RECRUIT, want);
+          addTask(GOLDENFISH_TASK_SLOTS.recruit, got);
+          return { role: { items: { ...items } }, recruited: got };
+        }
+        case "artifact_lottery": {
+          const want = Math.max(0, Math.floor(Number(params.lotteryNumber) || 0));
+          const cost = fishesToRods(want);
+          const got = take(ITEM_GOLD_ROD, cost);
+          const fished = rodsToFishes(got);
+          addTask(GOLDENFISH_TASK_SLOTS.fish, fished);
+          return { role: { items: { ...items } }, fished, rodsCost: cost };
+        }
+        case "item_openbox": {
+          const itemId = Number(params.itemId);
+          const want = Math.max(0, Math.floor(Number(params.number) || 0));
+          const pts = CHEST_POINTS[itemId];
+          if (!pts) return { role: { items: { ...items }, boxPoint, boxPointLastReward: boxPointPos } };
+          const got = take(itemId, want);
+          const score = got * pts;
+          addTask(GOLDENFISH_TASK_SLOTS.box, score);
+          boxPoint += score;
+          return { role: { items: { ...items }, boxPoint, boxPointLastReward: boxPointPos } };
+        }
+        case "item_claimboxpointreward": {
+          const pos = boxPointPos;
+          const cost = BOX_POINT_STEP_COSTS[pos];
+          if (boxPoint < cost) {
+            return { code: 400999, error: "\u79EF\u5206\u4E0D\u8DB3" };
+          }
+          boxPoint -= cost;
+          const rewardItem = BOX_POINT_STEP_ITEMS[pos];
+          boxPointPos = (pos + 1) % BOX_POINT_STEP_COSTS.length;
+          if (rewardItem) bump(rewardItem, 1);
+          return {
+            role: { items: { ...items }, boxPoint, boxPointLastReward: boxPointPos },
+            rewardItemId: rewardItem,
+            cost
+          };
+        }
+        case "activity_claimtaskreward": {
+          const missionId = Math.floor(Number(params.missionId) || 0);
+          if (record[missionId] != null) {
+            return { code: 400998, error: "\u8BE5\u6863\u4F4D\u5956\u52B1\u5DF2\u9886\u53D6" };
+          }
+          const slot = Math.floor((missionId - 1) / 20) + 1;
+          const round = (missionId - 1) % 20 + 1;
+          const rows = buildRoundTable(slot);
+          const row = rows[round - 1];
+          if (!row) return { code: 400997, error: "\u6863\u4F4D\u4E0D\u5B58\u5728" };
+          const cur = Math.max(0, Math.floor(Number(task[slot]) || 0));
+          if (cur < row.threshold) return { code: 400996, error: "\u6863\u4F4D\u672A\u8FBE\u6210" };
+          record[missionId] = 1759e6 + missionId;
+          bump(ITEM_PACK_NORMAL, row.reward);
+          return {
+            body: { record: { ...record } },
+            reward: { itemId: ITEM_PACK_NORMAL, count: row.reward }
+          };
+        }
+        case "item_openpack": {
+          const want = Math.max(0, Math.floor(Number(params.number) || 0));
+          const got = take(ITEM_PACK_NORMAL, want);
+          const res = openPacks({
+            count: got,
+            rate: preset.packRate,
+            rng
+          });
+          if (res.special > 0) bump(ITEM_PACK_SPECIAL, res.special);
+          const exact = openPackReturns(got);
+          const recruitGain = issueReturn("recruit", exact.recruitToken);
+          const platGain = issueReturn("platinum", exact.platinumBox);
+          const goldGain = issueReturn("gold", exact.gold);
+          if (recruitGain > 0) bump(ITEM_RECRUIT, recruitGain);
+          if (platGain > 0) bump(PLATINUM_BOX_ID, platGain);
+          if (goldGain > 0) gold += goldGain;
+          return {
+            role: { items: { ...items }, gold },
+            special: res.special,
+            // 保底口径的诊断量：本批的期望基线 / 抽到的 bias / 实际偏移
+            packBias: { base: res.base, bias: res.bias, deviation: res.deviation, openedCount: res.openedCount },
+            returns: { recruitGain, platGain, goldGain, exact }
+          };
+        }
+        case "buy_rod": {
+          const want = Math.max(0, Math.floor(Number(params.count) || 0));
+          const affordable = Math.floor(gold / GOLDENFISH_ROD_PRICE);
+          const got = Math.min(want, affordable);
+          const spend = got * GOLDENFISH_ROD_PRICE;
+          gold -= spend;
+          bump(ITEM_GOLD_ROD, got);
+          addTask(GOLDENFISH_TASK_SLOTS.gold, spend);
+          return { role: { items: { ...items }, gold }, bought: got, spend };
+        }
+        default:
+          return { code: 4e5, error: `\u6A21\u62DF\u5668\u672A\u5B9E\u73B0\u7684\u547D\u4EE4\uFF1A${cmd}` };
+      }
+    };
+    return {
+      handle,
+      calls,
+      /**
+       * 直接写任务进度（**只用于模拟「自然完成」**）。
+       *
+       * 🔴 罐子（slot 4）的消耗命令尚未抓包 ⇒ 引擎的「罐子白送」步只发奖开包、
+       * 没有命令可推进 task.4。若不把它写满，后续每轮 `planRodPurchase` 都会把
+       * 罐子剩余轮次的 `freeItems`(20) 重复计入 totalItems ⇒ `minimal` 恒为 0 根
+       * ⇒ 补档循环空转到迭代上限（fresh 预设 + twoForOne 实测卡 248/250）。
+       * 纯逻辑版 `simulateFinish` 早就写了 `progress[4] = maxThreshold`，引擎漏了对齐。
+       */
+      forceTask: (slot, value) => {
+        task[slot] = Math.max(0, Math.floor(Number(value) || 0));
+      },
+      get items() {
+        return { ...items };
+      },
+      get task() {
+        return { ...task };
+      },
+      get record() {
+        return { ...record };
+      },
+      get boxPoint() {
+        return boxPoint;
+      },
+      get gold() {
+        return gold;
+      }
+    };
+  };
+  var fmt = (v) => Number(v || 0).toLocaleString("zh-CN");
+  var createLogger = () => {
+    const lines = [];
+    const push = (level, text, extra) => lines.push({ level, text, ...extra || {} });
+    return {
+      lines,
+      info: (t, extra) => push("info", t, extra),
+      success: (t, extra) => push("success", t, extra),
+      warning: (t, extra) => push("warning", t, extra),
+      error: (t, extra) => push("error", t, extra)
+    };
+  };
+  var runConsumePhase = (server, config = {}) => {
+    const log = createLogger();
+    const events = [];
+    const ev = (event, data) => {
+      events.push({ phase: "consume", event, seq: events.length, ...data });
+    };
+    const targets = {
+      recruit: Math.max(0, Math.floor(Number(config.recruitTarget ?? GOLDENFISH_CONSUME_DEFAULTS.recruitTarget))),
+      box: Math.max(0, Math.floor(Number(config.boxTarget ?? GOLDENFISH_CONSUME_DEFAULTS.boxTarget))),
+      fish: Math.max(0, Math.floor(Number(config.fishTarget ?? GOLDENFISH_CONSUME_DEFAULTS.fishTarget)))
+    };
+    const stats = { frames: 0, recruitFrames: 0, boxFrames: 0, fishFrames: 0, exchangeFrames: 0 };
+    const ALL_STEPS = ["recruit", "box", "fish"];
+    const steps = Array.isArray(config.steps) ? ALL_STEPS.filter((s) => config.steps.includes(s)) : ALL_STEPS;
+    const want = (s) => steps.includes(s);
+    const send = (cmd, params) => {
+      stats.frames += 1;
+      return server.handle(cmd, params);
+    };
+    if (want("recruit")) {
+      const activity = send("activity_get", {});
+      const progress = readActivityProgress(activity);
+      if (!progress) {
+        const diag = resolveGoldenfishActivity(extractCommonActivityInfo(activity));
+        log.warning(`\u62DB\u52DF\u6D88\u8017\u8DF3\u8FC7\uFF1A\u6D3B\u52A8\u7D2F\u79EF\u8FDB\u5EA6\u4E0D\u53EF\u8BFB\uFF08${diag.reason}\uFF09`);
+      } else if (progress.recruitDone == null) {
+        log.warning(`\u62DB\u52DF\u6D88\u8017\u8DF3\u8FC7\uFF1A\u6D3B\u52A8 ${progress.activityId} \u7F3A task.1\uFF08\u62DB\u52DF\uFF09\u8FDB\u5EA6\u5B57\u6BB5`);
+      } else {
+        const role = send("role_getroleinfo", {});
+        const stock = Math.max(0, Math.floor(Number(role?.role?.items?.[ITEM_RECRUIT]) || 0));
+        const plan = planCountConsume({
+          done: progress.recruitDone,
+          target: targets.recruit,
+          stock,
+          batchSize: 10
+        });
+        if (plan.reached) {
+          log.success(
+            `\u62DB\u52DF\u6D88\u8017\u5DF2\u8FBE\u76EE\u6807\uFF08\u76EE\u6807 ${fmt(targets.recruit)} / \u5DF2\u505A ${fmt(progress.recruitDone)} / \u5DEE\u503C 0 / \u62DB\u52DF\u4EE4\u5E93\u5B58 ${fmt(stock)}\uFF09`
+          );
+        } else {
+          log.info(
+            `\u62DB\u52DF\u6D88\u8017\u5F00\u59CB\uFF08\u6D3B\u52A8 ${progress.activityId}\uFF09\uFF1A\u76EE\u6807 ${fmt(targets.recruit)} / \u5DF2\u505A ${fmt(progress.recruitDone)} / \u5DEE\u503C ${fmt(plan.remaining)} / \u62DB\u52DF\u4EE4\u5E93\u5B58 ${fmt(stock)}`
+          );
+          let done = progress.recruitDone;
+          let sent = 0;
+          for (const n of plan.batches) {
+            send("hero_recruit", { recruitType: 1, recruitNumber: n });
+            stats.recruitFrames += 1;
+            done += n;
+            sent += 1;
+            if (sent % 50 === 0) log.info(`\u62DB\u52DF\u6D88\u8017\u8FDB\u5EA6\uFF1A${fmt(done)}/${fmt(targets.recruit)}\uFF08\u5DF2\u53D1 ${sent} \u5E27\uFF09`);
+          }
+          log[plan.stockShort ? "warning" : "success"](
+            `\u62DB\u52DF\u6D88\u8017\u7ED3\u675F\uFF1A\u672C\u6B21 ${fmt(plan.willDo)}\uFF0C\u7D2F\u8BA1 ${fmt(done)}/${fmt(targets.recruit)}` + (plan.stockShort ? `\uFF1B\u26A0\uFE0F \u62DB\u52DF\u4EE4\u4E0D\u8DB3\uFF0C\u8FD8\u5DEE ${fmt(plan.remaining - plan.willDo)} \u6B21\uFF0C\u7B49\u9ED1\u5E02\u8865\u8D27\u540E\u518D\u8DD1` : "")
+          );
+          ev("fillup", { step: "recruit", done, target: targets.recruit, stockShort: !!plan.stockShort });
+        }
+      }
+    }
+    if (want("box")) {
+      const activity = send("activity_get", {});
+      const progress = readActivityProgress(activity);
+      if (!progress || progress.boxScoreDone == null) {
+        log.warning(
+          progress ? `\u5B9D\u7BB1\u6D88\u8017\u8DF3\u8FC7\uFF1A\u6D3B\u52A8 ${progress.activityId} \u7F3A task.2\uFF08\u5B9D\u7BB1\uFF09\u8FDB\u5EA6\u5B57\u6BB5` : "\u5B9D\u7BB1\u6D88\u8017\u8DF3\u8FC7\uFF1A\u6D3B\u52A8\u7D2F\u79EF\u8FDB\u5EA6\u4E0D\u53EF\u8BFB"
+        );
+      } else {
+        let role = send("role_getroleinfo", {});
+        let accumulated = progress.boxScoreDone;
+        log.info(
+          `\u5B9D\u7BB1\u6D88\u8017\u5F00\u59CB\uFF08\u6D3B\u52A8 ${progress.activityId}\uFF09\uFF1A\u76EE\u6807 ${fmt(targets.box)} / \u5DF2\u505A ${fmt(accumulated)} / \u5DEE\u503C ${fmt(Math.max(0, targets.box - accumulated))} / \u5B9D\u7BB1\u5E93\u5B58 -`
+        );
+        let round = 0;
+        let noGrowthRounds = 0;
+        const MAX_ROUNDS = 200;
+        while (shouldKeepLooping(accumulated, role?.role?.items, targets.box)) {
+          round += 1;
+          if (round > MAX_ROUNDS) {
+            log.warning(`\u5B9D\u7BB1\u63A8\u8FDB\u5FAA\u73AF\u8D85 ${MAX_ROUNDS} \u8F6E\uFF0C\u4E2D\u6B62\uFF08\u5F53\u524D\u7D2F\u79EF ${fmt(accumulated)}\uFF09`);
+            break;
+          }
+          const openPlan = planOpenAll(role?.role?.items);
+          if (openPlan.length === 0) {
+            log.warning(
+              `\u5B9D\u7BB1\u6D88\u8017\u6682\u505C\uFF1A\u79EF\u5206\u4E0D\u8DB3\u4E14\u65E0\u7BB1\u53EF\u5F00\uFF08\u7D2F\u79EF ${fmt(accumulated)}/${fmt(targets.box)}\uFF09\uFF0C\u7B49\u5546\u5E97\u8865\u8D27\u540E\u518D\u8DD1`
+            );
+            break;
+          }
+          let lastResp = null;
+          for (const step of openPlan) {
+            for (const n of chunkBatches(step.number, 10)) {
+              lastResp = send("item_openbox", { itemId: step.itemId, number: n });
+              stats.boxFrames += 1;
+            }
+          }
+          let claimed = 0;
+          for (; ; ) {
+            const r = lastResp?.role ?? {};
+            const boxPoint = Number(r.boxPoint ?? 0) || 0;
+            const pos = Number(r.boxPointLastReward ?? 0) || 0;
+            if (pos < 0 || pos >= BOX_POINT_STEP_COSTS.length || claimed >= 3e3) break;
+            if (boxPoint < BOX_POINT_STEP_COSTS[pos]) break;
+            lastResp = send("item_claimboxpointreward", {});
+            stats.exchangeFrames += 1;
+            claimed += 1;
+          }
+          if (claimed > 0) log.info(`\u5B9D\u7BB1\u63A8\u8FDB\u7B2C ${round} \u8F6E\uFF1A\u5F00\u7BB1 ${fmt(openPlan.reduce((s, x) => s + x.number, 0))} \u4E2A\uFF0C\u5151\u6362 ${claimed} \u6863`);
+          role = send("role_getroleinfo", {});
+          const nextActivity = send("activity_get", {});
+          const p2 = readActivityProgress(nextActivity);
+          if (!p2 || p2.boxScoreDone == null) {
+            log.warning("\u5B9D\u7BB1\u6D88\u8017\u4E2D\u6B62\uFF1A\u5FAA\u73AF\u4E2D\u8FDB\u5EA6\u53D8\u5F97\u4E0D\u53EF\u8BFB");
+            break;
+          }
+          const next = p2.boxScoreDone;
+          if (next === accumulated) {
+            noGrowthRounds += 1;
+            if (noGrowthRounds >= 2) {
+              log.warning(`\u5B9D\u7BB1\u7D2F\u79EF\u79EF\u5206\u4E24\u8F6E\u65E0\u589E\u957F\uFF08\u4ECD ${fmt(accumulated)}\uFF09\uFF0C\u4E2D\u6B62\u4EE5\u9632\u6B7B\u5FAA\u73AF`);
+              break;
+            }
+          } else {
+            noGrowthRounds = 0;
+          }
+          accumulated = next;
+          log.info(`\u5B9D\u7BB1\u63A8\u8FDB\u7B2C ${round} \u8F6E\u5B8C\u6210\uFF1A\u7D2F\u79EF ${fmt(accumulated)}/${fmt(targets.box)}`);
+        }
+        if (accumulated < targets.box) {
+          const remaining = targets.box - accumulated;
+          const { steps: steps2, remainingScore } = planPreciseOpen(remaining, role?.role?.items);
+          log.info(
+            `\u5B9D\u7BB1\u5DEE\u503C\u7CBE\u786E\u5F00\u7BB1\uFF1A\u5DEE ${fmt(remaining)} \u5206\uFF0C\u8BA1\u5212\u5F00 ${steps2.map((s) => `${s.itemId}\xD7${s.number}`).join("\u3001") || "\u65E0"}`
+          );
+          for (const step of steps2) {
+            for (const n of chunkBatches(step.number, 10)) {
+              send("item_openbox", { itemId: step.itemId, number: n });
+              stats.boxFrames += 1;
+            }
+          }
+          if (remainingScore > 0) {
+            log.warning(`\u5B9D\u7BB1\u6D88\u8017\u6682\u505C\uFF1A\u5E93\u5B58\u4E0D\u8DB3\uFF0C\u8FD8\u5DEE ${fmt(remainingScore)} \u5206\uFF0C\u7B49\u5546\u5E97\u8865\u8D27\u540E\u518D\u8DD1`);
+          } else {
+            const after = send("activity_get", {});
+            const p3 = readActivityProgress(after);
+            accumulated = p3?.boxScoreDone ?? accumulated;
+          }
+        }
+        if (accumulated >= targets.box) {
+          log.success(`\u5B9D\u7BB1\u6D88\u8017\u7ED3\u675F\uFF1A\u7D2F\u79EF ${fmt(accumulated)}/${fmt(targets.box)}\uFF08\u5269\u4F59\u79EF\u5206\u4FDD\u7559\u4E0D\u5151\u6362\uFF09`);
+          ev("fillup", { step: "box", done: accumulated, target: targets.box, stockShort: false });
+        }
+      }
+    }
+    if (want("fish")) {
+      const activity = send("activity_get", {});
+      const progress = readActivityProgress(activity);
+      if (!progress || progress.fishDone == null) {
+        log.warning(
+          progress ? `\u9493\u9C7C\u6D88\u8017\u8DF3\u8FC7\uFF1A\u6D3B\u52A8 ${progress.activityId} \u7F3A task.3\uFF08\u9493\u9C7C\uFF09\u8FDB\u5EA6\u5B57\u6BB5` : "\u9493\u9C7C\u6D88\u8017\u8DF3\u8FC7\uFF1A\u6D3B\u52A8\u7D2F\u79EF\u8FDB\u5EA6\u4E0D\u53EF\u8BFB"
+        );
+      } else {
+        const role = send("role_getroleinfo", {});
+        const stock = Math.max(0, Math.floor(Number(role?.role?.items?.[ITEM_GOLD_ROD]) || 0));
+        const stockFishes = rodsToFishes(stock);
+        const plan = planCountConsume({
+          done: progress.fishDone,
+          target: targets.fish,
+          stock: stockFishes,
+          batchSize: 10
+        });
+        if (plan.reached) {
+          log.success(
+            `\u9493\u9C7C\u6D88\u8017\u5DF2\u8FBE\u76EE\u6807\uFF08\u76EE\u6807 ${fmt(targets.fish)} / \u5DF2\u505A ${fmt(progress.fishDone)} / \u5DEE\u503C 0 / \u9EC4\u91D1\u9C7C\u7AFF\u5E93\u5B58 ${fmt(stock)} \u6839 \u2248 \u53EF\u9493 ${fmt(stockFishes)} \u6B21\uFF09`
+          );
+        } else {
+          log.info(
+            `\u9493\u9C7C\u6D88\u8017\u5F00\u59CB\uFF08\u6D3B\u52A8 ${progress.activityId}\uFF09\uFF1A\u76EE\u6807 ${fmt(targets.fish)} / \u5DF2\u505A ${fmt(progress.fishDone)} / \u5DEE\u503C ${fmt(plan.remaining)} / \u9EC4\u91D1\u9C7C\u7AFF\u5E93\u5B58 ${fmt(stock)} \u6839 \u2248 \u53EF\u9493 ${fmt(stockFishes)} \u6B21\uFF0810% \u8FD4\u8FD8\uFF09`
+          );
+          let done = progress.fishDone;
+          let sent = 0;
+          for (const n of plan.batches) {
+            send("artifact_lottery", { type: 2, lotteryNumber: n, newFree: true });
+            stats.fishFrames += 1;
+            done += n;
+            sent += 1;
+            if (sent % 20 === 0) log.info(`\u9493\u9C7C\u6D88\u8017\u8FDB\u5EA6\uFF1A${fmt(done)}/${fmt(targets.fish)}\uFF08\u5DF2\u53D1 ${sent} \u5E27\uFF09`);
+          }
+          log[plan.stockShort ? "warning" : "success"](
+            `\u9493\u9C7C\u6D88\u8017\u7ED3\u675F\uFF1A\u672C\u6B21 ${fmt(plan.willDo)}\uFF0C\u7D2F\u8BA1 ${fmt(done)}/${fmt(targets.fish)}` + (plan.stockShort ? `\uFF1B\u26A0\uFE0F \u9EC4\u91D1\u9C7C\u7AFF\u4E0D\u8DB3\uFF0C\u8FD8\u5DEE ${fmt(plan.remaining - plan.willDo)} \u6B21\uFF0C\u7B49\u5546\u5E97\u8865\u8D27\u540E\u518D\u8DD1` : "")
+          );
+          ev("fillup", { step: "fish", done, target: targets.fish, stockShort: !!plan.stockShort });
+        }
+      }
+    }
+    ev("summary", { targets, stats });
+    return { logs: log.lines, events, stats, targets };
+  };
+  var runFinishPhase = (server, config = {}) => {
+    const log = createLogger();
+    const events = [];
+    const ev = (event, data) => {
+      events.push({ phase: "finish", event, seq: events.length, ...data });
+    };
+    const targetSpecial = Math.max(1, Math.floor(Number(config.targetSpecial) || 250));
+    const packRate = Number.isFinite(Number(config.packRate)) ? Number(config.packRate) : 0.25;
+    const rodPrice = Number.isFinite(Number(config.rodPrice)) ? Number(config.rodPrice) : GOLDENFISH_ROD_PRICE;
+    const fishCap = Number.isFinite(Number(config.fishCap)) ? Math.max(0, Math.floor(Number(config.fishCap))) : GOLDENFISH_FISH_FULL;
+    const fillupFishTarget = Number.isFinite(Number(config.fillupFishTarget)) ? Math.max(0, Math.floor(Number(config.fillupFishTarget))) : GOLDENFISH_FISH_MIN_TARGET;
+    const strategy = config.strategy === "minimal" ? "minimal" : config.strategy === "twoForOne" ? "twoForOne" : "master";
+    const doFillup = config.fillup !== false;
+    const fillupFish = config.fillupFish !== false && Number(config.fillupFish) !== 0;
+    const stats = {
+      frames: 0,
+      fillupFrames: 0,
+      claimFrames: 0,
+      claimFailures: 0,
+      openpackFrames: 0,
+      buyRodFrames: 0,
+      lotteryFrames: 0,
+      boughtRods: 0,
+      goldSpent: 0,
+      /** 兜底「补一轮金砖」执行的轮数（master 2026-09-28 口径：通常 1 次必够） */
+      topups: 0,
+      returns: { recruit: 0, platinumBox: 0, gold: 0, special: 0 },
+      /** 期望值的小数总量（用来核对「实发整数」与「期望」的差，应 < 1 个/项） */
+      returnsExact: { recruit: 0, platinumBox: 0, gold: 0 },
+      /** 每批开包抽到的 bias（保底口径的诊断量，`runFinishPhase` 用） */
+      packBiases: [],
+      /** 每批开包的期望基线之和（= 本场「普通道具数 × 0.25」） */
+      packBase: 0
+    };
+    const send = (cmd, params) => {
+      stats.frames += 1;
+      return server.handle(cmd, params);
+    };
+    const readProgress = () => readActivityProgress(send("activity_get", {}));
+    const slotMap = (p) => ({
+      1: p.recruitDone ?? 0,
+      2: p.boxScoreDone ?? 0,
+      3: p.fishDone ?? 0,
+      4: p.jarDone ?? 0,
+      5: p.goldDone ?? 0
+    });
+    const readSpecial = () => {
+      const role = send("role_getroleinfo", {});
+      return Math.max(0, Math.floor(Number(role?.role?.items?.[ITEM_PACK_SPECIAL]) || 0));
+    };
+    const claimSweep = (label) => {
+      const p = readProgress();
+      if (!p) {
+        log.warning(`${label}\u9886\u5956\u4E2D\u6B62\uFF1A\u6D3B\u52A8\u8FDB\u5EA6\u4E0D\u53EF\u8BFB`);
+        return null;
+      }
+      const sweep = planClaimSweep(slotMap(p), p.record);
+      let okCount = 0;
+      let failCount = 0;
+      for (const item of sweep.pending) {
+        const resp = send("activity_claimtaskreward", {
+          activityId: Number(p.activityId),
+          missionId: item.missionId
+        });
+        stats.claimFrames += 1;
+        if (resp?.code) {
+          failCount += 1;
+          if (failCount === 1) {
+            log.warning(`${label}\u9886\u5956\u5931\u8D25\u793A\u4F8B\uFF1AmissionId ${item.missionId} \u2192 ${resp.code} ${resp.error}`);
+          }
+        } else {
+          okCount += 1;
+        }
+      }
+      stats.claimFailures += failCount;
+      log.success(
+        `${label}\u9886\u5956\uFF1A\u5F85\u9886 ${sweep.detected} \u4E2A\u6863\u4F4D\uFF08\u5408\u8BA1 ${sweep.items} \u4E2A\u666E\u901A\u9053\u5177\uFF09\uFF0C\u6210\u529F ${okCount}\uFF0C\u5931\u8D25 ${failCount}`
+      );
+      ev("claim", {
+        label,
+        detected: sweep.detected,
+        items: sweep.items,
+        okCount,
+        failCount,
+        firstFailure: failCount > 0 ? sweep.pending.find((x) => x.missionId) : null
+      });
+      return sweep;
+    };
+    const openAllPacks = (label) => {
+      const role = send("role_getroleinfo", {});
+      const packs = Math.max(0, Math.floor(Number(role?.role?.items?.[ITEM_PACK_NORMAL]) || 0));
+      if (packs <= 0) {
+        log.info(`${label}\uFF1A\u624B\u4E0A\u6CA1\u6709\u666E\u901A\u9053\u5177\u53EF\u5F00`);
+        return { packs: 0, special: 0 };
+      }
+      const resp = send("item_openpack", { itemId: ITEM_PACK_NORMAL, index: 0, number: packs });
+      stats.openpackFrames += 1;
+      const r = resp.returns || {};
+      const ex = r.exact || {};
+      stats.returns.recruit += r.recruitGain || 0;
+      stats.returns.platinumBox += r.platGain || 0;
+      stats.returns.gold += r.goldGain || 0;
+      stats.returns.special += resp.special || 0;
+      stats.returnsExact.recruit += ex.recruitToken || 0;
+      stats.returnsExact.platinumBox += ex.platinumBox || 0;
+      stats.returnsExact.gold += ex.gold || 0;
+      const pb = resp.packBias || {};
+      stats.packBiases.push(Number(pb.bias) || 0);
+      stats.packBase += Number(pb.base) || 0;
+      log.info(
+        `${label}\u5F00\u6389\u666E\u901A\u9053\u5177 ${packs} \u4E2A \u2192 \u7279\u6B8A\u9053\u5177 +${resp.special || 0}\uFF1B\u8FD4\u8FD8\uFF1A\u62DB\u52DF\u4EE4 +${r.recruitGain || 0} / \u94C2\u91D1\u7BB1 +${r.platGain || 0} / \u91D1\u7816 +${r.goldGain || 0}`
+      );
+      ev("open", {
+        label,
+        packs,
+        gained: resp.special || 0,
+        bias: Number(pb.bias) || 0,
+        base: Number(pb.base) || 0,
+        returns: {
+          recruit: r.recruitGain || 0,
+          platinumBox: r.platGain || 0,
+          gold: r.goldGain || 0
+        }
+      });
+      return { packs, special: resp.special || 0 };
+    };
+    if (doFillup) {
+      log.info(
+        fillupFish ? `\u5468\u56DB\u8865\u6EE1\u4E09\u9879\uFF1A\u5B9D\u7BB1 \u2192 100000 \u5206\u3001\u62DB\u52DF \u2192 4000 \u6B21\u3001\u9493\u9C7C \u2192 ${fillupFishTarget} \u6B21\uFF08**\u4E0B\u9650**\uFF0C\u4E4B\u540E\u300C\u770B\u60C5\u51B5\u300D\u7531\u4E70\u9C7C\u7AFF\u7EE7\u7EED\u63A8\u5230 ${fishCap}\uFF09` : `\u5468\u56DB\u8865\u6EE1\uFF1A\u5B9D\u7BB1 \u2192 100000 \u5206\u3001\u62DB\u52DF \u2192 4000 \u6B21\uFF08\u9493\u9C7C\u4E0D\u5355\u72EC\u505A\uFF0C\u7559\u7ED9\u7B2C 6 \u6B65\u300C\u4E70\u539F\u4EF7\u9C7C\u7AFF\u300D\u987A\u5E26\u5B8C\u6210 \u2192 ${fishCap}\uFF0C\u89C1\u539F\u6587\u7B2C 134-135 \u884C\uFF09`
+      );
+      const fillup = runConsumePhase(server, {
+        recruitTarget: 4e3,
+        boxTarget: 1e5,
+        fishTarget: fillupFishTarget,
+        steps: fillupFish ? ["recruit", "box", "fish"] : ["recruit", "box"]
+      });
+      for (const l of fillup.logs) {
+        const text = `\uFF08\u8865\u6EE1\uFF09${l.text}`;
+        if (l.level === "success") log.success(text);
+        else if (l.level === "warning") log.warning(text);
+        else log.info(text);
+      }
+      stats.fillupFrames = fillup.stats.frames;
+      stats.frames += fillup.stats.frames;
+    }
+    let ledger = null;
+    {
+      const p0 = readProgress();
+      if (p0) {
+        const sm = slotMap(p0);
+        const pending = planClaimSweep(sm, p0.record);
+        let restItems = 0;
+        let restRounds = 0;
+        for (const s of [1, 2, 3, 4, 5]) {
+          const done = completedRounds(s, sm[s]);
+          const total = taskTotals(s).rounds;
+          restItems += rewardFromRoundTo(s, done, total);
+          restRounds += Math.max(0, total - done);
+        }
+        const totalItems = totalRewardAllTasks();
+        const sum = pending.claimedItems + pending.items + restItems;
+        ledger = {
+          total: totalItems,
+          claimedItems: pending.claimedItems,
+          claimedRounds: pending.alreadyClaimed,
+          pendingItems: pending.items,
+          pendingRounds: pending.detected,
+          restItems,
+          restRounds,
+          /** 本次实际可用 = 待领 + 剩余（**不含**历次已领） */
+          usable: pending.items + restItems,
+          sum,
+          consistent: sum === totalItems
+        };
+        log.info(
+          `\u6863\u4F4D\u603B\u8D26\uFF1A\u672C\u671F\u4E0A\u9650 ${totalItems} \u4E2A\u666E\u901A\u9053\u5177 = \u5386\u6B21\u5DF2\u9886 ${pending.claimedItems} \u4E2A\uFF08${pending.alreadyClaimed} \u6863\uFF09 + \u672C\u6B21\u5F85\u9886 ${pending.items} \u4E2A\uFF08${pending.detected} \u6863\uFF09 + \u5269\u4F59\u6863\u4F4D\u8FD8\u80FD\u505A ${restItems} \u4E2A\uFF08${restRounds} \u6863\uFF09` + (sum === totalItems ? "" : `  \u26A0\uFE0F \u4E09\u6BB5\u76F8\u52A0 ${sum} \u2260 ${totalItems}\uFF08record \u91CC\u6709\u8D85\u51FA\u5F53\u524D\u8FDB\u5EA6\u7684\u6863\u4F4D\uFF0C\u5C5E\u5F02\u5E38\uFF09`)
+        );
+        log.info(
+          `\u21D2 \u672C\u6B21\u5B9E\u9645\u53EF\u7528 = \u5F85\u9886 ${pending.items} + \u5269\u4F59 ${restItems} = ${pending.items + restItems} \u4E2A\u666E\u901A\u9053\u5177\uFF08\u2248 ${Math.floor((pending.items + restItems) * packRate)} \u4E2A\u7279\u6B8A\u9053\u5177\uFF09\uFF1B\u5386\u6B21\u5DF2\u9886\u7684 ${pending.claimedItems} \u4E2A\u65E9\u5728\u4E4B\u524D\u7684\u8FD0\u884C\u91CC\u53D1\u8FC7\u4E86\uFF0C**\u4E0D\u5728\u672C\u6B21\u53EF\u7528\u91CF\u91CC** \u2014\u2014 \u6240\u4EE5\u4E0D\u8981\u7528 ${totalItems} \u2212 \u672C\u6B21\u9886\u5230\u7684\u6570 \u6765\u53CD\u63A8\u5269\u4F59`
+        );
+        ev("ledger", { ...ledger });
+      }
+    }
+    {
+      const pFree = readProgress();
+      if (pFree) {
+        const freeItems = rewardFromRoundTo(
+          4,
+          completedRounds(4, slotMap(pFree)[4]),
+          taskTotals(4).rounds
+        );
+        if (freeItems > 0) {
+          const r = openAllPacks(`\u7F50\u5B50\u81EA\u7136\u5B8C\u6210\u767D\u9001 ${freeItems} \u4E2A \u2192 `);
+          server.forceTask(GOLDENFISH_TASK_SLOTS.jar, taskTotals(4).maxThreshold);
+          ev("free", { packs: freeItems, gained: r.special });
+        }
+      }
+    }
+    claimSweep("\u8865\u6EE1\u540E");
+    openAllPacks("\u6536\u5C3E\u7B2C\u4E00\u6B65");
+    let special = readSpecial();
+    log.info(`\u5F53\u524D\u7279\u6B8A\u9053\u5177 ${special}/${targetSpecial}\uFF08\u76EE\u6807 250\uFF09`);
+    const rounds = [];
+    let lastPlan = null;
+    let reason = special >= targetSpecial ? "reached" : "";
+    let iteration = 0;
+    const MAX_ITER = Math.max(1, Math.floor(Number(config.maxIterations) || 12));
+    while (special < targetSpecial && iteration < MAX_ITER) {
+      iteration += 1;
+      const gap = targetSpecial - special;
+      const needItems = packsNeededForGap(gap, packRate);
+      const p = readProgress();
+      if (!p) {
+        reason = "\u6D3B\u52A8\u8FDB\u5EA6\u4E0D\u53EF\u8BFB";
+        break;
+      }
+      const role = send("role_getroleinfo", {});
+      const goldStock = Math.max(0, Math.floor(Number(role?.role?.gold) || 0));
+      const rodStock = Math.max(0, Math.floor(Number(role?.role?.items?.[ITEM_GOLD_ROD]) || 0));
+      const plan = planRodPurchase({
+        progressBySlot: slotMap(p),
+        needItems,
+        rodPrice,
+        fishCap,
+        goldInStock: goldStock,
+        rodsInStock: rodStock
+      });
+      let picked = null;
+      let traded = false;
+      let tradeInfo = null;
+      if (strategy === "minimal") {
+        picked = plan.minimal;
+      } else if (strategy === "twoForOne") {
+        tradeInfo = twoForOneCandidate(slotMap(p), { rodPrice });
+        const candidate = tradeInfo.apply && plan.buildAt ? plan.buildAt(tradeInfo.rods) : null;
+        const fallback = plan.minimal ?? plan.master;
+        if (candidate && (!fallback || candidate.goldSpend <= fallback.goldSpend) && goldStock >= candidate.goldSpend) {
+          picked = candidate;
+          traded = true;
+        } else {
+          picked = fallback;
+        }
+      } else {
+        picked = plan.master;
+      }
+      lastPlan = plan;
+      log.info(
+        `\u7F3A\u53E3 ${gap} \u4E2A\u7279\u6B8A\u9053\u5177\uFF08\u2248 \u9700 ${needItems} \u4E2A\u666E\u901A\u9053\u5177\uFF09\uFF5C\u6863\u4F4D\u4E0A\u9650\uFF1A\u4E70\u6746\u53EF\u62FF ${plan.maxItems} + \u7F50\u5B50\u767D\u9001 ${plan.freeItems} = ${plan.maxTotal} \u4E2A`
+      );
+      log.info(
+        `\u91D1\u7816\u9884\u7B97\uFF1A\u505A\u6EE1\u91D1\u7816\u4EFB\u52A1\u9700\u4E70 ${plan.rodsWanted} \u6839 = ${plan.goldNeeded} \u91D1\u7816\uFF0C\u624B\u4E0A\u53EA\u6709 ${goldStock}` + (plan.goldShortfall > 0 ? `\uFF08**\u5DEE ${plan.goldShortfall}**\uFF09\u2192 \u53EA\u4E70\u5F97\u8D77 ${plan.rodsAffordable ?? "\u221E"} \u6839` : `\uFF08\u591F\uFF09`)
+      );
+      log.info(
+        `\u6309\u300C${traded ? "2\u63621" : strategy === "minimal" ? "\u6700\u5C0F\u4EE3\u4EF7" : strategy === "twoForOne" ? "\u6700\u5C0F\u4EE3\u4EF7\uFF08\u7A97\u53E3\u4E0D\u8DB3\u9000\u56DE\uFF09" : "\u91D1\u7816\u505A\u6EE1"}\u300D\u65B9\u6848\u4E70 ${picked?.rods ?? 0} \u6839\u539F\u4EF7\u9C7C\u7AFF\uFF08\u82B1 ${picked?.goldSpend ?? 0} \u91D1\u7816\uFF09\u2192 \u53EF\u5F97 ${picked?.items ?? 0} \u4E2A\u666E\u901A\u9053\u5177\uFF08\u542B\u7F50\u5B50\u767D\u9001 ${plan.freeItems} \u5171 ${picked?.totalItems ?? 0} \u4E2A\uFF09` + (traded ? "\uFF5C2 \u8F6E\u91D1\u7816\u4EFD\u989D \u2192 1 \u8F6E\u9493\u9C7C\uFF08\u6746\u94B1\u8BA1\u5165\u91D1\u7816\u4EFB\u52A1\uFF0C\u767D\u6361\u4E00\u6863\uFF09" : "")
+      );
+      ev("plan", {
+        iteration,
+        gap,
+        needItems,
+        strategy,
+        traded,
+        // 2 换 1 的判定上下文（换/不换都要留痕：goldLeft/fishLeft/reason）
+        tradeGoldLeft: tradeInfo?.goldLeft ?? null,
+        tradeFishLeft: tradeInfo?.fishLeft ?? null,
+        tradeApply: tradeInfo?.apply ?? null,
+        tradeReason: tradeInfo?.reason ?? null,
+        goldInStock: goldStock,
+        rodsInStock: rodStock,
+        blockedBy: plan.blockedBy,
+        ok: plan.ok,
+        reason: plan.reason,
+        rodsWanted: plan.rodsWanted,
+        goldNeeded: plan.goldNeeded,
+        goldShortfall: plan.goldShortfall,
+        rodsAffordable: plan.rodsAffordable,
+        maxItems: plan.maxItems,
+        freeItems: plan.freeItems,
+        maxTotal: plan.maxTotal,
+        picked: picked ? {
+          rods: picked.rods,
+          goldSpend: picked.goldSpend,
+          items: picked.items,
+          totalItems: picked.totalItems,
+          goldAfter: picked.goldAfter,
+          fishAfter: picked.fishAfter
+        } : null
+      });
+      if (!picked || picked.totalItems <= 0) {
+        reason = plan.reason || "\u5DF2\u65E0\u53EF\u63A8\u8FDB\u7684\u6863\u4F4D";
+        log.warning(`\u8865\u6863\u4E2D\u6B62\uFF1A${reason}`);
+        break;
+      }
+      if (!plan.ok) {
+        if (plan.blockedBy === "gold") {
+          log.warning(`\u91D1\u7816\u4E0D\u8DB3\uFF0C\u51D1\u4E0D\u591F\uFF1A${plan.reason} \u2014\u2014 \u4ECD\u5148\u628A\u4E70\u5F97\u8D77\u7684\u6863\u4F4D\u6362\u6389\uFF08\u8FD4\u8FD8\u81EA\u7ED9\u4E0D\u4E86\uFF0C\u505A\u5B8C\u8FD9\u8F6E\u6536\u5DE5\uFF09`);
+        } else {
+          log.warning(`\u5373\u4F7F\u628A\u91D1\u7816\u505A\u6EE1 + \u9493\u9C7C\u8865\u5230\u4E0A\u9650\u4E5F\u51D1\u4E0D\u591F\uFF1A${plan.reason} \u2014\u2014 \u4ECD\u5148\u6267\u884C\u5269\u4F59\u6863\u4F4D`);
+        }
+      }
+      if (picked.rods > 0) {
+        const resp = send("buy_rod", { count: picked.rods });
+        stats.buyRodFrames += 1;
+        stats.boughtRods += resp.bought || 0;
+        stats.goldSpent += resp.spend || 0;
+        log.info(
+          `\u8D2D\u4E70\u539F\u4EF7\u9C7C\u7AFF ${resp.bought} \u6839\uFF08\u82B1 ${resp.spend} \u91D1\u7816\uFF0C\u5355\u4EF7 ${rodPrice}\uFF09\u2192 \u91D1\u7816\u6D88\u8017\u4EFB\u52A1\u8FDB\u5EA6 ${picked.goldAfter}`
+        );
+        ev("buyRod", {
+          iteration,
+          rods: resp.bought || 0,
+          spend: resp.spend || 0,
+          goldProgressAfter: picked.goldAfter
+        });
+      }
+      const beforeFish = slotMap(p)[3] || 0;
+      const needFish = Math.max(0, Math.min(picked.fishAfter, fishCap) - beforeFish);
+      if (needFish > 0) {
+        for (const n of chunkBatches(needFish, 10)) {
+          send("artifact_lottery", { type: 2, lotteryNumber: n, newFree: true });
+          stats.lotteryFrames += 1;
+        }
+        log.info(`\u9493\u9C7C\u6D88\u8017 ${needFish} \u6B21 \u2192 \u9493\u9C7C\u4EFB\u52A1\u8FDB\u5EA6 ${picked.fishAfter}/${fishCap}`);
+        ev("fish", { iteration, count: needFish, progressAfter: picked.fishAfter, cap: fishCap });
+      } else if (picked.rods > 0 && beforeFish >= fishCap) {
+        log.warning(
+          `\u672C\u8F6E\u4E70\u7684 ${picked.rods} \u6839\u9C7C\u7AFF\u5BF9\u9493\u9C7C\u4EFB\u52A1**\u65E0\u589E\u76CA**\uFF08\u9493\u9C7C\u5DF2\u5C01\u9876 ${fishCap}\uFF09\u2192 \u53EA\u6709\u91D1\u7816\u4EFB\u52A1\u90A3\u5934\u5728\u4EA7\u51FA\u9053\u5177`
+        );
+      }
+      claimSweep(`\u8865\u6863\u7B2C ${iteration} \u8F6E`);
+      const opened = openAllPacks(`\u8865\u6863\u7B2C ${iteration} \u8F6E`);
+      special = readSpecial();
+      rounds.push({
+        iteration,
+        gap,
+        needItems,
+        traded,
+        rods: picked.rods,
+        goldSpend: picked.goldSpend,
+        goldAfter: picked.goldAfter,
+        fishAfter: picked.fishAfter,
+        items: picked.items,
+        packs: opened.packs,
+        gained: opened.special,
+        special
+      });
+      log.info(`\u8865\u6863\u7B2C ${iteration} \u8F6E\u5B8C\u6210\uFF1A\u7279\u6B8A\u9053\u5177 ${special}/${targetSpecial}`);
+      ev("round", { iteration, packs: opened.packs, gained: opened.special, specialAfter: special });
+      if (!plan.ok && special < targetSpecial) {
+        reason = plan.reason;
+        break;
+      }
+    }
+    if (config.goldTopUp !== false) {
+      while (special < targetSpecial && stats.topups < 3) {
+        const pTop = readProgress();
+        if (!pTop) break;
+        const smTop = slotMap(pTop);
+        const goldDoneNow = completedRounds(5, smTop[5]);
+        const nextRow = buildRoundTable(5)[goldDoneNow];
+        if (!nextRow) break;
+        const goldNeeded = Math.max(0, nextRow.threshold - smTop[5]);
+        const rodsWant = Math.ceil(goldNeeded / rodPrice);
+        if (rodsWant <= 0) break;
+        const roleTop = send("role_getroleinfo", {});
+        const goldAvail = Math.max(0, Math.floor(Number(roleTop?.role?.gold) || 0));
+        if (goldAvail < rodsWant * rodPrice) {
+          log.warning(
+            `\u3010\u515C\u5E95\u3011\u91D1\u7816\u4E0D\u8DB3\uFF1A\u8DE8\u8FC7\u7B2C ${goldDoneNow + 1} \u8F6E\u9700\u4E70 ${rodsWant} \u6839\uFF08${rodsWant * rodPrice} \u91D1\u7816\uFF09\uFF0C\u624B\u4E0A\u53EA\u6709 ${goldAvail}`
+          );
+          break;
+        }
+        stats.topups += 1;
+        const gapBefore = Math.max(0, targetSpecial - special);
+        log.info(
+          `\u3010\u515C\u5E95\u3011\u8FD8\u5DEE ${gapBefore} \u4E2A\u7279\u6B8A\u9053\u5177 \u2192 \u8865\u7B2C ${stats.topups} \u8F6E\u91D1\u7816\uFF1A\u4E70 ${rodsWant} \u6839\u539F\u4EF7\u9C7C\u7AFF\uFF08${rodsWant * rodPrice} \u91D1\u7816\uFF09\u8DE8\u8FC7\u7B2C ${goldDoneNow + 1} \u8F6E\uFF08\u6E38\u620F\u5F3A\u63A7\u5236\u51FA\u7387\u8D34 25%\uFF0C\u4E00\u8F6E\u5FC5\u591F \u2014\u2014 master 2026-09-28 \u62CD\u677F\uFF09`
+        );
+        const respTop = send("buy_rod", { count: rodsWant });
+        stats.buyRodFrames += 1;
+        stats.boughtRods += respTop.bought || 0;
+        stats.goldSpent += respTop.spend || 0;
+        ev("buyRod", {
+          iteration: iteration + stats.topups,
+          topup: true,
+          rods: respTop.bought || 0,
+          spend: respTop.spend || 0,
+          goldProgressAfter: smTop[5] + (respTop.spend || 0)
+        });
+        const fishNowTop = smTop[3] || 0;
+        const fishAfterTop = Math.min(fishCap, fishNowTop + rodsToFishes(respTop.bought || 0));
+        const needFishTop = Math.max(0, fishAfterTop - fishNowTop);
+        if (needFishTop > 0) {
+          for (const n of chunkBatches(needFishTop, 10)) {
+            send("artifact_lottery", { type: 2, lotteryNumber: n, newFree: true });
+            stats.lotteryFrames += 1;
+          }
+          ev("fish", {
+            iteration: iteration + stats.topups,
+            topup: true,
+            count: needFishTop,
+            progressAfter: fishAfterTop,
+            cap: fishCap
+          });
+        }
+        claimSweep(`\u515C\u5E95\u7B2C ${stats.topups} \u8F6E`);
+        const openedTop = openAllPacks(`\u515C\u5E95\u7B2C ${stats.topups} \u8F6E`);
+        special = readSpecial();
+        const goldRoundAfterTop = completedRounds(5, smTop[5] + (respTop.spend || 0));
+        const itemsTop = rewardFromRoundTo(5, goldDoneNow, goldRoundAfterTop) + rewardFromRoundTo(3, completedRounds(3, fishNowTop), completedRounds(3, fishAfterTop));
+        rounds.push({
+          iteration: iteration + stats.topups,
+          topup: true,
+          gap: gapBefore,
+          rods: respTop.bought || 0,
+          goldSpend: respTop.spend || 0,
+          items: itemsTop,
+          packs: openedTop.packs,
+          gained: openedTop.special,
+          special
+        });
+        log.info(`\u3010\u515C\u5E95\u3011\u7B2C ${stats.topups} \u8F6E\u5B8C\u6210\uFF1A\u7279\u6B8A\u9053\u5177 ${special}/${targetSpecial}`);
+        ev("round", {
+          iteration: iteration + stats.topups,
+          topup: true,
+          packs: openedTop.packs,
+          gained: openedTop.special,
+          specialAfter: special
+        });
+      }
+    }
+    if (special >= targetSpecial) reason = "reached";
+    else if (iteration >= MAX_ITER) reason = `\u8FED\u4EE3\u4E0A\u9650 ${MAX_ITER} \u6B21`;
+    else if (!reason) reason = "\u8D44\u6E90\u4E0D\u8DB3";
+    const ok = special >= targetSpecial;
+    log[ok ? "success" : "error"](
+      ok ? `\u6536\u5C3E\u5B8C\u6210\uFF1A\u7279\u6B8A\u9053\u5177 ${special}/${targetSpecial} \u2705 \u53EF\u4EE5\u53EC\u5524\u91D1\u9C7C` : `\u6536\u5C3E\u5931\u8D25\uFF1A\u7279\u6B8A\u9053\u5177 ${special}/${targetSpecial}\uFF08${reason}\uFF09\u2192 \u6309\u539F\u6587\u7B2C 136 \u884C\uFF0C\u5E94\u5411\u7528\u6237\u62A5\u9519\u5E76\u63D0\u4F9B**\u5B8C\u6574\u8BB0\u5F55\u4E0B\u8F7D**`
+    );
+    if (!ok) {
+      const pEnd = readProgress();
+      if (pEnd) {
+        const roleEnd = send("role_getroleinfo", {});
+        const goldNow = Math.max(0, Math.floor(Number(roleEnd?.role?.gold) || 0));
+        const rodNow = Math.max(0, Math.floor(Number(roleEnd?.role?.items?.[ITEM_GOLD_ROD]) || 0));
+        const gapNow = Math.max(0, targetSpecial - special);
+        const needNow = packsNeededForGap(gapNow, packRate);
+        const ideal = planRodPurchase({
+          progressBySlot: slotMap(pEnd),
+          needItems: needNow,
+          rodPrice,
+          fishCap,
+          goldInStock: Infinity,
+          rodsInStock: rodNow
+        });
+        const reach = ledger?.usable ?? 0;
+        const reachable = reach * packRate >= targetSpecial;
+        log.info(
+          `\u590D\u76D8\xB7\u7406\u8BBA\u4E0A\u9650\uFF1A\u628A\u624B\u4E0A\u6240\u6709\u6863\u4F4D\u69A8\u5E72 = ${ledger?.pendingItems ?? 0}\uFF08\u5F85\u9886\uFF09+ ${ledger?.restItems ?? 0}\uFF08\u5269\u4F59\uFF09= ${reach} \u4E2A\u666E\u901A\u9053\u5177 \u2248 ${Math.floor(reach * packRate)} \u4E2A\u7279\u6B8A\u9053\u5177\uFF08\u76EE\u6807 ${targetSpecial}\uFF09\u21D2 ${reachable ? "**\u505A\u6EE1\u672C\u53EF\u4EE5\u62FF\u9C7C**" : "\u505A\u6EE1\u4E5F\u4E0D\u591F"}`
+        );
+        if (ideal.ok) {
+          log.info(
+            `\u590D\u76D8\xB7\u5361\u70B9\uFF1A**\u91D1\u7816\u4E0D\u8DB3**\u662F\u552F\u4E00\u539F\u56E0 \u2014\u2014 \u628A\u5269\u4F59\u6863\u4F4D\u505A\u6EE1\u8FD8\u9700 ${ideal.goldNeeded} \u91D1\u7816\uFF08\u2248 ${ideal.rodsWanted} \u6839\u9C7C\u7AFF \xD7 ${rodPrice}\uFF09\uFF0C\u624B\u4E0A\u53EA\u6709 ${goldNow}\uFF08\u5DEE ${Math.max(0, ideal.goldNeeded - goldNow)}\uFF09\uFF1B\u91D1\u7816\u7BA1\u591F\u7684\u8BDD\u672C\u6B21\u53EF\u518D\u62FF ${ideal.maxTotal} \u4E2A\u9053\u5177 \u2192 \u9884\u8BA1\u7279\u6B8A\u9053\u5177 ${Math.floor(special + ideal.maxTotal * packRate)}/${targetSpecial} \u2705`
+          );
+        } else {
+          log.warning(
+            `\u590D\u76D8\xB7\u5361\u70B9\uFF1A**\u5373\u4F7F\u91D1\u7816\u7BA1\u591F\u4E5F\u51D1\u4E0D\u591F**\uFF08\u771F\xB7\u65E0\u89E3\uFF09\u2014\u2014 ${ideal.reason}\uFF1B\u6863\u4F4D\u4E0A\u9650\u53EA\u6709 ${ideal.maxTotal} \u4E2A\u9053\u5177\uFF0C\u7F3A\u53E3\u9700\u8981 ${needNow} \u4E2A`
+          );
+        }
+        ev("postmortem", {
+          ok,
+          reachable,
+          // true = 做满本可以拿鱼（缺钱）；false = 真·无解（档位榨干）
+          usableItems: reach,
+          expectedSpecialIfAll: Math.floor(reach * packRate),
+          targetSpecial,
+          specialNow: special,
+          remainingGap: gapNow,
+          goldInStock: goldNow,
+          idealGoldNeeded: ideal.goldNeeded,
+          idealGoldShortfall: Math.max(0, ideal.goldNeeded - goldNow),
+          idealRodsWanted: ideal.rodsWanted,
+          idealMaxTotal: ideal.maxTotal,
+          idealItemsPerGold: ideal.maxTotal > 0 ? ideal.goldNeeded / ideal.maxTotal : null,
+          verdict: ideal.ok ? "gold-blocked" : "unsolvable"
+        });
+      }
+    }
+    ev("summary", {
+      ok,
+      special,
+      targetSpecial,
+      reason,
+      strategy,
+      fishCap,
+      goldSpent: stats.goldSpent,
+      rodsBought: stats.boughtRods,
+      topups: stats.topups,
+      packBase: stats.packBase,
+      packBiases: stats.packBiases,
+      ledger
+    });
+    return {
+      logs: log.lines,
+      events,
+      stats,
+      ok,
+      reason,
+      special,
+      targetSpecial,
+      rounds,
+      strategy,
+      /** 兜底「补一轮金砖」执行轮数（0 = 主循环自己收敛，没用到保命手段） */
+      topups: stats.topups,
+      fillupFish,
+      fillupFishTarget,
+      fishCap,
+      packBiases: stats.packBiases,
+      packBase: stats.packBase,
+      /** 档位总账（三段同量纲：已领 / 待领 / 剩余，合计 = 1050） */
+      ledger,
+      lastPlan,
+      needsManualDump: !ok
+    };
+  };
+  var buildPackModel = (preset = {}) => {
+    const rate = Number.isFinite(Number(preset.packRate)) ? Number(preset.packRate) : 0.25;
+    return { rate, model: "bounded-linear-bias", biasMax: GOLDENFISH_PACK_BIAS_MAX };
+  };
+  var runFullSimulation = (preset = {}) => {
+    const seed = Math.floor(Number(preset.seed) || 20260928);
+    let state = seed >>> 0 || 1;
+    const rng = () => {
+      state = state + 1831565813 >>> 0;
+      let t = state;
+      t = Math.imul(t ^ t >>> 15, t | 1);
+      t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+    const server = createSimServer({
+      ...preset,
+      rng,
+      packRate: preset.packRate
+    });
+    const phase1 = runConsumePhase(server, preset);
+    const phase2 = runFinishPhase(server, preset);
+    const items = server.items;
+    const task = server.task;
+    const roundInfo = {};
+    for (const slot of [1, 2, 3, 4, 5]) {
+      const done = completedRounds(slot, task[slot]);
+      roundInfo[slot] = {
+        name: GOLDENFISH_UNIT_LABELS[slot],
+        progress: Math.max(0, Math.floor(Number(task[slot]) || 0)),
+        rounds: done,
+        maxRounds: taskTotals(slot).rounds,
+        maxThreshold: taskTotals(slot).maxThreshold
+      };
+    }
+    const timeline = [
+      ...phase1.logs.map((l) => ({ phase: "\u6D88\u8017", ...l })),
+      ...phase2.logs.map((l) => ({ phase: "\u6536\u5C3E", ...l }))
+    ];
+    const fishCapUsed = Number.isFinite(Number(preset.fishCap)) ? Math.max(0, Math.floor(Number(preset.fishCap))) : GOLDENFISH_FISH_FULL;
+    const capRounds = {
+      1: taskTotals(1).rounds,
+      2: taskTotals(2).rounds,
+      3: completedRounds(3, fishCapUsed),
+      4: taskTotals(4).rounds,
+      5: taskTotals(5).rounds
+    };
+    const itemsCeiling = [1, 2, 3, 4, 5].reduce(
+      (sum, slot) => sum + rewardFromRoundTo(slot, 0, capRounds[slot]),
+      0
+    );
+    const report = {
+      targets: phase1.targets,
+      rounds: roundInfo,
+      items: {
+        recruitToken: Math.max(0, Math.floor(Number(items[ITEM_RECRUIT]) || 0)),
+        goldRod: Math.max(0, Math.floor(Number(items[ITEM_GOLD_ROD]) || 0)),
+        gold: Math.max(0, Math.floor(Number(server.gold) || 0)),
+        packNormal: Math.max(0, Math.floor(Number(items[ITEM_PACK_NORMAL]) || 0)),
+        packSpecial: Math.max(0, Math.floor(Number(items[ITEM_PACK_SPECIAL]) || 0)),
+        chests: Object.fromEntries(
+          Object.keys(CHEST_POINTS).map((id) => [id, Math.max(0, Math.floor(Number(items[id]) || 0))])
+        )
+      },
+      boxPoint: server.boxPoint,
+      totalItemsFromTasks: totalRewardAllTasks(),
+      itemsCeiling,
+      itemsCeilingBySlot: capRounds,
+      commandStats: {
+        consume: phase1.stats,
+        finish: phase2.stats,
+        totalFrames: phase1.stats.frames + phase2.stats.frames
+      },
+      calls: server.calls,
+      packModel: buildPackModel(preset),
+      /** 结构化事件流（JSONL 导出的数据源，master 直接下载给我分析的那种）。
+       *  两段事件合并后**统一重编 seq**，保证 JSONL 里 seq 严格连续（对账用）。 */
+      events: (() => {
+        const all = [...phase1.events || [], ...phase2.events || []];
+        all.forEach((e, i) => {
+          e.seq = i;
+        });
+        return all;
+      })(),
+      finishResult: {
+        ok: phase2.ok,
+        reason: phase2.reason,
+        special: phase2.special,
+        targetSpecial: phase2.targetSpecial,
+        strategy: phase2.strategy,
+        fillupFish: phase2.fillupFish,
+        fillupFishTarget: phase2.fillupFishTarget,
+        fishCap: phase2.fishCap,
+        rounds: phase2.rounds,
+        goldSpent: phase2.stats.goldSpent,
+        rodsBought: phase2.stats.boughtRods,
+        topups: phase2.stats.topups,
+        returns: phase2.stats.returns,
+        returnsExact: phase2.stats.returnsExact,
+        packBiases: phase2.stats.packBiases,
+        packBase: phase2.stats.packBase,
+        /** 档位总账（已领 / 待领 / 剩余，同量纲）—— UI 与冒烟都靠它回答「还能拿多少」 */
+        ledger: phase2.ledger,
+        /** 最后一轮购买计划：`blockedBy` 区分「金砖不足」与「档位榨干」 */
+        lastPlan: phase2.lastPlan,
+        needsManualDump: phase2.needsManualDump
+      }
+    };
+    return { timeline, report, ok: phase2.ok };
+  };
+
+  // tools/goldenfish-simulator/main.js
+  var FIELDS = {
+    task: [
+      { key: "t1", label: "\u62DB\u52DF\uFF08\u6B21\uFF09", v: 3685, src: "task.1" },
+      { key: "t2", label: "\u5B9D\u7BB1\uFF08\u5206\uFF09", v: 96530, src: "task.2" },
+      { key: "t3", label: "\u9493\u9C7C\uFF08\u6B21\uFF09", v: 1140, src: "task.3" },
+      { key: "t4", label: "\u6536\u7F50\u5B50", v: 632, src: "task.4" },
+      { key: "t5", label: "\u91D1\u7816\uFF08\u4E2A\uFF09", v: 20389, src: "task.5" }
+    ],
+    items: [
+      { key: "recruit", label: "\u62DB\u52DF\u4EE4 1001", v: 5e3 },
+      { key: "rod", label: "\u9EC4\u91D1\u9C7C\u7AFF 1012", v: 2e3 },
+      { key: "gold", label: "\u91D1\u7816", v: 1e6 },
+      { key: "c2001", label: "\u6728\u7BB1 2001", v: 300 },
+      { key: "c2002", label: "\u9752\u94DC 2002", v: 500 },
+      { key: "c2003", label: "\u9EC4\u91D1 2003", v: 200 },
+      { key: "c2004", label: "\u94C2\u91D1 2004", v: 100 },
+      { key: "c2005", label: "\u94BB\u77F3 2005", v: 20 },
+      { key: "packNormal", label: "\u666E\u901A\u9053\u5177 5287", v: 0 },
+      { key: "packSpecial", label: "\u7279\u6B8A\u9053\u5177 5286", v: 0 }
+    ],
+    targets: [
+      { key: "recruitTarget", label: "\u62DB\u52DF\u76EE\u6807", v: GOLDENFISH_CONSUME_DEFAULTS.recruitTarget },
+      { key: "boxTarget", label: "\u5B9D\u7BB1\u76EE\u6807", v: GOLDENFISH_CONSUME_DEFAULTS.boxTarget },
+      { key: "fishTarget", label: "\u9493\u9C7C\u76EE\u6807", v: GOLDENFISH_CONSUME_DEFAULTS.fishTarget },
+      { key: "targetSpecial", label: "\u7279\u6B8A\u9053\u5177\u76EE\u6807", v: 250 }
+    ],
+    model: [
+      { key: "packRate", label: `\u5F00\u51FA\u6982\u7387 p\uFF08bias \xB1${GOLDENFISH_PACK_BIAS_MAX}\uFF09`, v: 0.25, step: 0.01 },
+      { key: "rodPrice", label: "\u539F\u4EF7\u9C7C\u7AFF\u5355\u4EF7", v: GOLDENFISH_ROD_PRICE },
+      { key: "fishCap", label: "\u9493\u9C7C\u786C\u4E0A\u9650\uFF08\u5168\u6EE1\uFF09", v: GOLDENFISH_FISH_FULL },
+      { key: "fillupFishTarget", label: "\u5468\u56DB\u5148\u8865\u5230", v: GOLDENFISH_FISH_MIN_TARGET },
+      { key: "fillupFish", label: "\u5148\u8865\u6EE1\u9493\u9C7C(0/1)", v: 1, step: 1 },
+      { key: "boxPoint", label: "\u672A\u5151\u6362\u79EF\u5206", v: 5e3 },
+      { key: "seed", label: "\u968F\u673A\u79CD\u5B50", v: 20260928 }
+    ],
+    record: [
+      // 🔴 默认 1（= 抓包账号每类已领第 1 轮）：首屏展示的就是抓包快照，
+      // record 与 capture 预设一致 ⇒ 首屏运行与「抓包预设」按钮点击后结果一致。
+      // （曾默认 0 ⇒ 首屏 record 为空、多领 20 个道具，与预设按钮结果不一致。）
+      { key: "rec1", label: "\u62DB\u52DF \u5DF2\u9886\u8F6E\u6B21", v: 1 },
+      { key: "rec2", label: "\u5B9D\u7BB1 \u5DF2\u9886\u8F6E\u6B21", v: 1 },
+      { key: "rec3", label: "\u9493\u9C7C \u5DF2\u9886\u8F6E\u6B21", v: 1 },
+      { key: "rec4", label: "\u7F50\u5B50 \u5DF2\u9886\u8F6E\u6B21", v: 1 },
+      { key: "rec5", label: "\u91D1\u7816 \u5DF2\u9886\u8F6E\u6B21", v: 1 }
+    ]
+  };
+  var PRESETS = {
+    capture: { t1: 3685, t2: 96530, t3: 1140, t4: 632, t5: 20389 },
+    fresh: { t1: 0, t2: 0, t3: 0, t4: 0, t5: 0 },
+    nearly: { t1: 4e3, t2: 1e5, t3: 1140, t4: 60, t5: 0 },
+    rich: { t1: 0, t2: 0, t3: 0, t4: 0, t5: 0 }
+  };
+  var inputs = {};
+  var el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  };
+  var renderGroup = (hostId, list) => {
+    const host = document.getElementById(hostId);
+    for (const f of list) {
+      const row = el("div", "field");
+      const lab = el("label", null, f.label);
+      const inp = el("input");
+      inp.type = "number";
+      inp.value = f.v;
+      if (f.step) inp.step = f.step;
+      row.append(lab, inp);
+      host.append(row);
+      inputs[f.key] = inp;
+    }
+  };
+  renderGroup("grp-task", FIELDS.task);
+  renderGroup("grp-items", FIELDS.items);
+  renderGroup("grp-targets", FIELDS.targets);
+  renderGroup("grp-model", FIELDS.model);
+  renderGroup("grp-record", FIELDS.record);
+  var num = (key, fallback = 0) => {
+    const raw = inputs[key]?.value;
+    const v = Number(raw);
+    return Number.isFinite(v) ? v : fallback;
+  };
+  var setNum = (key, v) => {
+    if (inputs[key]) inputs[key].value = v;
+  };
+  var applyPreset = (name) => {
+    const p = PRESETS[name];
+    if (!p) return;
+    for (const g of [FIELDS.items, FIELDS.targets, FIELDS.model]) {
+      for (const f of g) setNum(f.key, f.v);
+    }
+    for (const [k, v] of Object.entries(p)) setNum(k, v);
+    for (const slot of [1, 2, 3, 4, 5]) setNum(`rec${slot}`, name === "capture" ? 1 : 0);
+    if (name === "rich") {
+      setNum("recruit", 2e4);
+      setNum("rod", 5e3);
+      setNum("gold", 2e6);
+      setNum("c2002", 6e3);
+      setNum("c2003", 4e3);
+      setNum("c2004", 2500);
+      setNum("c2005", 50);
+    }
+    if (name === "fresh") {
+      setNum("recruit", 1e4);
+      setNum("rod", 3e3);
+      setNum("gold", 2e6);
+      setNum("c2001", 500);
+      setNum("c2002", 5e3);
+      setNum("c2003", 3e3);
+      setNum("c2004", 2e3);
+      setNum("c2005", 50);
+      setNum("packNormal", 0);
+      setNum("packSpecial", 0);
+    }
+    if (name === "nearly") {
+      setNum("packSpecial", 180);
+      setNum("packNormal", 300);
+    }
+    if (name === "capture") {
+      setNum("packNormal", 0);
+      setNum("packSpecial", 0);
+    }
+  };
+  document.querySelectorAll("[data-preset]").forEach((btn) => {
+    btn.addEventListener("click", () => applyPreset(btn.dataset.preset));
+  });
+  var fmt2 = (v) => Number(v || 0).toLocaleString("zh-CN");
+  var pct = (v) => `${(v * 100).toFixed(1)}%`;
+  var renderVerdict = (report) => {
+    const host = document.getElementById("verdict");
+    host.className = `verdict ${report.finishResult.ok ? "ok" : "fail"}`;
+    host.innerHTML = "";
+    const f = report.finishResult;
+    const strategyLabel = f.strategy === "minimal" ? "\u6700\u5C0F\u4EE3\u4EF7" : f.strategy === "twoForOne" ? "2\u8F6E\u91D1\u7816\u63621\u8F6E\u9493\u9C7C" : "\u91D1\u7816\u505A\u6EE1";
+    const left = el("div");
+    left.append(
+      el("div", "big", f.ok ? "\u2705 \u8FBE\u6210\uFF1A\u53EF\u4EE5\u53EC\u5524\u91D1\u9C7C" : "\u274C \u672A\u8FBE\u6210\uFF1A\u8D44\u6E90\u4E0D\u591F"),
+      el(
+        "div",
+        "sub",
+        f.ok ? `\u7279\u6B8A\u9053\u5177 5286 \u5DF2\u51D1\u9F50 250 \u4E2A \xB7 \u7B56\u7565\u300C${strategyLabel}\u300D\xB7 \u4E70\u539F\u4EF7\u9C7C\u7AFF ${fmt2(f.rodsBought)} \u6839\uFF08\u82B1 ${fmt2(f.goldSpent)} \u91D1\u7816\uFF09` : `\u539F\u56E0\uFF1A${f.reason} \xB7 \u7B56\u7565\u300C${strategyLabel}\u300D\xB7 \u4ECD\u5DEE ${fmt2(Math.max(0, 250 - f.special))} \u4E2A`
+      )
+    );
+    const right = el("div", "metric");
+    right.append(
+      el("div", "v", `${fmt2(f.special)}/${fmt2(250)}`),
+      el("div", "k", "\u7279\u6B8A\u9053\u5177 5286")
+    );
+    host.append(left, right);
+  };
+  var renderStats = (report) => {
+    const host = document.getElementById("stats");
+    host.innerHTML = "";
+    const f = report.finishResult;
+    const items = [
+      ["\u6D88\u8017\u9636\u6BB5\u5E27", fmt2(report.commandStats.consume.frames)],
+      ["\u6536\u5C3E\u9636\u6BB5\u5E27", fmt2(report.commandStats.finish.frames)],
+      ["\u603B\u5E27\u6570", fmt2(report.commandStats.totalFrames)],
+      ["\u7406\u8BBA\u51FA\u7387", pct(report.packModel.rate)],
+      ["\u5F00\u5305\u6A21\u578B", report.packModel.model],
+      ["\u504F\u5DEE\u4E0A\u754C", `\xB1${fmt2(report.packModel.biasMax)} \u4E2A`],
+      ["\u4E70\u539F\u4EF7\u9C7C\u7AFF", fmt2(f.rodsBought)],
+      ["\u91D1\u7816\u652F\u51FA", fmt2(f.goldSpent)],
+      ["\u6B8B\u7559\u666E\u901A\u9053\u5177", fmt2(report.items.packNormal)],
+      ["\u672A\u5151\u6362\u79EF\u5206", fmt2(report.boxPoint)]
+    ];
+    for (const [k, v] of items) {
+      const s = el("div", "stat");
+      s.append(el("div", "k", k), el("div", "v", v));
+      host.append(s);
+    }
+  };
+  var renderRodPlan = (report) => {
+    const host = document.getElementById("rodplan");
+    host.innerHTML = "";
+    const rounds = report.finishResult.rounds || [];
+    if (!rounds.length) {
+      host.append(el("div", "empty", "\u6CA1\u6709\u8865\u6863\u8F6E\u6B21\uFF08\u9886\u5956\u540E\u5DF2\u51D1\u591F 250\uFF09"));
+      return;
+    }
+    const table = el("table");
+    table.innerHTML = "<thead><tr><th class='num'>\u8F6E</th><th class='num'>\u7F3A\u53E3</th><th class='num'>\u9700\u9053\u5177</th><th class='num'>\u4E70\u9C7C\u7AFF</th><th class='num'>\u82B1\u91D1\u7816</th><th class='num'>\u91D1\u7816\u8FDB\u5EA6</th><th class='num'>\u9493\u9C7C\u8FDB\u5EA6</th><th class='num'>\u5F97\u5230</th><th class='num'>\u5F00\u7BB1\u5F97\u7279\u6B8A</th><th class='num'>\u5F53\u524D\u7279\u6B8A</th></tr></thead>";
+    const tbody = el("tbody");
+    for (const r of rounds) {
+      const tr = el("tr");
+      for (const v of [
+        r.iteration,
+        `-${fmt2(r.gap)}`,
+        fmt2(r.needItems),
+        fmt2(r.rods),
+        fmt2(r.goldSpend),
+        fmt2(r.goldAfter),
+        `${fmt2(r.fishAfter)}`,
+        fmt2(r.items),
+        `+${fmt2(r.gained)}`,
+        `${fmt2(r.special)}/250`
+      ]) {
+        tr.append(el("td", "num", String(v)));
+      }
+      tbody.append(tr);
+    }
+    table.append(tbody);
+    host.append(table);
+  };
+  var renderReturns = (report) => {
+    const host = document.getElementById("returns");
+    host.innerHTML = "";
+    const r = report.finishResult.returns || {};
+    const ex = report.finishResult.returnsExact || {};
+    const hint = el(
+      "div",
+      "src",
+      "\u{1F534} \u56DB\u9879**\u540C\u65F6\u83B7\u53D6**\uFF08\u5404\u81EA\u72EC\u7ACB\u7ED3\u7B97\uFF0C\u4E0D\u662F\u591A\u9009\u4E00\uFF09\u3002\u5B9E\u53D1\u4E3A\u6574\u6570\uFF0C\u4E0E\u671F\u671B\u7684\u5DEE < 1 \u4E2A/\u9879 \u2014\u2014 \u56E0\u4E3A\u6539\u4E86\u300C\u5C0F\u6570\u7D2F\u52A0\u540E\u7EDF\u4E00\u53D6\u6574\u300D\uFF0C\u4E0D\u518D\u9010\u6B21\u4E22\u5C0F\u6570\u3002"
+    );
+    const kv = el("div", "kv");
+    const rows = [
+      ["\u8FD4\u8FD8 \u62DB\u52DF\u4EE4\uFF080.5/\u4E2A\uFF09", r.recruit, ex.recruit],
+      ["\u8FD4\u8FD8 \u94C2\u91D1\u5B9D\u7BB1 2004\uFF080.205/\u4E2A\uFF09", r.platinumBox, ex.platinumBox],
+      ["\u8FD4\u8FD8 \u91D1\u7816\uFF08107.304/\u4E2A\uFF09", r.gold, ex.gold]
+    ];
+    for (const [k, v, e] of rows) {
+      const d = el("div");
+      const val = el("span");
+      val.textContent = Number.isFinite(e) && e !== v ? `${fmt2(v)}  (\u671F\u671B ${Number(e).toFixed(2)})` : fmt2(v);
+      d.append(el("span", null, k), val);
+      kv.append(d);
+    }
+    const dSp = el("div");
+    const biasList = Array.isArray(report.finishResult.packBiases) ? report.finishResult.packBiases : [];
+    const base = Number(report.finishResult.packBase);
+    const biasTxt = biasList.length ? `\uFF08\u671F\u671B\u57FA\u7EBF ${base.toFixed(1)} + \u5404\u6279 bias [${biasList.map((b) => b > 0 ? `+${b}` : `${b}`).join(", ")}] \u21D2 \u5B9E\u5F97 ${fmt2(r.special)}\uFF09` : "";
+    dSp.append(
+      el("span", null, "\u5F00\u51FA \u7279\u6B8A\u9053\u5177 5286\uFF08round(n\xD70.25 + bias)\uFF09"),
+      el("span", null, `${fmt2(r.special)} ${biasTxt}`)
+    );
+    kv.append(dSp);
+    host.append(kv, hint);
+  };
+  var renderManualDump = (report) => {
+    const host = document.getElementById("dump");
+    host.innerHTML = "";
+    if (!report.finishResult.needsManualDump) {
+      host.append(el("div", "empty", "\u2014\uFF08\u5DF2\u8FBE\u6210\uFF0C\u65E0\u9700\u4EBA\u5DE5\u4ECB\u5165\uFF09"));
+      return;
+    }
+    host.append(
+      el(
+        "div",
+        "empty",
+        `\u26A0\uFE0F \u8D44\u6E90\u4E0D\u8DB3\uFF0C\u672A\u80FD\u51D1\u9F50 250 \u4E2A\u7279\u6B8A\u9053\u5177\uFF08${report.finishResult.reason}\uFF09
+\u6309\u539F\u6587\u7B2C 136 \u884C\uFF1A\u6B64\u65F6\u5E94\u5411\u7528\u6237\u62A5\u9519\uFF0C\u5E76\u628A**\u5B8C\u6574\u6267\u884C\u8BB0\u5F55**\u5BFC\u51FA\u7ED9\u7528\u6237\u4EBA\u5DE5\u5904\u7406\u3002`
+      )
+    );
+  };
+  var renderRounds = (report) => {
+    const host = document.getElementById("rounds");
+    host.innerHTML = "";
+    const table = el("table");
+    table.innerHTML = "<thead><tr><th>\u4EFB\u52A1</th><th class='num'>\u8FDB\u5EA6</th><th class='num'>/ \u9608\u503C</th><th class='num'>\u8F6E\u6B21</th><th style='width:34%'>\u8FBE\u6210\u5EA6</th></tr></thead>";
+    const tbody = el("tbody");
+    for (const slot of [1, 2, 3, 4, 5]) {
+      const r = report.rounds[slot];
+      const ratio = r.maxThreshold > 0 ? Math.min(1, r.progress / r.maxThreshold) : 0;
+      const tr = el("tr");
+      const tdBar = el("td");
+      const bar = el("div", `bar${r.rounds >= r.maxRounds ? " full" : ""}`);
+      const fill = el("i");
+      fill.style.width = `${(ratio * 100).toFixed(1)}%`;
+      bar.append(fill);
+      tdBar.append(bar);
+      tr.append(
+        el("td", null, r.name),
+        el("td", "num", fmt2(r.progress)),
+        el("td", "num", fmt2(r.maxThreshold)),
+        el("td", "num", `${r.rounds}/${r.maxRounds}`),
+        tdBar
+      );
+      tbody.append(tr);
+    }
+    table.append(tbody);
+    host.append(table);
+  };
+  var renderInventory = (report) => {
+    const host = document.getElementById("inventory");
+    host.innerHTML = "";
+    const kv = el("div", "kv");
+    const rows = [
+      ["\u62DB\u52DF\u4EE4", report.items.recruitToken],
+      ["\u9EC4\u91D1\u9C7C\u7AFF", report.items.goldRod],
+      ["\u91D1\u7816", report.items.gold],
+      ["\u666E\u901A\u9053\u5177 5287", report.items.packNormal],
+      ["\u7279\u6B8A\u9053\u5177 5286", report.items.packSpecial],
+      ["\u6728\u7BB1 2001", report.items.chests[2001]],
+      ["\u9752\u94DC 2002", report.items.chests[2002]],
+      ["\u9EC4\u91D1 2003", report.items.chests[2003]],
+      ["\u94C2\u91D1 2004", report.items.chests[2004]],
+      ["\u94BB\u77F3 2005", report.items.chests[2005]],
+      ["\u672A\u5151\u6362\u79EF\u5206", report.boxPoint],
+      ["\u4E94\u7C7B\u5168\u6EE1\u9053\u5177\u603B\u91CF\uFF08\u540D\u4E49\uFF09", report.totalItemsFromTasks],
+      ["\u672C\u671F\u5B9E\u9645\u53EF\u5F97\u4E0A\u9650", report.itemsCeiling]
+    ];
+    for (const [k, v] of rows) {
+      const d = el("div");
+      d.append(el("span", null, k), el("span", null, fmt2(v)));
+      kv.append(d);
+    }
+    host.append(kv);
+  };
+  var renderTimeline = (timeline) => {
+    const host = document.getElementById("timeline");
+    host.innerHTML = "";
+    if (!timeline.length) {
+      host.append(el("div", "empty", "\u65E0\u65E5\u5FD7"));
+      return;
+    }
+    for (const l of timeline) {
+      const row = el("div", `tl-row ${l.level}`);
+      row.append(el("div", "tl-phase", l.phase), el("div", "tl-text", l.text));
+      host.append(row);
+    }
+  };
+  var renderCmds = (report) => {
+    const host = document.getElementById("cmds");
+    host.innerHTML = "";
+    const count = {};
+    for (const c of report.calls) count[c.cmd] = (count[c.cmd] || 0) + 1;
+    const table = el("table");
+    table.innerHTML = "<thead><tr><th>\u547D\u4EE4</th><th class='num'>\u5E27\u6570</th></tr></thead>";
+    const tbody = el("tbody");
+    for (const [cmd, n] of Object.entries(count).sort((a, b) => b[1] - a[1])) {
+      const tr = el("tr");
+      tr.append(el("td", null, cmd), el("td", "num", fmt2(n)));
+      tbody.append(tr);
+    }
+    table.append(tbody);
+    host.append(table);
+    document.getElementById("src").textContent = `\u6D3B\u52A8\u5B9E\u4F8B ${ACTIVITY_ID} \xB7 \u539F\u4EF7\u9C7C\u7AFF ${GOLDENFISH_ROD_PRICE} \u91D1\u7816/\u6839 \xB7 \u5468\u56DB\u9493\u9C7C\u5148\u8865 ${GOLDENFISH_FISH_MIN_TARGET}\uFF08\u4E0B\u9650\uFF09\u2192 \u786C\u4E0A\u9650 ${GOLDENFISH_FISH_FULL} \xB7 \u5F00\u9053\u5177 = round(n\xD70.25 + bias)\u3001bias \u2208 [\xB1${GOLDENFISH_PACK_BIAS_MAX}] \u7EBF\u6027\uFF08\u6709\u4FDD\u5E95\uFF09 \xB7 \u9053\u5177 id ${ITEM_PACK_NORMAL}/${ITEM_PACK_SPECIAL} \xB7 \u62DB\u52DF\u4EE4 ${ITEM_RECRUIT} / \u9C7C\u7AFF ${ITEM_GOLD_ROD}`;
+  };
+  var buildRecord = () => {
+    const out = {};
+    for (const slot of [1, 2, 3, 4, 5]) {
+      const n = Math.max(0, Math.floor(num(`rec${slot}`)));
+      for (let round = 1; round <= n; round += 1) out[toMissionId(slot, round)] = 1759e6 + slot * 100 + round;
+    }
+    return out;
+  };
+  var buildPreset = () => ({
+    seed: num("seed", 20260928),
+    task: { 1: num("t1"), 2: num("t2"), 3: num("t3"), 4: num("t4"), 5: num("t5") },
+    record: buildRecord(),
+    items: {
+      [ITEM_RECRUIT]: num("recruit"),
+      [ITEM_GOLD_ROD]: num("rod"),
+      2001: num("c2001"),
+      2002: num("c2002"),
+      2003: num("c2003"),
+      2004: num("c2004"),
+      2005: num("c2005"),
+      [ITEM_PACK_NORMAL]: num("packNormal"),
+      [ITEM_PACK_SPECIAL]: num("packSpecial")
+    },
+    gold: num("gold"),
+    boxPoint: num("boxPoint"),
+    boxPointLastReward: 0,
+    recruitTarget: num("recruitTarget", GOLDENFISH_CONSUME_DEFAULTS.recruitTarget),
+    boxTarget: num("boxTarget", GOLDENFISH_CONSUME_DEFAULTS.boxTarget),
+    fishTarget: num("fishTarget", GOLDENFISH_CONSUME_DEFAULTS.fishTarget),
+    targetSpecial: num("targetSpecial", 250),
+    packRate: num("packRate", 0.25),
+    rodPrice: num("rodPrice", GOLDENFISH_ROD_PRICE),
+    fishCap: num("fishCap", GOLDENFISH_FISH_FULL),
+    fillupFishTarget: num("fillupFishTarget", GOLDENFISH_FISH_MIN_TARGET),
+    strategy: (() => {
+      const v = document.getElementById("strategy")?.value;
+      return v === "minimal" || v === "twoForOne" ? v : "master";
+    })(),
+    // 1 = 周四先把钓鱼补到 fillupFishTarget(1300)，之后由第 6 步买鱼竿继续推到 fishCap(1750)
+    fillupFish: num("fillupFish", 1) >= 1
+  });
+  var lastRun = null;
+  var downloadJsonl = () => {
+    if (!lastRun) return;
+    const { preset, report } = lastRun;
+    const f = report.finishResult;
+    const meta = {
+      phase: "meta",
+      event: "run",
+      ts: (/* @__PURE__ */ new Date()).toISOString(),
+      ok: f.ok,
+      verdict: f.ok ? "reached" : "failed",
+      special: f.special,
+      targetSpecial: f.targetSpecial,
+      reason: f.reason,
+      packModel: report.packModel,
+      ledger: f.ledger,
+      lastPlanBlockedBy: f.lastPlan?.blockedBy ?? null,
+      preset
+    };
+    const lines = [JSON.stringify(meta)];
+    for (const e of report.events || []) lines.push(JSON.stringify(e));
+    const blob = new Blob([lines.join("\n") + "\n"], { type: "application/x-ndjson" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:T]/g, "").slice(0, 14);
+    a.href = url;
+    a.download = `goldenfish_finish_${stamp}.jsonl`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  var runBtn = document.getElementById("run");
+  var dlBtn = document.getElementById("dlJsonl");
+  dlBtn.disabled = true;
+  dlBtn.addEventListener("click", downloadJsonl);
+  runBtn.addEventListener("click", () => {
+    runBtn.disabled = true;
+    runBtn.textContent = "\u8FD0\u884C\u4E2D\u2026";
+    try {
+      const preset = buildPreset();
+      window.__lastPreset = preset;
+      const { timeline, report } = runFullSimulation(preset);
+      lastRun = { preset, report };
+      dlBtn.disabled = false;
+      renderVerdict(report);
+      renderStats(report);
+      renderRounds(report);
+      renderRodPlan(report);
+      renderReturns(report);
+      renderInventory(report);
+      renderTimeline(timeline);
+      renderCmds(report);
+      renderManualDump(report);
+    } catch (err) {
+      document.getElementById("verdict").className = "verdict fail";
+      document.getElementById("verdict").innerHTML = `<div><div class="big">\u274C \u8FD0\u884C\u51FA\u9519</div><div class="sub">${String(err && err.message)}</div></div>`;
+      console.error(err);
+    } finally {
+      runBtn.disabled = false;
+      runBtn.textContent = "\u25B6 \u8DD1\u4E00\u904D\u5B8C\u6574\u6A21\u62DF";
+    }
+  });
+  runBtn.click();
+})();
+</script>
+</body>
+</html>
