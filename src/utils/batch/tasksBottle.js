@@ -99,10 +99,12 @@ export function createTasksBottle(deps) {
           maxRetries: RATE_LIMIT_MAX_RETRIES,
           shouldRetry: (error) =>
             isRateLimitError(error) || isBottleStartTimeoutError(error),
-          onRetry: ({ error, retryCount, maxRetries }) => {
+          onRetry: ({ error, retryCount }) => {
             addLog({
               time: new Date().toLocaleTimeString(),
-              message: `${token.name} 开始计时失败: ${getErrorMessage(error)}，1秒后重试（第${retryCount}/${maxRetries}次）`,
+              message: `${token.name} 开始计时失败: ${getErrorMessage(error)}，${
+                Math.round(RATE_LIMIT_RETRY_DELAY_MS / 1000)
+              }秒后重试（第${retryCount}次）`,
               type: "warning",
             });
           },

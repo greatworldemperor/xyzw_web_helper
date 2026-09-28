@@ -1,12 +1,11 @@
 import { getTowerActId } from "../towerActId.js";
-import {
-  is400340Error,
-  RATE_LIMIT_MAX_RETRIES,
-} from "../helperTaskRunner.js";
 
 /**
  * 爬塔类任务
  * 包含: climbTower, climbWeirdTower, batchClaimFreeEnergy
+ *
+ * 限流(400340)一律由 tokenStore 的统一控制器处理（弹窗 + 每 5 秒自动重试 + 成功自关），
+ * 本模块不再自行捕获/重试 400340。
  */
 import { normalizeWeirdTowerMaxClimb } from "../towerClimbLimit.js";
 import {
@@ -59,12 +58,7 @@ async function claimPendingEvoTowerRewards(tokenStore, tokenId, evoTower, onLog)
       onLog?.(`已领取第 ${res?.evoTower?.rewardTowerId ?? rewardTowerId + claimed} 章通关奖励`, "success");
       await new Promise((r) => setTimeout(r, 300));
     } catch (error) {
-      // 400340 仅限流，冷却1秒后继续补领
-      if (is400340Error(error)) {
-        onLog?.("补领章节奖励触发400340限流，冷却1秒后继续重试", "warning");
-        await new Promise((r) => setTimeout(r, 1000));
-        continue;
-      }
+      // 限流(400340)由 tokenStore 统一处理（弹窗 + 每 5 秒重试），此处只处理真正的失败。
       // 领奖失败则停止：继续爬塔只会持续返回 12200020
       onLog?.(
         `领取章节奖励失败，已补领 ${claimed}/${claimed + pending} 个：${error?.message || error}`,
@@ -555,16 +549,7 @@ export function createTasksTower(deps) {
                }
             }
           } catch (err) {
-            if (is400340Error(err)) {
-              addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${token.name} 触发400340限流，冷却1秒后继续重试`,
-                type: "warning",
-              });
-              await new Promise((r) => setTimeout(r, 1000));
-              continue;
-            }
-
+            // 限流(400340)由 tokenStore 统一处理（弹窗 + 每 5 秒重试），此处不再单独重试
             if (err.message && err.message.includes("200400")) {
               addLog({
                 time: new Date().toLocaleTimeString(),
@@ -898,16 +883,7 @@ export function createTasksTower(deps) {
               // 忽略刷新失败
             }
           } catch (err) {
-            if (is400340Error(err)) {
-              addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${token.name} 触发400340限流，冷却1秒后继续重试`,
-                type: "warning",
-              });
-              await new Promise((r) => setTimeout(r, 1000));
-              continue;
-            }
-
+            // 限流(400340)由 tokenStore 统一处理（弹窗 + 每 5 秒重试），此处不再单独重试
             consecutiveFailures++;
             addLog({
               time: new Date().toLocaleTimeString(),
@@ -1308,9 +1284,7 @@ export function createTasksTower(deps) {
         tokenStatus.value[tokenId] = "failed";
 
         let errorMessage = error.message;
-        if (is400340Error(error)) {
-          errorMessage = `触发400340限流，已按每秒重试${RATE_LIMIT_MAX_RETRIES}次仍失败，跳过该账号`;
-        } else if (errorMessage && errorMessage.includes("200330")) {
+        if (errorMessage && errorMessage.includes("200330")) {
            errorMessage = "存在未完成的挑战，需要手动处理";
         }
 

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { createTasksTower } from "../src/utils/batch/tasksTower.js";
 import { getTowerActId } from "../src/utils/towerActId.js";
 
-test("skinChallenge reports exhausted 400340 retries explicitly", async () => {
+test("skinChallenge surfaces command failures to the log", async () => {
   const selectedTokens = { value: ["token-1"] };
   const tokens = { value: [{ id: "token-1", name: "测试角色" }] };
   const tokenStatus = { value: {} };
@@ -47,9 +47,7 @@ test("skinChallenge reports exhausted 400340 retries explicitly", async () => {
 
   assert.equal(tokenStatus.value["token-1"], "failed");
   assert.equal(
-    logs.some((entry) =>
-      entry.message.includes("触发400340限流，已按每秒重试100次仍失败"),
-    ),
+    logs.some((entry) => entry.message.includes("400340")),
     true,
   );
 });

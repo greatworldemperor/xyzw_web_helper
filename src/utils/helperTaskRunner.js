@@ -3,8 +3,12 @@ export const HELPER_BATCH_DELAY_MS = 300;
 export const HELPER_COMMAND_TIMEOUT_MS = 5000;
 export const HELPER_RETRY_DELAY_MS = 1000;
 export const HELPER_MAX_RETRIES = 2;
-export const RATE_LIMIT_RETRY_DELAY_MS = 1000;
-export const RATE_LIMIT_MAX_RETRIES = 100;
+
+// 统一限流重试口径（2026-09-28 master 口径）：
+//   命中服务器限流 → 每 5 秒重试一次，且不再设次数上限（持续重试到成功为止）。
+//   400340 的弹窗/自动关窗由 tokenStore 统一控制器负责，这里只是兜底的间隔与上限。
+export const RATE_LIMIT_RETRY_DELAY_MS = 5000;
+export const RATE_LIMIT_MAX_RETRIES = Infinity;
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -115,9 +119,13 @@ export async function runWithRateLimitRetry({
   shouldRetry = isRateLimitError,
   onRetry,
 }) {
-  const retryLimit = Number.isFinite(Number(maxRetries))
-    ? Math.max(0, Math.trunc(Number(maxRetries)))
-    : 0;
+  // Infinity 表示不限次数（持续重试到成功为止）
+  const retryLimit =
+    maxRetries === Infinity
+      ? Infinity
+      : Number.isFinite(Number(maxRetries))
+        ? Math.max(0, Math.trunc(Number(maxRetries)))
+        : 0;
 
   for (let attempt = 0; ; attempt += 1) {
     try {

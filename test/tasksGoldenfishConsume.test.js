@@ -6,7 +6,7 @@
  *   - 钓鱼：差值 → artifact_lottery { type:2, lotteryNumber } 序列（只用黄金鱼竿 1012）
  *   - 宝箱：推进循环（全开=钻石不开/木箱留200 → 积分兑换 → 重查）+ 差值精确开箱
  *   - 进度不可读 → 必须跳过（宁可不跑不可盲跑，阶段 B 前的安全行为）
- *   - 限流 400340 → 弹框钩子 continue 重试 / stop 全局中止
+ *   - 限流 400340 → 交给 tokenStore 统一处理（弹窗 + 每 5 秒重试），本模块跳过该步骤
  *
  * 断言口径（xyzw-protocol-re skill）：
  *   - 命令序列逐字段断言
@@ -22,7 +22,7 @@ import { CHEST_POINTS } from "../src/utils/goldenfishConsumePlan.js";
 /**
  * 模拟服务端：维护活动进度与库存，按命令推进状态
  */
-function createHarness({ state, onRateLimitPause } = {}) {
+function createHarness({ state } = {}) {
   const sent = [];
   const logs = [];
   const st = {
@@ -118,8 +118,6 @@ function createHarness({ state, onRateLimitPause } = {}) {
       boxScoreDone: st.boxScoreDone,
       fishDone: st.fishDone,
     }),
-    onRateLimitPause:
-      onRateLimitPause || (async () => "continue"),
   };
 
   const tasks = createTasksGoldenfish(deps);
@@ -306,67 +304,33 @@ test("进度不可读：三个消耗 step 全部跳过，不发任何消耗命�
 
 // ---------------------------------------------------------------- 限流
 
-test("限流 400340：弹框「继续」→ 重试同一命令成功", async () => {
-  const pauses = [];
+test("限流 400340：由 tokenStore 统一处理，任务侧跳过该步骤且不计失败", async () => {
   const h = createHarness({
     state: { recruitDone: 3890, recruitTickets: 100, rateLimitOnce: true },
-    onRateLimitPause: async (tokenName, cmd) => {
-      pauses.push({ tokenName, cmd });
-      return "continue";
-    },
   });
   await h.tasks.goldenfishRecruit({ recruitTarget: 3900 });
 
-  assert.deepEqual(pauses, [{ tokenName: "测试号", cmd: "hero_recruit" }]);
-  // 第一次被 400340 拒绝 + 重试成功 = 2 条发送记录；进度只按成功一次推进
-  assert.equal(h.sent.filter((s) => s.cmd === "hero_recruit").length, 2);
-  assert.equal(h.state.recruitDone, 3900);
-  assert.equal(h.errorLogs().length, 0);
-});
-
-test("限流 400340：弹框「中止」→ 不重试不续发，日志记录中止", async () => {
-  const h = createHarness({
-    state: { recruitDone: 3890, recruitTickets: 100, rateLimitOnce: true },
-    onRateLimitPause: async () => "stop",
-  });
-  await h.tasks.goldenfishRecruit({ recruitTarget: 3900 });
-
-  // 第一次发送被拒后弹框选择中止 → 无重试、无后续招募命令
+  // 第一次 hero_recruit 被 400340 拒绝：本模块不再自行重试（tokenStore 负责弹窗 + 每 5 秒重试）
   assert.equal(h.sent.filter((s) => s.cmd === "hero_recruit").length, 1);
   assert.equal(h.state.recruitDone, 3890);
-  assert.ok(h.logs.some((l) => l.message.includes("限流弹框选择中止")));
-  // 中止不是失败
+  assert.ok(h.logs.some((l) => l.message.includes("触发限流")));
   assert.equal(h.errorLogs().length, 0);
 });
 
-test("限流 400340：多账号并发，中止后其它账号不再发消耗命令", async () => {
+test("限流 400340：多账号限流互不影响，各自跳过本步骤", async () => {
   const logs = [];
   const sent = [];
   const ref = (v) => ({ value: v });
-  let abortAll = false;
-  let t1RecruitCount = 0;
   const tokenStore = {
     sendMessageWithPromise: async (tokenId, cmd, params) => {
       sent.push({ tokenId, cmd, params });
       if (cmd === "role_getroleinfo") {
-        if (tokenId === "t2") {
-          // t2 晚 100ms 才拿到角色数据：t1 的中止流程先完成
-          await new Promise((r) => setTimeout(r, 100));
-        }
         return { role: { items: { 1001: { quantity: 500 } } } };
       }
-      if (tokenId === "t1" && cmd === "hero_recruit") {
-        t1RecruitCount += 1;
-        if (t1RecruitCount >= 3) {
-          const err = new Error("操作频繁");
-          err.code = 400340;
-          throw err;
-        }
-        return {};
-      }
-      // 中止落闸后任何账号再发招募命令都算竞态失败
-      if (cmd === "hero_recruit" && abortAll) {
-        throw new Error("RACE: 中止后仍发送");
+      if (cmd === "hero_recruit") {
+        const err = new Error("操作频繁");
+        err.code = 400340;
+        throw err;
       }
       return {};
     },
@@ -391,16 +355,14 @@ test("限流 400340：多账号并发，中止后其它账号不再发消耗命�
     currentRunningTokenId: ref(null),
     delayConfig: { action: 1, command: 0 },
     readActivityProgress: () => ({ recruitDone: 3850, boxScoreDone: 0, fishDone: 0 }),
-    onRateLimitPause: async () => {
-      abortAll = true; // 模拟弹框「中止」落闸
-      return "stop";
-    },
   });
   await tasks.goldenfishRecruit({ recruitTarget: 3900 });
 
-  // t1 第 3 发触发限流；t2 在 t1 中止后才拿到角色数据 → 不应发出任何招募命令
-  assert.ok(t1RecruitCount >= 3);
-  assert.ok(!sent.some((s) => s.tokenId === "t2" && s.cmd === "hero_recruit"));
-  assert.ok(logs.some((l) => l.message.includes("限流弹框选择中止")));
+  // 两个账号都各发了一次 hero_recruit 被限流 → 各自跳过本步骤，不产生 error 日志
+  assert.equal(sent.filter((s) => s.cmd === "hero_recruit").length, 2);
   assert.equal(logs.filter((l) => l.type === "error").length, 0);
+  assert.equal(
+    logs.filter((l) => l.message.includes("触发限流")).length >= 2,
+    true,
+  );
 });

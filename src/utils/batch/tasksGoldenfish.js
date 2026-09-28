@@ -33,7 +33,7 @@ const nowText = () => new Date().toLocaleTimeString();
  * 纯逻辑见 src/utils/goldenfishConsumePlan.js；master 拍板口径：
  *   - 钓鱼只用黄金鱼竿（1012 / artifact_lottery type:2）；
  *   - 钻石宝箱(2005)一律不开，木制宝箱(2001)全程保留 200 个；
- *   - 限流 400340：弹框换 IP 后继续，长时间无确认自动重试（onRateLimitPause 钩子）；
+ *   - 限流 400340：由 tokenStore 统一处理（立即弹窗提示换 IP + 每 5 秒自动重试 + 成功自关）；
  *   - 每账号先查活动进度再算差值（断点续跑）；进度不可读时宁可不跑（阶段 B 接入真实字段）。
  */
 import {
@@ -52,9 +52,6 @@ export const GOLDENFISH_CONSUME_DEFAULTS = {
   boxTarget: 99000,
   fishTarget: 1150,
 };
-
-/** 限流弹框无确认时的自动重试等待（master：时间长了冷却自然过） */
-const RATE_LIMIT_AUTO_RETRY_MS = 120000;
 
 /** 「金鱼模式」默认购物列表（09-25 master 口径，抓包 store_setpurchase 验证） */
 export const GOLDENFISH_SHOP_DEFAULTS = [
@@ -224,7 +221,6 @@ export function createTasksGoldenfish(deps) {
     message,
     currentRunningTokenId,
     delayConfig,
-    onRateLimitPause,
   } = deps;
 
   /** 取角色信息（批量页注入的带限流重试版本优先） */
@@ -387,15 +383,10 @@ export function createTasksGoldenfish(deps) {
           try {
             await step({ tokenId, token, count, config });
           } catch (error) {
-            if (error?.code === "RATE_LIMIT_STOPPED") {
-              // 限流弹框「中止」：IP 共享，全局停止所有账号
-              consumeAbortAll = true;
-              shouldStop.value = true;
-              log(tokenName, "限流弹框选择中止，停止全部任务", "warning");
-              break;
-            }
+            // 限流(400340)由 tokenStore 统一处理（弹窗 + 每 5 秒自动重试 + 成功自关），
+            // 这里只在兜底时跳过本步骤。
             if (isRateLimitError(error)) {
-              log(tokenName, `触发限流(400340)，下次再试`, "warning");
+              log(tokenName, `触发限流，跳过本步骤（tokenStore 会自动重试）`, "warning");
               break;
             }
             if (isInactiveError(error)) {
@@ -454,62 +445,22 @@ export function createTasksGoldenfish(deps) {
   // ------------------------------------------------------- 金鱼消耗（第一步）
 
   /**
-   * 限流暂停钩子：返回 "continue"（重试当前命令）或 "stop"（中止全部任务）。
-   * 默认实现（无 UI 弹框环境）：等 120s 自动重试 —— master 口径「时间长了冷却自然过」。
-   * BatchDailyTasks.vue 注入弹框版本：换 IP 后点继续立即重试，点中止全局停止，
-   * 120s 无确认同样自动重试。
+   * 命令发送：限流(400340)已由 tokenStore 统一处理（立即弹窗 + 每 5 秒自动重试 + 成功自关），
+   * 这里只做透传，不再单独弹框。
    */
-  const onRateLimitPauseRef =
-    onRateLimitPause ||
-    (async (tokenName, cmd) => {
-      log(
-        tokenName,
-        `触发限流(400340)：${cmd}，${RATE_LIMIT_AUTO_RETRY_MS / 1000}s 后自动重试`,
-        "warning",
-      );
-      await sleep(RATE_LIMIT_AUTO_RETRY_MS);
-      return "continue";
-    });
-
-  /** 限流中止信号（外层捕获后置 shouldStop 停全部账号） */
-  const rateLimitStopError = () => {
-    const err = new Error("用户在限流弹框选择中止");
-    err.code = "RATE_LIMIT_STOPPED";
-    return err;
-  };
-
-  /**
-   * 带限流重试的命令发送：400340 → 弹框/等待 → 重试同一命令；
-   * stop → 抛 RATE_LIMIT_STOPPED（外层置 shouldStop 全局停止）。
-   */
-  const sendWithRateLimit = async (tokenId, cmd, params, token, timeout = 8000) => {
-    for (;;) {
-      try {
-        return await tokenStore.sendMessageWithPromise(tokenId, cmd, params, timeout);
-      } catch (error) {
-        if (Number(error?.code) !== 400340) throw error;
-        const verdict = await onRateLimitPauseRef(token?.name || tokenId, cmd);
-        if (verdict === "stop") throw rateLimitStopError();
-        log(token?.name || tokenId, `限流后重试 ${cmd}`, "info");
-      }
-    }
-  };
+  const sendWithRateLimit = (tokenId, cmd, params, token, timeout = 8000) =>
+    tokenStore.sendMessageWithPromise(tokenId, cmd, params, timeout);
 
   /** 拉最新 role（带限流重试） */
   const fetchRoleWithLimit = async (tokenId, token) => {
-    try {
-      const response = await sendWithRateLimit(
-        tokenId,
-        "role_getroleinfo",
-        {},
-        token,
-        15000,
-      );
-      return extractRole(response);
-    } catch (error) {
-      if (Number(error?.code) === 400340) throw error;
-      throw error;
-    }
+    const response = await sendWithRateLimit(
+      tokenId,
+      "role_getroleinfo",
+      {},
+      token,
+      15000,
+    );
+    return extractRole(response);
   };
 
   /** 活动进度读取：默认用 goldenfishConsumePlan 的占位（返回 null）；

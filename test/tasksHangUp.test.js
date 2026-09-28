@@ -70,7 +70,7 @@ test("batchAddHangUpTime refreshes the token after initialization timeout", asyn
   assert.deepEqual(batchResult.failedTokenIds, []);
   assert.equal(showBatchResultModal.value, true);
   assert.equal(
-    logs.some((entry) => entry.message.includes("等待1秒后重试")),
+    logs.some((entry) => entry.message.includes("等待5秒后重试")),
     true,
   );
 });
@@ -132,7 +132,7 @@ test("claimHangUpRewards retries 400340 before continuing the task", async () =>
     4,
   );
   assert.equal(tokenStatus.value["token-1"], "completed");
-  assert.equal(logs.some((entry) => entry.message.includes("第1/100次")), true);
+  assert.equal(logs.some((entry) => entry.message.includes("第1次")), true);
 });
 
 test("claimHangUpRewards retries system claim timeouts before continuing the task", async () => {
@@ -192,5 +192,5 @@ test("claimHangUpRewards retries system claim timeouts before continuing the tas
     4,
   );
   assert.equal(tokenStatus.value["token-1"], "completed");
-  assert.equal(logs.some((entry) => entry.message.includes("第1/100次")), true);
+  assert.equal(logs.some((entry) => entry.message.includes("第1次")), true);
 });

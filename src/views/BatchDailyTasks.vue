@@ -1044,8 +1044,7 @@
                   个，退出后差值精确开箱，剩余积分不兑换留活动结束）；钓鱼
                   artifact_lottery 只用黄金鱼竿 1012（不足即停等商店 8
                   折补货）。触发限流(400340)会弹框：更换 IP
-                  后点「继续」立即重试，「中止」停止全部；120
-                  秒无确认自动重试。⚠️ 活动累积进度字段待活动面板抓包接入，接入前会提示「进度不可读」并跳过。
+                  后点「立即重试」立刻重试，也会每 5 秒自动重试、成功即自动关窗。⚠️ 活动累积进度字段待活动面板抓包接入，接入前会提示「进度不可读」并跳过。
                 </span>
               </n-space>
             </n-tab-pane>
@@ -3809,25 +3808,32 @@
     >
       <div style="padding: 8px 4px 16px 4px; line-height: 1.7">
         <p>
-          服务端检测到当前 IP 被限流（错误码
-          <code>400340</code>
-          ），批量任务已自动暂停。
+          服务端检测到当前 IP 被限流<template v-if="rateLimitPauseInfo?.code"
+            >（错误码 <code>{{ rateLimitPauseInfo.code }}</code>）</template
+          >，正在后台自动重试。
         </p>
         <p style="margin-top: 8px">
-          <strong>触发 token:</strong>
-          <span style="font-family: monospace">{{ rateLimitPauseInfo?.tokenId }}</span>
+          <strong>触发账号:</strong>
+          <span style="font-family: monospace">{{
+            rateLimitPauseInfo?.tokenName || rateLimitPauseInfo?.tokenId || "-"
+          }}</span>
         </p>
         <p>
           <strong>触发命令:</strong>
           <span style="font-family: monospace">{{ rateLimitPauseInfo?.cmd }}</span>
         </p>
         <p style="margin-top: 12px; color: #d05050">
-          请先断网重连或切换 VPN 更换 IP，然后点击下方按钮继续。
+          如方便，请断网重连或切换 VPN 更换 IP，即可立刻解除限流；后台已每 5 秒自动重试（最多 15
+          分钟），成功后弹窗自动关闭。
         </p>
       </div>
-      <div class="modal-actions" style="text-align: right">
+      <div
+        class="modal-actions"
+        style="text-align: right; display: flex; gap: 8px; justify-content: flex-end"
+      >
+        <n-button @click="handleRateLimitAbandon">放弃</n-button>
         <n-button type="warning" @click="handleRateLimitResume">
-          ✅ 已更换 IP，继续运行
+          ✅ 已更换 IP，立即重试
         </n-button>
       </div>
     </n-modal>
@@ -3846,26 +3852,7 @@
       </div>
     </n-modal>
 
-    <!-- 金鱼限流弹框（400340）：换 IP 后继续 / 中止；120s 无确认自动重试 -->
-    <n-modal
-      v-model:show="goldenfishRateLimitShow"
-      preset="dialog"
-      type="warning"
-      title="触发限流 (400340)"
-      positive-text="已更换 IP，继续"
-      negative-text="中止任务"
-      :mask-closable="false"
-      :closable="false"
-      @positive-click="resolveGoldenfishRateLimit('continue')"
-      @negative-click="resolveGoldenfishRateLimit('stop')"
-    >
-      <span>
-        {{ goldenfishRateLimit?.tokenName }} 发送
-        {{ goldenfishRateLimit?.cmd }} 时触发限流(400340)。请更换 IP
-        （切换代理 / 热点）后点「继续」立即重试当前命令；点「中止」停止全部账号任务；
-        {{ GOLDENFISH_RATE_LIMIT_AUTO_MS / 1000 }} 秒无确认将自动重试（冷却自然过）。
-      </span>
-    </n-modal>
+    <!-- 金鱼限流弹框已统一到全局 400340 限流弹窗（见上方「🚦 遇到 IP 限流」），此处不再单独弹框 -->
   </div>
 </template>
 
@@ -4221,6 +4208,11 @@ watch(
 const handleRateLimitResume = () => {
   tokenStore.resumeAfterRateLimit();
   message.success("已恢复，继续运行");
+};
+
+const handleRateLimitAbandon = () => {
+  tokenStore.abandonRateLimitRetry();
+  message.warning("已放弃本次限流等待，相关命令按失败处理");
 };
 
 // 排序配置（从localStorage读取，与TokenImport共享）
@@ -7603,10 +7595,12 @@ const sendRoleInfo = async (
           ),
         retryDelayMs: RATE_LIMIT_RETRY_DELAY_MS,
         maxRetries: RATE_LIMIT_MAX_RETRIES,
-        onRetry: ({ retryCount, maxRetries }) => {
+        onRetry: ({ retryCount }) => {
           addLog({
             time: new Date().toLocaleTimeString(),
-            message: `${operation}触发限流，1秒后重试（第${retryCount}/${maxRetries}次）`,
+            message: `${operation}触发限流，${
+              RATE_LIMIT_RETRY_DELAY_MS / 1000
+            }秒后重试（第${retryCount}次）`,
             type: "warning",
           });
         },
@@ -7657,10 +7651,12 @@ const initializeGameData = async (tokenId) => {
         tokenStore.sendMessageWithPromise(tokenId, command, {}, 5000),
       retryDelayMs: RATE_LIMIT_RETRY_DELAY_MS,
       maxRetries: RATE_LIMIT_MAX_RETRIES,
-      onRetry: ({ retryCount, maxRetries }) => {
+      onRetry: ({ retryCount }) => {
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `${operation}触发限流（400340或其他限流错误），1秒后重试（第${retryCount}/${maxRetries}次）`,
+          message: `${operation}触发限流（400340或其他限流错误），${
+            RATE_LIMIT_RETRY_DELAY_MS / 1000
+          }秒后重试（第${retryCount}次）`,
           type: "warning",
         });
       },
@@ -7860,43 +7856,8 @@ const ensureConnection = async (
   return true;
 };
 
-// 金鱼限流弹框（2026-09-26 master 口径）：400340 → 提示换 IP，「继续」重试当前命令，
-// 「中止」全局停止；120s 无确认自动 continue（人不在时冷却自然过）。IP 共享 → 弹框全局一份。
-const GOLDENFISH_RATE_LIMIT_AUTO_MS = 120000;
-const goldenfishRateLimit = ref(null); // { tokenName, cmd, resolve }
-let goldenfishRateLimitTimer = null;
-const goldenfishRateLimitShow = computed({
-  get: () => goldenfishRateLimit.value != null,
-  set: (v) => {
-    if (!v) resolveGoldenfishRateLimit("continue");
-  },
-});
-const onRateLimitPause = (tokenName, cmd) =>
-  new Promise((resolve) => {
-    // 已有弹框挂着（前一个账号刚弹过）：自动 continue，避免连环弹框
-    if (goldenfishRateLimit.value) {
-      resolve("continue");
-      return;
-    }
-    goldenfishRateLimit.value = { tokenName, cmd, resolve };
-    clearTimeout(goldenfishRateLimitTimer);
-    goldenfishRateLimitTimer = setTimeout(() => {
-      if (goldenfishRateLimit.value) {
-        goldenfishRateLimit.value.resolve("continue");
-        goldenfishRateLimit.value = null;
-      }
-    }, GOLDENFISH_RATE_LIMIT_AUTO_MS);
-  });
-const resolveGoldenfishRateLimit = (verdict) => {
-  clearTimeout(goldenfishRateLimitTimer);
-  goldenfishRateLimit.value?.resolve(verdict);
-  goldenfishRateLimit.value = null;
-};
-onBeforeUnmount(() => {
-  clearTimeout(goldenfishRateLimitTimer);
-  goldenfishRateLimit.value?.resolve("stop");
-  goldenfishRateLimit.value = null;
-});
+// 金鱼限流已统一到 tokenStore 的全局 400340 控制器（弹窗 + 每 5 秒自动重试 + 成功自关），
+// 不再需要单独的 onRateLimitPause 弹框钩子。
 
 const createTaskDeps = () => ({
   selectedTokens,
@@ -7948,8 +7909,6 @@ const createTaskDeps = () => ({
   calculateMonthProgress,
   // 营地挑战计划确认弹框
   confirmCampPlan,
-  // 金鱼限流弹框（400340 → 换 IP 继续 / 中止 / 120s 自动重试）
-  onRateLimitPause,
   // 配置加载函数
   loadSettings,
 });
@@ -8994,23 +8953,17 @@ const startBatch = async () => {
             break;
           }
 
-          if (is400340Error(error)) {
-            tokenStatus.value[tokenId] = "failed";
-            addLog({
-              time: new Date().toLocaleTimeString(),
-              message: `${tokenName} 触发400340冷却，已按每秒重试100次仍失败，停止当前账号任务: ${errorDetails}`,
-              type: "error",
-            });
-            break;
-          }
-
+          // 400340 已由 tokenStore 统一处理（弹窗 + 每 5 秒重试，成功自关）；
+          // 这里只在其它限流码上兜底重试。
           if (isRateLimitError(error)) {
             addLog({
               time: new Date().toLocaleTimeString(),
-              message: `${tokenName} 触发服务器限流或屏蔽: ${errorDetails}，1秒后重试当前账号...`,
+              message: `${tokenName} 触发服务器限流或屏蔽: ${errorDetails}，${
+                RATE_LIMIT_RETRY_DELAY_MS / 1000
+              }秒后重试当前账号...`,
               type: "warning",
             });
-            await new Promise((r) => setTimeout(r, 1000));
+            await new Promise((r) => setTimeout(r, RATE_LIMIT_RETRY_DELAY_MS));
           } else {
             tokenStatus.value[tokenId] = "failed";
             addLog({
@@ -9075,6 +9028,8 @@ const startBatch = async () => {
 
 const stopBatch = () => {
   shouldStop.value = true;
+  // 终止所有正在等待的限流重试，否则 400340 的 5 秒重试循环会一直挂着
+  tokenStore.abortRateLimitRetry?.();
   addLog({
     time: new Date().toLocaleTimeString(),
     message: "正在停止...",

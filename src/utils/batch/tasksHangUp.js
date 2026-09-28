@@ -5,7 +5,6 @@
 
 import {
   getErrorMessage,
-  is400340Error,
   isRateLimitError,
   RATE_LIMIT_MAX_RETRIES,
   RATE_LIMIT_RETRY_DELAY_MS,
@@ -65,10 +64,12 @@ export function createTasksHangUp(deps) {
       retryDelayMs: hangUpRetryDelayMs,
       maxRetries: RATE_LIMIT_MAX_RETRIES,
       shouldRetry,
-      onRetry: ({ error, retryCount, maxRetries }) => {
+      onRetry: ({ error, retryCount }) => {
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `${tokenName} ${operation}暂时失败: ${getErrorMessage(error)}，1秒后重试（第${retryCount}/${maxRetries}次）`,
+          message: `${tokenName} ${operation}暂时失败: ${getErrorMessage(error)}，${
+            Math.round(hangUpRetryDelayMs / 1000)
+          }秒后重试（第${retryCount}次）`,
           type: "warning",
         });
       },
@@ -151,9 +152,7 @@ export function createTasksHangUp(deps) {
         tokenStatus.value[tokenId] = "failed";
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: is400340Error(error)
-            ? `${token.name} 领取挂机奖励失败: 400340每秒重试${RATE_LIMIT_MAX_RETRIES}次后仍失败，跳过该账号`
-            : `${token.name} 领取挂机奖励失败: ${error.message}`,
+          message: `${token.name} 领取挂机奖励失败: ${error.message}`,
           type: "error",
         });
       } finally {
@@ -257,23 +256,13 @@ export function createTasksHangUp(deps) {
               break;
             }
 
-            if (is400340Error(error)) {
-              tokenStatus.value[tokenId] = "failed";
-              addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${tokenName} 加钟失败: 400340每秒重试${RATE_LIMIT_MAX_RETRIES}次后仍失败，跳过该账号`,
-                type: "error",
-              });
-              break;
-            }
-
             retryCount++;
             addLog({
               time: new Date().toLocaleTimeString(),
-              message: `${tokenName} 加钟出错: ${error.message || "未知错误"}，等待1秒后重试第${retryCount}次...`,
+              message: `${tokenName} 加钟出错: ${error.message || "未知错误"}，等待5秒后重试第${retryCount}次...`,
               type: "warning",
             });
-            await new Promise((r) => setTimeout(r, 1000));
+            await new Promise((r) => setTimeout(r, 5000));
           } finally {
             await tokenStore.closeWebSocketConnection(tokenId);
             addLog({
