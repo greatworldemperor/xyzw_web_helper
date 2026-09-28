@@ -1116,8 +1116,10 @@ export function createTasksItem(deps) {
                          {},
                          3000
                        );
-                       // 稍微延迟，避免请求过快
-                       await new Promise((r) => setTimeout(r, 500)); 
+                       // 走配置的发送间隔（2026-09-28 默认 0；不再硬编码 500ms，限流交给统一弹窗）
+                       await new Promise((r) =>
+                         setTimeout(r, Math.max(0, Number(delayConfig?.action) || 0)),
+                       ); 
                     } catch (err) {
                        addLog({
                           time: new Date().toLocaleTimeString(),

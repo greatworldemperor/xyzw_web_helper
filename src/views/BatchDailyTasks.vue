@@ -3220,9 +3220,9 @@
                 <label class="setting-label">命令延迟</label>
                 <n-input-number
                   v-model:value="batchSettings.commandDelay"
-                  :min="100"
+                  :min="0"
                   :max="2000"
-                  :step="100"
+                  :step="50"
                   size="small"
                   style="width: 100px"
                 />
@@ -3238,9 +3238,9 @@
                 <label class="setting-label">任务间延迟</label>
                 <n-input-number
                   v-model:value="batchSettings.taskDelay"
-                  :min="100"
+                  :min="0"
                   :max="2000"
-                  :step="100"
+                  :step="50"
                   size="small"
                   style="width: 100px"
                 />
@@ -3256,9 +3256,9 @@
                 <label class="setting-label">操作延迟</label>
                 <n-input-number
                   v-model:value="batchSettings.actionDelay"
-                  :min="100"
+                  :min="0"
                   :max="2000"
-                  :step="100"
+                  :step="50"
                   size="small"
                   style="width: 100px"
                 />
@@ -3274,9 +3274,9 @@
                 <label class="setting-label">战斗延迟</label>
                 <n-input-number
                   v-model:value="batchSettings.battleDelay"
-                  :min="100"
+                  :min="0"
                   :max="2000"
-                  :step="100"
+                  :step="50"
                   size="small"
                   style="width: 100px"
                 />
@@ -5108,11 +5108,13 @@ const batchSettings = reactive({
   password: "",
   tokenListColumns: 2,
   // 延迟配置（毫秒）
-  commandDelay: 500, // 命令间延迟
-  taskDelay: 500, // 任务间延迟
-  actionDelay: 300, // 一般操作延迟（开箱、钓鱼、招募等）
-  battleDelay: 500, // 战斗延迟（宝库、竞技场等）
-  longDelay: 3000, // 长延迟（功法赠送等）
+  // 2026-09-28 master 口径：发送间隔压到最低（命令本身是「发→await 响应」串行，0 = 纯 RTT 速度），
+  // 触发限流就交给 tokenStore 统一弹窗（每 5 秒自动重试、冷却过后自愈），不靠延迟来避限流。
+  commandDelay: 0, // 命令间延迟
+  taskDelay: 0, // 任务间延迟
+  actionDelay: 0, // 一般操作延迟（开箱、钓鱼、招募等，热路径）
+  battleDelay: 0, // 战斗延迟（宝库、竞技场等）
+  longDelay: 3000, // 长延迟（功法赠送等，功能性等待，勿降）
   // 其他配置
   maxActive: 2,
   connectionTimeout: 10000,
@@ -5127,11 +5129,24 @@ const batchSettings = reactive({
 });
 
 // Load batch settings from localStorage
+// 2026-09-28 提速迁移：旧默认延迟（命令/任务 500、操作 300、战斗 500）存在存档里时，
+// 无法与「用户手动设成这个值」区分，一律视为「没动过」丢弃 → 让新默认 0 真正生效。
+// 注意：若你确实想保留 500/300，请在界面里重新改一次（改后即不再等于旧默认值，迁移不再命中）。
+const LEGACY_DELAY_DEFAULTS = {
+  commandDelay: 500,
+  taskDelay: 500,
+  actionDelay: 300,
+  battleDelay: 500,
+};
+
 const loadBatchSettings = () => {
   try {
     const saved = localStorage.getItem("batchSettings");
     if (saved) {
       const parsed = JSON.parse(saved);
+      for (const key of Object.keys(LEGACY_DELAY_DEFAULTS)) {
+        if (parsed[key] === LEGACY_DELAY_DEFAULTS[key]) delete parsed[key];
+      }
       Object.assign(batchSettings, parsed);
     }
   } catch (error) {

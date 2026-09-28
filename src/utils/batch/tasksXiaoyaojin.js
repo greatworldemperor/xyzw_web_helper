@@ -146,9 +146,12 @@ export function createTasksXiaoyaojin(deps) {
     return value && typeof value === "object" ? value : {};
   };
 
+  // 2026-09-28：0 是合法值（= 不限速）；旧实现 `raw > 0 ? raw : 300` 会把 0 回退成 300ms —— 已修。
+  // 注：本文件对应的逍遥津活动已下线（源码保留），此处仅保持一致，避免将来复活时踩坑。
+  const DEFAULT_ACTION_DELAY = 0;
   const actionDelay = () => {
     const raw = Number(delayConfig?.action);
-    return Number.isFinite(raw) && raw > 0 ? raw : 300;
+    return Number.isFinite(raw) ? Math.max(0, raw) : DEFAULT_ACTION_DELAY;
   };
   /**
    * 券兑换认到的「能用的那一期」日期头；同一批任务里跨账号复用，避免每个号都试错。

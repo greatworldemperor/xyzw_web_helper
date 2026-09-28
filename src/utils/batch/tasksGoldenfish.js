@@ -234,9 +234,12 @@ export function createTasksGoldenfish(deps) {
         timeout,
       ));
 
+  // 2026-09-28：0 是合法值（= 不限速；命令本身是「发→await 响应」串行，0 即纯 RTT 速度）。
+  // 旧实现 `raw > 0 ? raw : 300` 会把 0 当成未配置回退 300ms，反而更慢 —— 已修。
+  const DEFAULT_ACTION_DELAY = 0;
   const actionDelay = () => {
     const raw = Number(delayConfig?.action);
-    return Number.isFinite(raw) && raw > 0 ? raw : 300;
+    return Number.isFinite(raw) ? Math.max(0, raw) : DEFAULT_ACTION_DELAY;
   };
   const sleep = (ms = actionDelay()) =>
     new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));

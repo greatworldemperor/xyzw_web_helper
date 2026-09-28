@@ -37,8 +37,9 @@ export class DailyTaskRunner {
   constructor(tokenStore, delaySettings = null) {
     this.tokenStore = tokenStore;
     this.delaySettings = delaySettings || {
-      commandDelay: 500,
-      taskDelay: 500
+      // 2026-09-28：默认不再限速（命令串行 await，0 = 纯 RTT）；限流交给 tokenStore 统一弹窗
+      commandDelay: 0,
+      taskDelay: 0
     };
   }
 
