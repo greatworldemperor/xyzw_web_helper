@@ -59,8 +59,12 @@ RESP Store_SetPurchaseResp  回显设置后的列表（按 itemId 升序，与�
 ## 金鱼消耗任务（第一步「初步消耗」，2026-09-26）
 
 需求：`local-data/goldenfish/a_brief_introduction.txt`。目标：招募累积 3900 次 /
-宝箱累积 99000 分 / 钓鱼（黄金竿 1012）累积 1150 次；金砖消耗 10 月 1 日收尾再做；
+宝箱累积 99000 分 / 钓鱼（黄金竿 1012）累积 **1140** 次；金砖消耗 10 月 1 日收尾再做；
 收罐子自然完成。全部复用既有命令，**零新协议**：
+
+> ⚠️ 钓鱼是 **1140 不是 1150**（旧文档/旧代码笔误）：原文第 31 行「绝对不能 9 月份就做完，
+> 一定要至少给 10 月留下 160 次的额度，所以这里是 1140，因为 1140+160=1300」；
+> 抓包实测进度也正好是 `task.3 = 1140`。
 
 | 操作 | 命令 | 备注 |
 | --- | --- | --- |
@@ -69,6 +73,7 @@ RESP Store_SetPurchaseResp  回显设置后的列表（按 itemId 升序，与�
 | 积分兑宝箱 | `item_claimboxpointreward {}` | 一轮 9 档共 500 分，第 9 档必得钻石宝箱(2005) |
 | 未兑换积分 | `role.boxPoint` / `role.boxPointLastReward` | 下一档索引 0~8 |
 | 钓鱼 | `artifact_lottery { type:2, lotteryNumber:N, newFree:true }` | 只用黄金鱼竿 1012（master 拍板） |
+| **活动进度** | `activity_get {}` | 见下节；**进度不在 role 上** |
 
 算法（master 伪代码，`src/utils/goldenfishConsumePlan.js` 纯逻辑实现）：
 `while(累积 + 手里可开分 < 目标) { 全开 → 积分全兑 → 重查 }`，退出后差值精确开箱
@@ -76,16 +81,74 @@ RESP Store_SetPurchaseResp  回显设置后的列表（按 itemId 升序，与�
 **钻石宝箱一律不开；木箱全程保留 200 个**（2026-09-26 master 拍板）。
 
 - 实现：`tasksGoldenfish.js` 三个 step + `goldenfishConsumeAll` 一键（招募→宝箱→钓鱼）；
-  每账号先查活动进度再补差值（断点续跑，分多天跑自动吸收每日任务的自然推进）。
+  每账号先发 `activity_get` 查活动进度再补差值（断点续跑，分多天跑自动吸收每日任务的自然推进）。
 - 库存不足（招募令/黄金鱼竿/宝箱）= 正常暂停，等商店购物列表自动补货后再跑。
-- 限流 400340 → 弹框（`onRateLimitPause` deps 钩子）：换 IP 点「继续」重试同一命令，
-  「中止」全局停止（跨账号 `consumeAbortAll` 标志，收尾重置 shouldStop 不影响）；
-  120s 无确认自动重试。
-- ⚠️ **唯一缺口**：五类任务的活动累积进度字段——现有抓包没有，等「金鱼活动面板」抓包
-  （阶段 B）。接入前 `readActivityProgress` 占位返回 null → 消耗 step 一律跳过
-  （宁可不跑不可盲跑）。测试可经 `deps.readActivityProgress` 注入。
-- 回归：`test/goldenfishConsumePlan.test.js`（纯逻辑 21 条）+
-  `test/tasksGoldenfishConsume.test.js`（端到端 10 条，mock tokenStore 断言命令序列）。
+- 限流 400340 → 交给 `tokenStore` 统一弹窗（每 5 秒自动重试、成功自关），任务侧跳过该步骤。
+- 回归：`test/goldenfishConsumePlan.test.js`（纯逻辑 30 条）+
+  `test/tasksGoldenfishConsume.test.js`（端到端 12 条，含真实抓包夹具）。
+
+### 活动累积进度字段（阶段 B，2026-09-28 查明 ✅）
+
+```
+SEND activity_get {}                 →  Activity_GetResp
+body.activity.commonActivityInfo["2609251"]
+  .task   = { 1:招募, 2:宝箱, 3:钓鱼, 4:收罐子, 5:金砖 }   ← 累积进度（本项目要的）
+  .record = { <missionId>: 领取时间戳 }                     ← 已领奖记录
+  .isBought = false
+```
+
+实测（`local-data/goldenfish/goldenfish_task_and_rewards1.jsonl`，账号进度非 0）：
+`{1:3685, 2:96530, 3:1140, 4:632, 5:20389}`，`record = {1,21,41,61,81}`。
+同一份数据每帧刷新在 `Activity_RewardResp`。`activity_get` 登录 bootstrap 即发（`seq=3`）。
+
+**活动实例 ID 识别**（关键，别踩）：同期 `commonActivityInfo` 里有 5 个 7 位键，只有 1 个是金鱼：
+
+| 键 | task 键 | 归属 |
+| --- | --- | --- |
+| `2609251` | **1,2,3,4,5** | ✅ 金鱼消耗活动 |
+| `2609252` / `2609253` / `2609254` | 无 task | 其它活动 |
+| `2609255` | **-1,-2,-4,-5**（负数） | 其它活动 |
+
+⇒ 识别签名 = **`task` 的键全部落在 1..5**（不能只判「存在一个落在 1..5」，
+否则混入负数键的 2609255 也可能命中）。实现见 `resolveGoldenfishActivity`
+（完整签名「恰好 {1..5}」优先 → 再取最大键 = 最新一期 → 支持手工指定 `manualId`）。
+跨期时最大键即最新一期（`YYMMDD+功能位` 的字典序 == 时间序，无需解析日期）。
+
+⚠️ **旧结论已证伪**：「进度在 `role.statistics` 的活动期号 key」是错的 ——
+那是旧手写 BON 解码器（`local-data/goldenfish/_decode_activity.mjs`）`case 4: return null`
+不读 8 字节 double 导致整体错位产生的**假结论**。协议解码一律用生产 `src/utils/bonProtocol.js`。
+
+### 领奖（收尾阶段用，2026-09-28 抓包实证）
+
+```
+SEND activity_claimtaskreward { activityId: 2609251, missionId: N }
+```
+
+- `missionId = (taskId - 1) * 20 + round`（20 = 每任务轮数）；抓包连发 5 次，
+  N = **1 / 21 / 41 / 61 / 81** = 五类任务各第 1 轮。
+- 奖励返回 `5287 ×8 / ×4 / ×4 / ×1 / ×3` —— **正好等于五类任务的「每轮道具」8/4/4/1/3**
+  （需求原文档位表），这就是 task 键语义的铁证。
+- 响应 `record[missionId] = 领取时间戳` ⇒ **已领轮次可直接读，不用试错**。
+- ⚠️ 该账号进度已到 19 轮却只领了 5 次（每任务第 1 轮）⇒
+  **「已完成但未领的轮次是否需要逐轮补领」待一次实测**（补领后看 `record` 是否涨到 1..19）。
+
+### 道具 ID（本期与 `ConsumptionProgressCard.vue` 里的旧 ID 不一致 ⚠️）
+
+| itemId | 是什么 | 证据 |
+| --- | --- | --- |
+| **5287** | **普通道具（本期）** | 5 次领奖共得 20 → 末尾 `item_openpack` 用 20 → 对上原文「最后用了 **20 个**普通道具」；`statistics["open:pack:guaranteed:5287"]=20` |
+| **5286** | 另一资源（= 2× 道具值） | 5 次领奖共 +40；出现在 `rewardList` / `dropReward` |
+| 5261 / 5262 | 普通道具 / 特殊道具（**旧期**） | `statistics["open:pack:guaranteed:5261"]=80`、`...:guaranteed:reward:5262=21`（80/4≈20 ↔ 1/4 概率） |
+
+⇒ `src/components/cards/ConsumptionProgressCard.vue` 硬编码 5261/5262 + 硬编码 `ACTIVITY_ID = 2512261`，
+**收尾功能开工前必须改成按本期活动数据取**（或手工配置）。该组件的档位表
+（`missionTypes` / `rewardConfigs`，20 轮×5 类）与需求原文**逐条一致**，可直接复用。
+
+### 明确不做（本轮）
+
+- ❌ 宝箱不够时「开普通道具回收宝箱」的循环（原文第 78-80 行：做宝箱任务→得普通道具→
+  开道具→得铂金宝箱，每道具均值 0.2 铂金 = 10 积分）——依赖领奖，与收尾功能耦合，留后续。
+- ❌ 金砖消耗（10/1 收尾当天做）、收罐子（自然完成）。
 
 ## IP 额度实测数据与分段执行（2026-09-28 master 实测）
 
@@ -103,7 +166,7 @@ RESP Store_SetPurchaseResp  回显设置后的列表（按 itemId 升序，与�
 | 消耗任务 | 目标 | 纯帧数 | 占额度段 | 结论 |
 | --- | --- | --- | --- | --- |
 | 招募 | 3900 次 | 390 帧 | 390/180 = 2.17 | 需跨 **3 段**，中途要等 2 次冷却 |
-| 钓鱼 | 1150 次 | 115 帧 | 115/200 = 0.58 | **一段内跑得完**，不用冷却 |
+| 钓鱼 | 1140 次 | 114 帧 | 114/200 = 0.57 | **一段内跑得完**，不用冷却 |
 | 宝箱 | 99000 分 | 198 ~ 990 帧 | 1.1 ~ 5.5 | 需跨 **2~6 段**，最大消耗方 |
 
 宝箱帧数取决于主力箱型（加权均分 S）：纯铂金 50 分 → 1980 箱 = 198 帧；纯黄金 20 分 → 4950 箱 = 495 帧；

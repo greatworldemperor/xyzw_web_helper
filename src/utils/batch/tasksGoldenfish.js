@@ -29,29 +29,38 @@ const nowText = () => new Date().toLocaleTimeString();
 
 /**
  * 金鱼消耗任务（第一步「初步消耗」，2026-09-26）：
- *   招募 → 3900 / 宝箱积分 → 99000 / 钓鱼（黄金竿 1012）→ 1150。
+ *   招募 → 3900 / 宝箱积分 → 99000 / 钓鱼（黄金竿 1012）→ **1140**。
  * 纯逻辑见 src/utils/goldenfishConsumePlan.js；master 拍板口径：
  *   - 钓鱼只用黄金鱼竿（1012 / artifact_lottery type:2）；
+ *   - 钓鱼 1140 而非 1150：给 10 月留 160 次额度（1140+160=1300，见需求原文）；
  *   - 钻石宝箱(2005)一律不开，木制宝箱(2001)全程保留 200 个；
  *   - 限流 400340：由 tokenStore 统一处理（立即弹窗提示换 IP + 每 5 秒自动重试 + 成功自关）；
- *   - 每账号先查活动进度再算差值（断点续跑）；进度不可读时宁可不跑（阶段 B 接入真实字段）。
+ *   - 每账号先发 `activity_get` 拿活动累积进度再算差值（断点续跑）；进度不可读时宁可不跑。
+ *
+ * 2026-09-28 阶段 B：进度来源已接入 —— `activity_get` →
+ *   `body.activity.commonActivityInfo[<金鱼活动ID>].task.{1:招募,2:宝箱,3:钓鱼,4:收罐子,5:金砖}`
+ *   ⚠️ 进度**不在** `role_getroleinfo` 上（旧结论已证伪），所以每个消耗 step 都要多发一次
+ *   `activity_get`。活动实例 ID 由 `resolveGoldenfishActivity` 自动探测（task 键全部落在 1..5）。
  */
 import {
   BOX_POINT_STEP_COSTS,
+  GOLDENFISH_CONSUME_DEFAULTS,
   chunkBatches,
+  extractCommonActivityInfo,
   planCountConsume,
   planOpenAll,
   planPreciseOpen,
   readActivityProgress,
+  resolveGoldenfishActivity,
   shouldKeepLooping,
 } from "../goldenfishConsumePlan.js";
 
-/** 金鱼消耗目标默认值（页面可调） */
-export const GOLDENFISH_CONSUME_DEFAULTS = {
-  recruitTarget: 3900,
-  boxTarget: 99000,
-  fishTarget: 1150,
-};
+/**
+ * 金鱼消耗目标默认值（页面可调）
+ * ⚠️ **唯一定义在 `goldenfishConsumePlan.js`**，这里只做转发 —— 早先两处各写一份，
+ *    改钓鱼目标时差点漏改一处（2026-09-28）。
+ */
+export { GOLDENFISH_CONSUME_DEFAULTS };
 
 /** 「金鱼模式」默认购物列表（09-25 master 口径，抓包 store_setpurchase 验证） */
 export const GOLDENFISH_SHOP_DEFAULTS = [
@@ -454,7 +463,7 @@ export function createTasksGoldenfish(deps) {
   const sendWithRateLimit = (tokenId, cmd, params, token, timeout = 8000) =>
     tokenStore.sendMessageWithPromise(tokenId, cmd, params, timeout);
 
-  /** 拉最新 role（带限流重试） */
+  /** 拉最新 role（带限流重试）—— 只用来读**库存/未兑换积分**，进度不在这里 */
   const fetchRoleWithLimit = async (tokenId, token) => {
     const response = await sendWithRateLimit(
       tokenId,
@@ -466,17 +475,30 @@ export function createTasksGoldenfish(deps) {
     return extractRole(response);
   };
 
-  /** 活动进度读取：默认用 goldenfishConsumePlan 的占位（返回 null）；
-   *  测试/阶段 B 可通过 deps.readActivityProgress 注入覆盖 */
+  /**
+   * 拉活动数据（`activity_get`，空 body）—— 五类消耗进度的**唯一来源**
+   *
+   * ⚠️ 进度不在 role 上（`role.statistics` 是旧文档的错误候选），必须发这条命令；
+   * 宝箱推进循环里每轮都要重查（进度会被 `item_openbox` 推高）。
+   */
+  const fetchActivityWithLimit = (tokenId, token) =>
+    sendWithRateLimit(tokenId, "activity_get", {}, token, 15000);
+
+  /** 活动进度读取：默认走 goldenfishConsumePlan.readActivityProgress（读 activity_get 的
+   *  commonActivityInfo）；测试/特殊场景可通过 deps.readActivityProgress 注入覆盖 */
   const readProgressRef = deps.readActivityProgress || readActivityProgress;
 
-  /** 活动进度可读性检查：占位 readActivityProgress 返回 null → 必须跳过（阶段 B 接入后生效） */
-  const readProgressOrSkip = (role, tokenName, stepName) => {
-    const progress = readProgressRef(role);
+  /** 活动进度可读性检查：读不到 → 必须跳过该步骤（宁可不跑，不可盲跑），并给出具体原因 */
+  const readProgressOrSkip = (activityResponse, tokenName, stepName) => {
+    const progress = readProgressRef(activityResponse);
     if (!progress) {
+      const diag = resolveGoldenfishActivity(
+        extractCommonActivityInfo(activityResponse),
+        {},
+      );
       log(
         tokenName,
-        `${stepName}跳过：活动累积进度不可读（等待活动面板抓包接入 readActivityProgress）`,
+        `${stepName}跳过：活动累积进度不可读（${diag.reason}）`,
         "warning",
       );
       return null;
@@ -494,10 +516,20 @@ export function createTasksGoldenfish(deps) {
    */
   const consumeRecruitStep = async ({ tokenId, token, config }) => {
     const target = clampCount(config?.recruitTarget ?? GOLDENFISH_CONSUME_DEFAULTS.recruitTarget);
-    const role = await fetchRoleWithLimit(tokenId, token);
-    const progress = readProgressOrSkip(role, token.name, "招募消耗");
+    // 先读活动进度（读不到/缺字段直接跳过，省一次 role 查询）
+    const activity = await fetchActivityWithLimit(tokenId, token);
+    const progress = readProgressOrSkip(activity, token.name, "招募消耗");
     if (!progress) return;
+    if (progress.recruitDone == null) {
+      log(
+        token.name,
+        `招募消耗跳过：活动 ${progress.activityId} 缺 task.1（招募）进度字段`,
+        "warning",
+      );
+      return;
+    }
 
+    const role = await fetchRoleWithLimit(tokenId, token);
     const stock = readItemCount(role?.items, ITEM_RECRUIT);
     const plan = planCountConsume({
       done: progress.recruitDone,
@@ -513,7 +545,11 @@ export function createTasksGoldenfish(deps) {
       log(token.name, `招募消耗已达目标（${progressText(target, progress.recruitDone, stock, "招募令")}）`, "success");
       return;
     }
-    log(token.name, `招募消耗开始：${progressText(target, progress.recruitDone, stock, "招募令")}`, "info");
+    log(
+      token.name,
+      `招募消耗开始（活动 ${progress.activityId}）：${progressText(target, progress.recruitDone, stock, "招募令")}`,
+      "info",
+    );
 
     let done = progress.recruitDone;
     let sent = 0;
@@ -548,10 +584,20 @@ export function createTasksGoldenfish(deps) {
    */
   const consumeFishStep = async ({ tokenId, token, config }) => {
     const target = clampCount(config?.fishTarget ?? GOLDENFISH_CONSUME_DEFAULTS.fishTarget);
-    const role = await fetchRoleWithLimit(tokenId, token);
-    const progress = readProgressOrSkip(role, token.name, "钓鱼消耗");
+    // 先读活动进度（读不到/缺字段直接跳过，省一次 role 查询）
+    const activity = await fetchActivityWithLimit(tokenId, token);
+    const progress = readProgressOrSkip(activity, token.name, "钓鱼消耗");
     if (!progress) return;
+    if (progress.fishDone == null) {
+      log(
+        token.name,
+        `钓鱼消耗跳过：活动 ${progress.activityId} 缺 task.3（钓鱼）进度字段`,
+        "warning",
+      );
+      return;
+    }
 
+    const role = await fetchRoleWithLimit(tokenId, token);
     const stock = readItemCount(role?.items, ITEM_GOLD_ROD);
     const plan = planCountConsume({
       done: progress.fishDone,
@@ -567,7 +613,11 @@ export function createTasksGoldenfish(deps) {
       log(token.name, `钓鱼消耗已达目标（${progressText(target, progress.fishDone, stock, "黄金鱼竿")}）`, "success");
       return;
     }
-    log(token.name, `钓鱼消耗开始：${progressText(target, progress.fishDone, stock, "黄金鱼竿")}`, "info");
+    log(
+      token.name,
+      `钓鱼消耗开始（活动 ${progress.activityId}）：${progressText(target, progress.fishDone, stock, "黄金鱼竿")}`,
+      "info",
+    );
 
     let done = progress.fishDone;
     let sent = 0;
@@ -657,16 +707,25 @@ export function createTasksGoldenfish(deps) {
    */
   const consumeBoxesStep = async ({ tokenId, token, config }) => {
     const target = clampCount(config?.boxTarget ?? GOLDENFISH_CONSUME_DEFAULTS.boxTarget);
-    let role = await fetchRoleWithLimit(tokenId, token);
-    let progress = readProgressOrSkip(role, token.name, "宝箱消耗");
-    if (!progress) return;
-    if (progress.boxScoreDone == null) {
-      log(token.name, "宝箱消耗跳过：宝箱累积积分字段缺失（阶段 B 接入后生效）", "warning");
+    const activityResp = await fetchActivityWithLimit(tokenId, token);
+    const progressFirst = readProgressOrSkip(activityResp, token.name, "宝箱消耗");
+    if (!progressFirst) return;
+    if (progressFirst.boxScoreDone == null) {
+      log(
+        token.name,
+        `宝箱消耗跳过：活动 ${progressFirst.activityId} 缺 task.2（宝箱）进度字段`,
+        "warning",
+      );
       return;
     }
 
-    let accumulated = Math.max(0, Math.floor(Number(progress.boxScoreDone) || 0));
-    log(token.name, `宝箱消耗开始：${progressText(target, accumulated, "-", "宝箱")}`, "info");
+    let role = await fetchRoleWithLimit(tokenId, token);
+    let accumulated = Math.max(0, Math.floor(Number(progressFirst.boxScoreDone) || 0));
+    log(
+      token.name,
+      `宝箱消耗开始（活动 ${progressFirst.activityId}）：${progressText(target, accumulated, "-", "宝箱")}`,
+      "info",
+    );
 
     // 推进循环（防死循环双保险：轮次上限 + 两轮零增长中止）
     let round = 0;
@@ -690,7 +749,9 @@ export function createTasksGoldenfish(deps) {
       await exchangeAllScore({ tokenId, token, role: lastResp?.role ?? role });
 
       role = await fetchRoleWithLimit(tokenId, token);
-      progress = readProgressRef(role);
+      // 推进循环里进度也会变（item_openbox 抬高 task.2）→ 每轮都重新拉活动数据
+      const nextActivity = await fetchActivityWithLimit(tokenId, token);
+      const progress = readProgressRef(nextActivity);
       if (!progress || progress.boxScoreDone == null) {
         log(token.name, "宝箱消耗中止：循环中进度变得不可读", "warning");
         return;

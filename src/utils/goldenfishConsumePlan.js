@@ -5,14 +5,30 @@
  * 目标（第一步「初步消耗」，金砖消耗与收尾功能后续单独设计）：
  *   - 招募消耗：先做到累积 3900 次（最后 100 次由每日日常 + 收尾补全）
  *   - 宝箱消耗：先做到累积 99000 分（最后 1000 分由每日任务 + 收尾补全）
- *   - 钓鱼消耗：先做到累积 1150 次（最后量由收尾按开道具结果估算）
+ *   - 钓鱼消耗：先做到累积 1140 次（最后量由收尾按开道具结果估算）
  *   - 金砖消耗：10月1日收尾时做，本轮不做；收罐子自然完成，无需处理
+ *
+ * ⚠️ 钓鱼为什么是 1140 而不是档位满值：原文第 31 行明确「绝对不能 9 月份就做完，一定要至少
+ * 给 10 月留下 160 次的额度，所以这里是 1140，因为 1140+160=1300，正好是拿金鱼理论上最低
+ * 钓鱼次数」；抓包实测进度也正好是 `task.3 = 1140`。**不是 1150**（旧文档/旧代码的笔误）。
  *
  * 2026-09-26 master 拍板口径：
  *   - 钓鱼只用黄金鱼竿（itemId 1012，artifact_lottery type:2）
  *   - 钻石宝箱（2005）一律不开（两个阶段都不开）
  *   - 木制宝箱（2001）全程保留 200 个不动
  *   - 限流 400340：弹框换 IP 后继续；长时间无确认则自动重试
+ *
+ * 2026-09-28 阶段 B：**活动累积进度的真实字段已查明**（抓包
+ * `local-data/goldenfish/goldenfish_task_and_rewards1.jsonl`）——
+ *   activity_get {}  →  Activity_GetResp
+ *     body.activity.commonActivityInfo[<活动ID>].task = { 1:招募, 2:宝箱, 3:钓鱼, 4:收罐子, 5:金砖 }
+ *     body.activity.commonActivityInfo[<活动ID>].record = { <missionId>: 领取时间戳 }
+ *   实测：`{"2609251": {record:{1,21,41,61,81}, task:{1:3685, 2:96530, 3:1140, 4:632, 5:20389}}}`
+ *   ⚠️ 旧的「候选位置 role.statistics」结论**已证伪**（那是旧手写 BON 解码器 tag4 不读 8 字节
+ *      导致错位所产生的假结论）；进度**不在 role 上**，必须发 `activity_get`。
+ *   ⚠️ 同期 `commonActivityInfo` 里有 5 个 7 位键（2609251~2609255），只有 2609251 是真的金鱼
+ *      活动：2609252/3/4 的 task 为空、2609255 的 task 键是负数（-1/-2/-4/-5）。
+ *      识别签名 = **task 的键全部落在 1..5**（见 isGoldenfishTaskMap）。
  *
  * 消耗任务档位表（每 5 轮一档；钓鱼共 20 轮分 6 档）：
  *   招募  80×5 / 160×5 / 240×5 / 320×5  → 全满 4000
@@ -26,12 +42,37 @@
 
 // ------------------------------------------------------------------ 常量
 
-/** 消耗目标（master 2026-09-26 口径，页面可调） */
+/** 消耗目标（master 2026-09-26 口径，页面可调；钓鱼 1140 见文件头说明） */
 export const GOLDENFISH_CONSUME_DEFAULTS = {
   recruitTarget: 3900,
   boxTarget: 99000,
-  fishTarget: 1150,
+  fishTarget: 1140,
 };
+
+/**
+ * 金鱼消耗活动的五类任务槽位 = `commonActivityInfo[<活动ID>].task` 的键
+ *
+ * **实证来源**：抓包里 5 次 `activity_claimtaskreward{activityId:2609251, missionId:1/21/41/61/81}`
+ * 分别返回普通道具 ×8 / ×4 / ×4 / ×1 / ×3，正好等于需求原文档位表里金鱼五类任务的
+ * 「每轮道具」列（招募 8 / 宝箱 4 / 钓鱼 4 / 罐子 1 / 金砖 3）——不是猜测。
+ */
+export const GOLDENFISH_TASK_SLOTS = Object.freeze({
+  recruit: 1, // 招募（消耗招募令 1001）
+  box: 2, // 宝箱（积分）
+  fish: 3, // 钓鱼（黄金鱼竿 1012）
+  jar: 4, // 收罐子（自然完成）
+  gold: 5, // 金砖（收尾当天做）
+});
+
+/** 槽位 → 中文名（日志/UI 用） */
+export const GOLDENFISH_TASK_NAMES = Object.freeze({
+  1: "招募",
+  2: "宝箱",
+  3: "钓鱼",
+  4: "收罐子",
+  5: "金砖",
+});
+
 
 /** 宝箱分值（itemId → 开出积分；钻石宝箱 0 分） */
 export const CHEST_POINTS = { 2001: 1, 2002: 10, 2003: 20, 2004: 50, 2005: 0 };
@@ -206,30 +247,192 @@ export const estimateExchangeSteps = (boxPoint, pos = 0) => {
   return { count: steps.length, totalCost: steps.reduce((s, c) => s + c, 0), steps };
 };
 
-// ------------------------------------------------------------------ 活动进度读取（占位）
+// ------------------------------------------------------------------ 活动实例探测
+//
+// 活动实例 ID 规则（与逍遥津同族）：`YYMMDD + 功能位`，7 位纯数字。
+// 同一期全服一致、跨账号一致，所以「取 7 位键里最大的那个」= 最新一期
+// （YYMMDD+功能位 的字典序 == 时间序，不需要解析日期）。
+
+/** 活动实例 ID：7 位纯数字（YYMMDD + 功能位） */
+export const isActivityInstanceId = (id) => /^\d{7}$/.test(String(id ?? "").trim());
 
 /**
- * 读取五类消耗任务的活动累积进度（断点续跑的差值基准）。
+ * 判「这个 task 表是不是金鱼的五类消耗任务」
  *
- * ⚠️ 占位实现：字段来源待「金鱼活动面板」抓包确认（2026-09-26 master 将提供），
- *    现有抓包（use_one_item.jsonl / shop_list.jsonl）里没有任务进度结构。
- *    拿到抓包后在此实现，从活动数据 / role.statistics 里解析：
- *      { recruitDone, boxScoreDone, fishDone, goldDone }
- *    在此之前返回 null → 调用方必须中止对应消耗步骤（宁可不跑，不可盲跑）。
- *
- * @param {Object} role role_getroleinfo 响应里的 role 对象
- * @returns {{ recruitDone?: number, boxScoreDone?: number, fishDone?: number, goldDone?: number } | null}
+ * 判据 = **键全部落在 1..5**（≥1 个）。
+ * 实证（2026-09-25 抓包 `commonActivityInfo`）：
+ *   2609251 → {1,2,3,4,5}  ✅ 金鱼
+ *   2609252/3/4 → 无 task  ❌
+ *   2609255 → {-1,-2,-4,-5} ❌（负数直接否决）
+ * 注意必须用「全部落在」而不是「存在一个落在」，否则 2609255 这类混入负数键的活动也可能命中。
  */
-export const readActivityProgress = (role) => {
-  // TODO(阶段B): 解码活动面板抓包后填充真实字段。
-  // 候选位置：role.statistics（如 "au:f:le:id:<期号>" 一类的活动 key）、
-  // role 上的活动结构、或活动面板专用查询命令的响应。
-  void role;
+export const isGoldenfishTaskMap = (task) => {
+  if (!task || typeof task !== "object" || Array.isArray(task)) return false;
+  const keys = Object.keys(task);
+  if (keys.length === 0) return false;
+  return keys.every((key) => {
+    const n = Number(key);
+    return Number.isInteger(n) && n >= 1 && n <= GOLDENFISH_TASK_SLOTS.gold;
+  });
+};
+
+/** 最强签名：task 的键**恰好**是 {1,2,3,4,5}（优先级高于部分命中） */
+export const isFullGoldenfishTaskMap = (task) => {
+  if (!isGoldenfishTaskMap(task)) return false;
+  const unique = new Set(Object.keys(task).map((key) => Number(key)));
+  return unique.size === Object.keys(GOLDENFISH_TASK_SLOTS).length;
+};
+
+/**
+ * 从任意形态的响应里取出 `commonActivityInfo`
+ * （兼容 activity_get 的 Promise 返回值各层级；取不到返回 null）
+ */
+export const extractCommonActivityInfo = (response) => {
+  if (!response || typeof response !== "object") return null;
+  const candidates = [
+    response.commonActivityInfo,
+    response.activity?.commonActivityInfo,
+    response.body?.commonActivityInfo,
+    response.body?.activity?.commonActivityInfo,
+    response.data?.commonActivityInfo,
+    response.data?.activity?.commonActivityInfo,
+  ];
+  for (const candidate of candidates) {
+    if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+      return candidate;
+    }
+  }
   return null;
+};
+
+/**
+ * 定位本期的金鱼消耗活动实例（纯读，不发请求）
+ *
+ * 规则：
+ *   1. `options.manualId`（7 位数字）优先级最高 —— 用户手填即明确意图（自动探测可能撞上
+ *      同期其它活动的脏数据 / 上一期未清理的键）；
+ *   2. 自动：7 位键 ∩ task 是金鱼任务表；**优先「键恰好 {1..5} 的完整签名」**，
+ *      再在其中取最大键（= 最新一期）；
+ *   3. 全部失败返回 `ok:false` + reason（调用方据此写日志，不要盲跑）。
+ *
+ * @param {object} commonActivityInfo `body.activity.commonActivityInfo`
+ * @param {{ manualId?: string|number }} [options]
+ * @returns {{ok:true, activityId:string, source:"manual"|"auto",
+ *            entry:object, task:object, record:object, candidates:string[]}
+ *          | {ok:false, reason:string, candidates:string[]}}
+ */
+export const resolveGoldenfishActivity = (commonActivityInfo, options = {}) => {
+  const info =
+    commonActivityInfo && typeof commonActivityInfo === "object"
+      ? commonActivityInfo
+      : null;
+  if (!info) {
+    return { ok: false, reason: "未取到活动数据（activity_get 返回里没有 commonActivityInfo）", candidates: [] };
+  }
+
+  const ids = Object.keys(info);
+  const candidates = ids.filter((id) => {
+    if (!isActivityInstanceId(id)) return false;
+    return isGoldenfishTaskMap(info[id]?.task);
+  });
+
+  // 手工指定：只认「7 位数字 + 该键存在」，task 表不完整也认（用户说了算，缺项由调用方跳过）
+  const manualId = options.manualId === null || options.manualId === undefined
+    ? ""
+    : String(options.manualId).trim();
+  if (manualId) {
+    if (!isActivityInstanceId(manualId)) {
+      return { ok: false, reason: `手工指定的活动 ID「${manualId}」不是 7 位数字（YYMMDD+功能位）`, candidates };
+    }
+    const entry = info[manualId];
+    if (!entry || typeof entry !== "object") {
+      return { ok: false, reason: `commonActivityInfo 里没有活动 ${manualId}（该期可能未开启或已清理）`, candidates };
+    }
+    return {
+      ok: true,
+      activityId: manualId,
+      source: "manual",
+      entry,
+      task: entry.task && typeof entry.task === "object" ? entry.task : {},
+      record: entry.record && typeof entry.record === "object" ? entry.record : {},
+      candidates,
+    };
+  }
+
+  if (candidates.length === 0) {
+    return {
+      ok: false,
+      reason: "未找到金鱼活动实例（task 键全部落在 1..5 的活动）；活动可能未开启/已结束，或需要手工指定活动 ID",
+      candidates,
+    };
+  }
+
+  // 完整签名优先，其次取键最大者（最新一期）
+  const full = candidates.filter((id) => isFullGoldenfishTaskMap(info[id]?.task));
+  const pool = full.length > 0 ? full : candidates;
+  const activityId = pool.reduce((best, id) => (best === null || id > best ? id : best), null);
+  const entry = info[activityId];
+
+  return {
+    ok: true,
+    activityId,
+    source: "auto",
+    entry,
+    task: entry.task && typeof entry.task === "object" ? entry.task : {},
+    record: entry.record && typeof entry.record === "object" ? entry.record : {},
+    candidates,
+  };
+};
+
+/** 读单个任务槽位的进展值；缺失/非法 → **null**（不是 0！`Number(null)===0` 陷阱） */
+const readTaskValue = (task, slot) => {
+  if (!task || typeof task !== "object") return null;
+  const raw = task[slot] ?? task[String(slot)];
+  if (raw === null || raw === undefined || raw === "") return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
+};
+
+/**
+ * 读取五类消耗任务的**活动累积进度**（断点续跑的差值基准）
+ *
+ * 数据源：`activity_get` 的响应 → `body.activity.commonActivityInfo[<活动ID>].task`
+ * （实测结构见文件头；**不在 `role` 上**）。
+ *
+ * 返回值约定（调用方按此决定跑/跳过）：
+ *   - 整体读不到（没有 commonActivityInfo / 找不到金鱼活动实例）→ **返回 `null`**
+ *     ⇒ 调用方必须中止对应消耗步骤（宁可不跑，不可盲跑）；
+ *   - 单个槽位缺失 → 该字段为 `null`（**不能用 0 冒充**，否则会当成「进度 0」而盲跑一遍）。
+ *
+ * @param {object} response `activity_get` 的 Promise 返回值（各层级形态皆可）
+ * @param {{ manualId?: string|number }} [options] 手工指定的活动实例 ID
+ * @returns {{ activityId:string, source:string, recruitDone:number|null,
+ *             boxScoreDone:number|null, fishDone:number|null,
+ *             jarDone:number|null, goldDone:number|null,
+ *             record:object, candidates:string[] } | null}
+ */
+export const readActivityProgress = (response, options = {}) => {
+  const resolved = resolveGoldenfishActivity(extractCommonActivityInfo(response), options);
+  if (!resolved.ok) return null;
+
+  const { task } = resolved;
+  return {
+    activityId: resolved.activityId,
+    source: resolved.source,
+    recruitDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.recruit),
+    boxScoreDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.box),
+    fishDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.fish),
+    jarDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.jar),
+    goldDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.gold),
+    record: resolved.record,
+    candidates: resolved.candidates,
+  };
 };
 
 export default {
   GOLDENFISH_CONSUME_DEFAULTS,
+  GOLDENFISH_TASK_SLOTS,
+  GOLDENFISH_TASK_NAMES,
   CHEST_POINTS,
   WOODEN_RESERVE,
   chunkBatches,
@@ -240,5 +443,11 @@ export default {
   planPreciseOpen,
   shouldKeepLooping,
   estimateExchangeSteps,
+  isActivityInstanceId,
+  isGoldenfishTaskMap,
+  isFullGoldenfishTaskMap,
+  extractCommonActivityInfo,
+  resolveGoldenfishActivity,
   readActivityProgress,
 };
+

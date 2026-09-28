@@ -302,6 +302,113 @@ test("进度不可读：三个消耗 step 全部跳过，不发任何消耗命�
   assert.equal(logs.filter((l) => l.type === "error").length, 0);
 });
 
+// -------------------------------------------- 阶段 B：真实活动数据（不注入进展实现）
+
+/**
+ * 真实抓包夹具：`local-data/goldenfish/goldenfish_task_and_rewards1.jsonl`
+ * `Activity_GetResp` → `body.activity.commonActivityInfo`（2026-09-25）
+ * 同期 2609252/3/4 无 task、2609255 是负数键 → 只有 2609251 是金鱼活动。
+ */
+const CAPTURE_COMMON = {
+  2609251: {
+    record: { 1: 1790578205, 21: 1790578207 },
+    task: { 1: 3685, 2: 96530, 3: 1140, 4: 632, 5: 20389 },
+    isBought: false,
+  },
+  2609252: { isBought: false },
+  2609255: { task: { "-1": 0, "-2": 0 }, isBought: false },
+};
+
+/** 造一个「只喂真实活动响应」的最小 harness（**不注入** deps.readActivityProgress） */
+function createRealActivityHarness({ commonActivityInfo, items = {}, cmds = {} }) {
+  const sent = [];
+  const logs = [];
+  const ref = (v) => ({ value: v });
+  const tokenStore = {
+    sendMessageWithPromise: async (tokenId, cmd, params) => {
+      sent.push({ cmd, params });
+      if (cmd === "activity_get") return { body: { activity: { commonActivityInfo } } };
+      if (cmd === "role_getroleinfo") return { role: { items } };
+      if (Object.hasOwn(cmds, cmd)) return typeof cmds[cmd] === "function" ? cmds[cmd](params) : cmds[cmd];
+      return {};
+    },
+    closeWebSocketConnection: () => {},
+  };
+  const tasks = createTasksGoldenfish({
+    selectedTokens: ref(["t1"]),
+    tokens: ref([{ id: "t1", name: "抓包号" }]),
+    tokenStatus: ref({}),
+    isRunning: ref(false),
+    shouldStop: ref(false),
+    ensureConnection: async () => {},
+    releaseConnectionSlot: () => {},
+    connectionQueue: { active: 0 },
+    batchSettings: { maxActive: 2 },
+    tokenStore,
+    addLog: (entry) => logs.push(entry),
+    message: { success: () => {}, warning: () => {}, error: () => {} },
+    currentRunningTokenId: ref(null),
+    delayConfig: { action: 1, command: 0 },
+  });
+  return {
+    tasks,
+    sent,
+    logs,
+    cmds: () => sent.map((s) => s.cmd),
+    errorLogs: () => logs.filter((l) => l.type === "error"),
+  };
+}
+
+test("阶段B 真实数据：招募进度 3685 → 差值 215 → 21 发 10 + 1 发 5；activity_get 先于 role", async () => {
+  const h = createRealActivityHarness({
+    commonActivityInfo: CAPTURE_COMMON,
+    items: { 1001: { quantity: 500 } },
+  });
+  await h.tasks.goldenfishRecruit({ recruitTarget: 3900 });
+
+  const recruits = h.sent.filter((s) => s.cmd === "hero_recruit").map((s) => s.params);
+  assert.equal(recruits.length, 22);
+  assert.deepEqual(recruits.slice(0, 21), Array.from({ length: 21 }, () => ({ recruitType: 1, recruitNumber: 10 })));
+  assert.deepEqual(recruits[21], { recruitType: 1, recruitNumber: 5 });
+
+  // 进度靠 activity_get（不是 role）→ 它必须先发
+  const seq = h.cmds();
+  assert.ok(seq.indexOf("activity_get") < seq.indexOf("role_getroleinfo"));
+  // 日志里带上探测到的活动实例 ID
+  assert.ok(h.logs.some((l) => l.message.includes("活动 2609251")));
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("阶段B 真实数据：钓鱼进度 1140 = 目标 → 已达标不发命令", async () => {
+  const h = createRealActivityHarness({
+    commonActivityInfo: CAPTURE_COMMON,
+    items: { 1012: { quantity: 999 } },
+  });
+  await h.tasks.goldenfishFish({ fishTarget: 1140 });
+
+  assert.ok(!h.sent.some((s) => s.cmd === "artifact_lottery"));
+  assert.ok(h.logs.some((l) => l.message.includes("钓鱼消耗已达目标")));
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("阶段B 真实数据：槽位缺失（只有 task.1）→ 对应 step 跳过并指名缺哪个槽", async () => {
+  const h = createRealActivityHarness({
+    commonActivityInfo: {
+      2609251: { task: { 1: 3685 }, isBought: false },
+      2609252: { isBought: false },
+    },
+    items: { 1012: { quantity: 500 } },
+  });
+  await h.tasks.goldenfishConsumeAll({ recruitTarget: 3900, boxTarget: 99000, fishTarget: 1140 });
+
+  // 缺 task.2/task.3 → 宝箱与钓鱼都跳过，不发消耗命令
+  assert.ok(!h.sent.some((s) => s.cmd === "artifact_lottery"));
+  assert.ok(!h.sent.some((s) => s.cmd === "item_openbox"));
+  assert.ok(h.logs.some((l) => l.message.includes("缺 task.2（宝箱）")));
+  assert.ok(h.logs.some((l) => l.message.includes("缺 task.3（钓鱼）")));
+  assert.equal(h.errorLogs().length, 0);
+});
+
 // ---------------------------------------------------------------- 限流
 
 test("限流 400340：由 tokenStore 统一处理，任务侧跳过该步骤且不计失败", async () => {

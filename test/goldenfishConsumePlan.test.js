@@ -19,6 +19,9 @@ import {
   shouldKeepLooping,
   estimateExchangeSteps,
   readActivityProgress,
+  resolveGoldenfishActivity,
+  isGoldenfishTaskMap,
+  isFullGoldenfishTaskMap,
   GOLDENFISH_CONSUME_DEFAULTS,
   CHEST_POINTS,
   BOX_POINT_ROUND_TOTAL,
@@ -187,9 +190,135 @@ test("estimateExchangeSteps: 首档即付不起 / 从 pos 起步", () => {
 test("档位表/分值/兑换轮成本与介绍文档一致", () => {
   assert.deepEqual(CHEST_POINTS, { 2001: 1, 2002: 10, 2003: 20, 2004: 50, 2005: 0 });
   assert.equal(BOX_POINT_ROUND_TOTAL, 500);
-  assert.deepEqual(GOLDENFISH_CONSUME_DEFAULTS, { recruitTarget: 3900, boxTarget: 99000, fishTarget: 1150 });
+  // 钓鱼 1140 而非 1150：给 10 月留 160 次额度（1140+160=1300），需求原文第 31 行 + 抓包实测
+  assert.deepEqual(GOLDENFISH_CONSUME_DEFAULTS, { recruitTarget: 3900, boxTarget: 99000, fishTarget: 1140 });
 });
 
-test("readActivityProgress: 阶段B 前占位返回 null（调用方须中止）", () => {
+// ------------------------------------------- 活动实例识别与进度读取（阶段 B）
+
+/**
+ * 真实抓包夹具（`local-data/goldenfish/goldenfish_task_and_rewards1.jsonl` 的
+ * `Activity_GetResp` → `body.activity.commonActivityInfo`，2026-09-25）
+ *
+ * 关键点：同期有 5 个 7 位键，只有 2609251 是真金鱼 ——
+ *   2609252/3/4 无 task；2609255 的 task 键是**负数**（-1/-2/-4/-5）。
+ */
+const CAPTURE_COMMON = {
+  2609251: {
+    record: { 1: 1790578205, 21: 1790578207, 41: 1790578208, 61: 1790578212, 81: 1790578214 },
+    task: { 1: 3685, 2: 96530, 3: 1140, 4: 632, 5: 20389 },
+    isBought: false,
+  },
+  2609252: { isBought: false },
+  2609253: { isBought: false },
+  2609254: { isBought: false },
+  2609255: { record: null, task: { "-2": 0, "-1": 0, "-4": 0, "-5": 0 }, isBought: false },
+};
+
+test("isGoldenfishTaskMap: 键全部落在 1..5 才算；负数/混合键否决", () => {
+  assert.equal(isGoldenfishTaskMap({ 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }), true);
+  assert.equal(isGoldenfishTaskMap({ 3: 1140 }), true); // 部分命中也算（该步缺字段会单独跳过）
+  assert.equal(isGoldenfishTaskMap({ "-1": 0, "-2": 0 }), false); // 2609255
+  assert.equal(isGoldenfishTaskMap({ 1: 0, 7: 0 }), false); // 7 超界
+  assert.equal(isGoldenfishTaskMap({}), false);
+  assert.equal(isGoldenfishTaskMap(null), false);
+  assert.equal(isFullGoldenfishTaskMap({ 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }), true);
+  assert.equal(isFullGoldenfishTaskMap({ 3: 1140 }), false);
+});
+
+test("resolveGoldenfishActivity: 同期 5 个键里挑出 2609251（否定 2609255 的负数键）", () => {
+  const r = resolveGoldenfishActivity(CAPTURE_COMMON);
+  assert.equal(r.ok, true);
+  assert.equal(r.activityId, "2609251");
+  assert.equal(r.source, "auto");
+  assert.deepEqual(r.candidates, ["2609251"]);
+});
+
+test("readActivityProgress: 读真实抓包 → 五类进度逐字段一致", () => {
+  const p = readActivityProgress({ body: { activity: { commonActivityInfo: CAPTURE_COMMON } } });
+  assert.equal(p.activityId, "2609251");
+  assert.equal(p.recruitDone, 3685);
+  assert.equal(p.boxScoreDone, 96530);
+  assert.equal(p.fishDone, 1140);
+  assert.equal(p.jarDone, 632);
+  assert.equal(p.goldDone, 20389);
+  // record = 已领奖的 missionId → 时间戳（收尾补领用）
+  assert.deepEqual(Object.keys(p.record), ["1", "21", "41", "61", "81"]);
+});
+
+test("readActivityProgress: 兼容裸 body / activity 两种层级", () => {
+  const bare = readActivityProgress({ activity: { commonActivityInfo: CAPTURE_COMMON } });
+  assert.equal(bare.activityId, "2609251");
+  const flat = readActivityProgress({ commonActivityInfo: CAPTURE_COMMON });
+  assert.equal(flat.activityId, "2609251");
+});
+
+test("readActivityProgress: 找不到金鱼活动一律返回 null（宁可不跑不可盲跑）", () => {
   assert.equal(readActivityProgress({ statistics: {} }), null);
+  assert.equal(readActivityProgress({}), null);
+  assert.equal(readActivityProgress(null), null);
+  // 只有 2609255 这类非金鱼活动 → 仍然 null
+  assert.equal(
+    readActivityProgress({ commonActivityInfo: { 2609255: CAPTURE_COMMON[2609255] } }),
+    null,
+  );
+  // 键不是 7 位数字（历史脏数据）→ 不入选
+  assert.equal(
+    readActivityProgress({ commonActivityInfo: { 1003: { task: { 1: 1 } } } }),
+    null,
+  );
+});
+
+test("readActivityProgress: 缺槽位 → 该字段 null 而不冒充 0", () => {
+  const p = readActivityProgress({
+    commonActivityInfo: { 2609251: { task: { 1: 3685 } } },
+  });
+  assert.equal(p.recruitDone, 3685);
+  assert.equal(p.boxScoreDone, null);
+  assert.equal(p.fishDone, null);
+  assert.equal(p.jarDone, null);
+  assert.equal(p.goldDone, null);
+  // 显式 null 值同样视为「读不到」（Number(null)===0 陷阱）
+  const p2 = readActivityProgress({
+    commonActivityInfo: { 2609251: { task: { 1: null, 2: "" } } },
+  });
+  assert.equal(p2.recruitDone, null);
+  assert.equal(p2.boxScoreDone, null);
+});
+
+test("resolveGoldenfishActivity: 多期残留取最大 ID（最新一期）", () => {
+  const r = resolveGoldenfishActivity({
+    ...CAPTURE_COMMON,
+    2609181: { task: { 1: 100, 2: 200, 3: 300, 4: 1, 5: 2 } }, // 上一期残留
+  });
+  assert.equal(r.activityId, "2609251");
+  assert.deepEqual([...r.candidates].sort(), ["2609181", "2609251"]);
+});
+
+test("resolveGoldenfishActivity: 完整签名（恰好 1..5）优先于部分签名", () => {
+  const r = resolveGoldenfishActivity({
+    2609251: { task: { 1: 1, 2: 2 } }, // 部分签名但 ID 更大
+    2609181: { task: { 1: 1, 2: 2, 3: 3, 4: 4, 5: 5 } }, // 完整签名
+  });
+  assert.equal(r.activityId, "2609181");
+});
+
+test("resolveGoldenfishActivity: 手工 ID 优先级最高（哪怕 task 表不完整）", () => {
+  const r = resolveGoldenfishActivity(
+    { 2609251: { task: { 1: 3685, 2: 96530, 3: 1140, 4: 632, 5: 20389 } }, 2609255: { task: {} } },
+    { manualId: "2609255" },
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.activityId, "2609255");
+  assert.equal(r.source, "manual");
+  assert.equal(readActivityProgress({ commonActivityInfo: { 2609251: { task: { 3: 1140 } } } }, { manualId: "2609251" }).fishDone, 1140);
+});
+
+test("resolveGoldenfishActivity: 手工 ID 非法/不存在时给明确原因", () => {
+  const bad = resolveGoldenfishActivity(CAPTURE_COMMON, { manualId: "abc" });
+  assert.equal(bad.ok, false);
+  assert.match(bad.reason, /不是 7 位数字/);
+  const missing = resolveGoldenfishActivity(CAPTURE_COMMON, { manualId: "2601011" });
+  assert.equal(missing.ok, false);
+  assert.match(missing.reason, /没有活动 2601011/);
 });

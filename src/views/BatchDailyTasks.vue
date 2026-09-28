@@ -8284,15 +8284,24 @@ const resetGoldenfishShopDefaults = () => {
   message.success("已恢复金鱼模式默认购物列表");
 };
 
-// 金鱼消耗任务（第一步「初步消耗」，2026-09-26）：招募 3900 / 宝箱 99000 / 钓鱼(黄金竿) 1150。
-// 纯逻辑 src/utils/goldenfishConsumePlan.js；活动累积进度字段待面板抓包接入（阶段 B）。
+// 金鱼消耗任务（第一步「初步消耗」，2026-09-26）：招募 3900 / 宝箱 99000 / 钓鱼(黄金竿) 1140。
+// 纯逻辑 src/utils/goldenfishConsumePlan.js；活动累积进度来自 activity_get →
+// body.activity.commonActivityInfo[<活动ID>].task（2026-09-28 阶段 B 已接入）。
 const GOLDENFISH_CONSUME_STORAGE_KEY = "goldenfishConsumeSettings";
+/**
+ * 旧默认值迁移：钓鱼目标曾误写 1150，实际应为 **1140**（给 10 月留 160 次额度）。
+ * localStorage 会覆盖代码默认值 → 存档里等于旧默认的字段一律丢弃，让新默认生效。
+ */
+const LEGACY_GOLDENFISH_CONSUME_DEFAULTS = { fishTarget: 1150 };
 const loadGoldenfishConsumeSettings = () => {
   const fallback = { ...GOLDENFISH_CONSUME_DEFAULTS };
   try {
     const raw = localStorage.getItem(GOLDENFISH_CONSUME_STORAGE_KEY);
     if (!raw) return fallback;
     const parsed = JSON.parse(raw);
+    for (const key of Object.keys(LEGACY_GOLDENFISH_CONSUME_DEFAULTS)) {
+      if (parsed?.[key] === LEGACY_GOLDENFISH_CONSUME_DEFAULTS[key]) delete parsed[key];
+    }
     // Number(null)===0 陷阱：非法/缺失值一律回退默认（显式判）
     const num = (v, d) => {
       const n = Number(v);
