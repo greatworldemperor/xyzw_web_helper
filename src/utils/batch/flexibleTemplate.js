@@ -99,6 +99,9 @@ export const flexibleTaskGroups = [
       batchTask("batchHeroUpgrade", "一键英雄升星"),
       batchTask("batchBookUpgrade", "一键图鉴升星"),
       batchTask("batchClaimStarRewards", "一键领取图鉴奖励"),
+      // 🔴 master 2026-09-28：三步有因果链（英雄升星→得图鉴→图鉴升星→得奖励），
+      // 必须对当前角色一次连接按序做完，避免按功能遍历角色来回连断触发限流
+      batchTask("batchResourceUpgradeChain", "一键升星领奖链（英雄→图鉴→奖励）"),
       batchTask("legion_storebuygoods", "一键购买四圣碎片"),
       batchTask("legionStoreBuySkinCoins", "一键购买俱乐部5皮肤币"),
     ],

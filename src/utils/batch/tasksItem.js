@@ -320,6 +320,187 @@ export function createTasksItem(deps) {
   };
 
   /**
+   * 对**单个角色**按序执行「英雄升星 → 图鉴升星 → 领取图鉴奖励」完整链
+   * （master 2026-09-28 拍板：因果链 = 英雄升星之后会得到图鉴，图鉴升星之后会得到奖励
+   * ⇒ 三步必须按此顺序；且对当前角色一次连接做完，避免按功能遍历角色来回连断触发限流）
+   *
+   * ⚠️ 调用方必须已 `ensureConnection`；本函数不建立/不关闭连接。
+   * 单步循环逻辑与 batchHeroUpgrade / batchBookUpgrade / batchClaimStarRewards 的
+   * 单角色部分逐字段一致（升星每英雄最多 10 次：成功继续、失败跳下一个英雄）。
+   *
+   * @returns {Promise<{heroUp:number, bookUp:number, claims:number}>}
+   */
+  const runHeroBookChainForToken = async (tokenId, tokenName) => {
+    const name = tokenName || tokenId;
+
+    /** 升星循环（cmd + 文案参数化；英雄升星与图鉴升星同构） */
+    const upgradeLoop = async (cmd, okLabel, failLabel) => {
+      let okCount = 0;
+      for (const heroId of heroIds) {
+        if (shouldStop.value) break;
+        for (let i = 1; i <= 10; i += 1) {
+          if (shouldStop.value) break;
+          try {
+            const res = await tokenStore.sendMessageWithPromise(
+              tokenId,
+              cmd,
+              { heroId },
+              5000,
+            );
+            const ok =
+              res &&
+              (res.code === 0 || res.success === true || res.result === 0);
+            if (!ok) throw new Error(failLabel);
+            okCount += 1;
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${name} 英雄ID:${heroId} ${okLabel} (第${i}次)`,
+              type: "success",
+            });
+          } catch (err) {
+            // 失败说明该英雄无法继续（碎片不足/满星），停止当前英雄、换下一个
+            break;
+          }
+          await new Promise((r) => setTimeout(r, delayConfig.action));
+        }
+      }
+      return okCount;
+    };
+
+    // 第 1 步：英雄升星 —— 升星后才会解锁新的图鉴星级
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `${name} 【1/3】英雄升星开始`,
+      type: "info",
+    });
+    const heroUp = await upgradeLoop(
+      "hero_heroupgradestar",
+      "升星成功",
+      "升星失败",
+    );
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `${name} 【1/3】英雄升星完成，共成功 ${heroUp} 次`,
+      type: "success",
+    });
+
+    // 第 2 步：图鉴升星 —— 英雄升星带来的新图鉴进度在这里兑现
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `${name} 【2/3】图鉴升星开始`,
+      type: "info",
+    });
+    const bookUp = await upgradeLoop("book_upgrade", "图鉴升星成功", "图鉴升星失败");
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `${name} 【2/3】图鉴升星完成，共成功 ${bookUp} 次`,
+      type: "success",
+    });
+
+    // 第 3 步：领取图鉴奖励 —— 图鉴升星产生的奖励在这里收走
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `${name} 【3/3】领取图鉴奖励开始`,
+      type: "info",
+    });
+    let claims = 0;
+    for (let i = 1; i <= 10; i += 1) {
+      if (shouldStop.value) break;
+      try {
+        const res = await tokenStore.sendMessageWithPromise(
+          tokenId,
+          "book_claimpointreward",
+          {},
+          5000,
+        );
+        const ok =
+          res && (res.code === 0 || res.success === true || res.result === 0);
+        if (!ok) throw new Error("领取奖励失败");
+        claims += 1;
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${name} 领取图鉴奖励成功 (第${i}次)`,
+          type: "success",
+        });
+      } catch (err) {
+        // 没有更多奖励可领，停止
+        break;
+      }
+      await new Promise((r) => setTimeout(r, delayConfig.action));
+    }
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `${name} 【3/3】领取图鉴奖励完成，共成功 ${claims} 次`,
+      type: "success",
+    });
+
+    return { heroUp, bookUp, claims };
+  };
+
+  /**
+   * 批量资源升级链：每个角色只连接一次，在同一次连接里按序做完三件事
+   * （master 2026-09-28：不是每个功能把所有角色连断一遍 —— 那样角色被来回
+   * 切换三次，容易触发限流；而是「正在遍历的当前角色」一次做完再下一个）
+   */
+  const batchResourceUpgradeChain = async () => {
+    if (selectedTokens.value.length === 0) return;
+
+    isRunning.value = true;
+    shouldStop.value = false;
+
+    selectedTokens.value.forEach((id) => {
+      tokenStatus.value[id] = "waiting";
+    });
+
+    const taskPromises = selectedTokens.value.map(async (tokenId) => {
+      if (shouldStop.value) return;
+
+      tokenStatus.value[tokenId] = "running";
+      const token = tokens.value.find((t) => t.id === tokenId);
+
+      try {
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `=== 资源升级链开始（英雄升星→图鉴升星→领奖）: ${token.name} ===`,
+          type: "info",
+        });
+
+        await ensureConnection(tokenId);
+
+        const stats = await runHeroBookChainForToken(tokenId, token.name);
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${token.name} 资源升级链完成：英雄升星 ${stats.heroUp} / 图鉴升星 ${stats.bookUp} / 领图鉴奖励 ${stats.claims}`,
+          type: "success",
+        });
+
+        tokenStatus.value[tokenId] = "completed";
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${token.name} === 资源升级链结束 ===`,
+          type: "success",
+        });
+      } catch (error) {
+        console.error(error);
+        tokenStatus.value[tokenId] = "failed";
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `资源升级链失败: ${error.message}`,
+          type: "error",
+        });
+      } finally {
+        tokenStore.closeWebSocketConnection(tokenId);
+        releaseConnectionSlot();
+      }
+    });
+
+    await Promise.all(taskPromises);
+    isRunning.value = false;
+    currentRunningTokenId.value = null;
+    message.success("资源升级链结束");
+  };
+
+  /**
    * 领取宝箱积分
    */
   const batchClaimBoxPointReward = async () => {
@@ -1548,6 +1729,7 @@ export function createTasksItem(deps) {
     batchHeroUpgrade,
     batchBookUpgrade,
     batchClaimStarRewards,
+    batchResourceUpgradeChain,
     batchClaimPeachTasks,
     batchGenieSweep,
   };

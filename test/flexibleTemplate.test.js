@@ -73,6 +73,8 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "batchHeroUpgrade",
     "batchBookUpgrade",
     "batchClaimStarRewards",
+    // 2026-09-28 新增：英雄升星→图鉴升星→领图鉴奖励 的顺序链（单角色一次连接做完）
+    "batchResourceUpgradeChain",
     "legion_storebuygoods",
     "legionStoreBuySkinCoins",
     "batchLegacyClaim",
