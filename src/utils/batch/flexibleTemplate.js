@@ -102,6 +102,9 @@ export const flexibleTaskGroups = [
       // 🔴 master 2026-09-28：三步有因果链（英雄升星→得图鉴→图鉴升星→得奖励），
       // 必须对当前角色一次连接按序做完，避免按功能遍历角色来回连断触发限流
       batchTask("batchResourceUpgradeChain", "一键升星领奖链（英雄→图鉴→奖励）"),
+      // 🔴 master 2026-09-28：清空背包可消耗道具（清单=30a 抓包实证 27 种）。
+      // ⚠️ item_openpack 单次上限 999 自动分批；金鱼收尾前勿跑（清单含 5287）
+      batchTask("batchClearItems", "一键清空道具（资源兑现）"),
       batchTask("legion_storebuygoods", "一键购买四圣碎片"),
       batchTask("legionStoreBuySkinCoins", "一键购买俱乐部5皮肤币"),
     ],

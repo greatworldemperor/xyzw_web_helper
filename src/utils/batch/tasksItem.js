@@ -500,6 +500,134 @@ export function createTasksItem(deps) {
     message.success("资源升级链结束");
   };
 
+  // ---------------------------------------------------------------- 一键清空道具
+
+  /**
+   * 🔴 可清空道具清单 = master 30a 抓包（local-data/misc/clear_inventory.jsonl）
+   * 里实际开过的 27 种 itemId —— 实证安全清单：
+   *   - 3002~3012：英雄碎片包 / 资源包（产出英雄碎片 1xx/2xx/3xx，自动进图鉴进度）
+   *   - 35011 / 36001 / 37005 / 40008：杂项礼包
+   *   - 5264~5287（52xx 段）：金鱼活动道具 —— ⚠️ **金鱼收尾前勿跑本任务**
+   *     （清单含 5287 普通道具 = 召唤金鱼的资源；master 是在「金鱼领光、特殊道具
+     *     已够 250」之后才全开的。什么时候跑由 master 自己掌握时机）
+   */
+  const CLEAR_ITEM_IDS = Object.freeze([
+    3002, 3005, 3006, 3007, 3008, 3009, 3010, 3011, 3012,
+    35011, 36001, 37005, 40008,
+    5264, 5265, 5268, 5269, 5271, 5272, 5273, 5275, 5276, 5277, 5279, 5280,
+    5283, 5287,
+  ]);
+
+  /**
+   * 🔴 保护名单（代码层最后防线）：这些**永不清空**，即使被误加进清单。
+   * 5286 = 金鱼特殊道具（兑换金鱼的硬通货）/ 1013 = 珍珠 / 1001 = 招募令 /
+   * 1012 = 黄金鱼竿 / 2001~2005 = 宝箱（开箱任务的原材料）。
+   */
+  const PROTECTED_ITEM_IDS = Object.freeze(new Set([
+    5286, 1013, 1001, 1012, 2001, 2002, 2003, 2004, 2005,
+  ]));
+
+  /** 🔴 item_openpack 单次 number 上限 = **999**（master 2026-09-28 强调；抓包实证 3005 开 6207 = 6×999 + 213） */
+  const ITEM_OPENPACK_MAX_PER_CALL = 999;
+
+  /**
+   * 一键清空道具：把背包里清单内道具全部用掉（资源兑现）
+   *
+   * 流程：role_getroleinfo 拿背包 → 对「清单 ∩ 背包持有」的每种道具按
+   * ceil(数量 / 999) 分批发 item_openpack（单次上限 999，见上）。
+   */
+  const batchClearItems = async () => {
+    if (selectedTokens.value.length === 0) return;
+
+    isRunning.value = true;
+    shouldStop.value = false;
+
+    selectedTokens.value.forEach((id) => {
+      tokenStatus.value[id] = "waiting";
+    });
+
+    const taskPromises = selectedTokens.value.map(async (tokenId) => {
+      if (shouldStop.value) return;
+
+      tokenStatus.value[tokenId] = "running";
+      const token = tokens.value.find((t) => t.id === tokenId);
+
+      try {
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `=== 开始清空道具: ${token.name} ===`,
+          type: "info",
+        });
+
+        await ensureConnection(tokenId);
+
+        // 1) 拿背包快照（role.items: { [itemId]: { quantity } }）
+        const roleInfo = await sendRoleInfo(tokenId);
+        const bagItems = roleInfo?.role?.items || {};
+
+        // 2) 逐清单项：按持有量分批（单次 ≤999）开掉
+        let totalKinds = 0;
+        let totalBatches = 0;
+        let totalCount = 0;
+        for (const itemId of CLEAR_ITEM_IDS) {
+          if (shouldStop.value) break;
+          if (PROTECTED_ITEM_IDS.has(itemId)) continue; // 双保险，理论上不会命中
+
+          const quantity = Math.floor(
+            Number(bagItems[String(itemId)]?.quantity) || 0,
+          );
+          if (quantity <= 0) continue;
+
+          let left = quantity;
+          while (left > 0 && !shouldStop.value) {
+            const batch = Math.min(ITEM_OPENPACK_MAX_PER_CALL, left);
+            await tokenStore.sendMessageWithPromise(
+              tokenId,
+              "item_openpack",
+              { itemId, number: batch, index: 0 },
+              5000,
+            );
+            left -= batch;
+            totalBatches += 1;
+            totalCount += batch;
+            await new Promise((r) => setTimeout(r, delayConfig.action));
+          }
+
+          totalKinds += 1;
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} itemId ${itemId} 已用 ${quantity} 个（${Math.ceil(quantity / ITEM_OPENPACK_MAX_PER_CALL)} 批）`,
+            type: "success",
+          });
+        }
+
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${token.name} 清空道具完成：${totalKinds} 种 / ${totalBatches} 批 / 共 ${totalCount} 个`,
+          type: "success",
+        });
+
+        tokenStatus.value[tokenId] = "completed";
+      } catch (error) {
+        console.error(error);
+        tokenStatus.value[tokenId] = "failed";
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `清空道具失败: ${error.message}`,
+          type: "error",
+        });
+      } finally {
+        tokenStore.closeWebSocketConnection(tokenId);
+        releaseConnectionSlot();
+      }
+    });
+
+    await Promise.all(taskPromises);
+    isRunning.value = false;
+    currentRunningTokenId.value = null;
+    message.success("批量清空道具结束");
+  };
+
   /**
    * 领取宝箱积分
    */
@@ -1730,6 +1858,7 @@ export function createTasksItem(deps) {
     batchBookUpgrade,
     batchClaimStarRewards,
     batchResourceUpgradeChain,
+    batchClearItems,
     batchClaimPeachTasks,
     batchGenieSweep,
   };

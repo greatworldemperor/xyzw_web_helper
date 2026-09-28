@@ -75,6 +75,8 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "batchClaimStarRewards",
     // 2026-09-28 新增：英雄升星→图鉴升星→领图鉴奖励 的顺序链（单角色一次连接做完）
     "batchResourceUpgradeChain",
+    // 2026-09-28 新增：清空背包可消耗道具（30a 抓包实证清单；单次上限 999 分批）
+    "batchClearItems",
     "legion_storebuygoods",
     "legionStoreBuySkinCoins",
     "batchLegacyClaim",
