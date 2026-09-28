@@ -776,6 +776,20 @@
                 </n-button>
                 <n-button
                   size="small"
+                  @click="batchResourceUpgradeChain"
+                  :disabled="isRunning || selectedTokens.length === 0"
+                >
+                  一键升星领奖链
+                </n-button>
+                <n-button
+                  size="small"
+                  @click="batchClearItems"
+                  :disabled="isRunning || selectedTokens.length === 0"
+                >
+                  一键清空道具
+                </n-button>
+                <n-button
+                  size="small"
                   @click="activityBuyRecruitWeekReward"
                   :disabled="isRunning || selectedTokens.length === 0"
                 >
@@ -7966,6 +7980,8 @@ const {
   batchHeroUpgrade,
   batchBookUpgrade,
   batchClaimStarRewards,
+  batchResourceUpgradeChain,
+  batchClearItems,
   batchClaimPeachTasks,
   batchGenieSweep,
 } = tasksItem;
