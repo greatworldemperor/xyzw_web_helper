@@ -1071,13 +1071,15 @@
       title="导入分组（从电脑拷贝过来）"
     >
       <n-alert type="info" :show-icon="true" style="margin-bottom: 12px">
-        把电脑上「导出分组」得到的文本粘贴到下面，点「粘贴并导入」即可。已存在的分组按名字合并更新；盐场队伍按队长身份匹配；找不到对应队长的队伍会被跳过并列出。
-        <br />（本站点为 HTTP，无法自动读取剪贴板，请手动长按粘贴。）
+        两种方式任选：① 把电脑上「导出分组」得到的文本粘贴到下面，点「粘贴并导入」；②
+        点「选择文件」直接选导出的 .json / .jsonl 文件（自动导入）。已存在的分组按名字合并更新；盐场队伍按队长身份匹配；找不到对应队长的队伍会被跳过并列出。
+        <br />JSONL
+        也支持：每行一个导出对象，可把多份导出拼进同一个文件一次性导入。
       </n-alert>
       <n-input
         v-model:value="importGroupText"
         type="textarea"
-        placeholder="在此粘贴导出的分组 JSON 文本"
+        placeholder="在此粘贴导出的分组 JSON 文本，或直接用下方「选择文件」"
         :autosize="{ minRows: 6, maxRows: 16 }"
         style="margin-bottom: 12px"
       />
@@ -1093,6 +1095,13 @@
           <n-button type="primary" :disabled="!importGroupText" @click="doImportGroups">
             粘贴并导入
           </n-button>
+          <n-upload
+            :show-file-list="false"
+            accept=".json,.jsonl,.txt"
+            @change="onImportFileChange"
+          >
+            <n-button>选择文件（.json / .jsonl）</n-button>
+          </n-upload>
           <n-button @click="importGroupText = ''">清空</n-button>
         </n-space>
         <n-button text @click="showImportModal = false">关闭</n-button>
@@ -1166,7 +1175,7 @@ import { copyToClipboard } from "@/utils/clubBattleUtils";
 import {
   buildGroupExport,
   serializeGroupExport,
-  parseGroupExport,
+  parseGroupExportText,
   applyGroupImport,
   downloadJson,
   defaultExportFilename,
@@ -1363,12 +1372,12 @@ const exportGroupsFromTokenPage = async () => {
 
 const doImportGroups = () => {
   if (!importGroupText.value || !importGroupText.value.trim()) {
-    message.warning("请先粘贴导出的分组文本");
+    message.warning("请先粘贴导出的分组文本，或选择导出文件");
     return;
   }
   let payload;
   try {
-    payload = parseGroupExport(importGroupText.value);
+    payload = parseGroupExportText(importGroupText.value);
   } catch (e) {
     message.error(e && e.message ? e.message : String(e));
     return;
@@ -1380,6 +1389,20 @@ const doImportGroups = () => {
   } catch (e) {
     message.error("导入失败：" + (e && e.message ? e.message : e));
   }
+};
+
+// 从 .json / .jsonl 文件导入：读出文本 → 填入文本框 → 自动导入
+const onImportFileChange = ({ file }) => {
+  const raw = file && file.file;
+  if (!raw) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const text = String((e.target && e.target.result) ?? "");
+    importGroupText.value = text;
+    doImportGroups();
+  };
+  reader.onerror = () => message.error("读取文件失败，请重试或改用粘贴方式");
+  reader.readAsText(raw);
 };
 
 function confirmDeleteMgGroup(groupId) {

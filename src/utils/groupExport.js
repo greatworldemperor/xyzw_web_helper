@@ -182,6 +182,77 @@ export function parseGroupExport(text) {
 }
 
 /**
+ * 宽容版解析：兼容两种文件格式——
+ *   ① 单个导出 JSON（整个文本一个对象，含 pretty-printed 多行）
+ *   ② JSONL：每行一个完整导出对象。可把多份导出拼进同一个文件
+ *      （如批量日常导出 + token 管理导出各占一行），逐行合并、去重、后行覆盖前行。
+ */
+export function parseGroupExportText(text) {
+  try {
+    return parseGroupExport(text);
+  } catch {
+    /* 继续尝试按 JSONL 解析 */
+  }
+  const lines = String(text ?? "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const parts = [];
+  for (const line of lines) {
+    let obj = null;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue; // 非法行跳过
+    }
+    if (obj && obj.schema === GROUP_EXPORT_SCHEMA) parts.push(obj);
+  }
+  if (parts.length === 0) {
+    throw new Error(
+      "无法识别的文件内容：既不是单个导出 JSON，也不是 JSONL（每行一个导出对象）",
+    );
+  }
+  const merged = {
+    schema: GROUP_EXPORT_SCHEMA,
+    version: GROUP_EXPORT_VERSION,
+    exportedAt: nowIso(),
+    tokenGroups: [],
+    mgGroups: [],
+    saltFieldTeams: [],
+    keyIndex: {},
+  };
+  for (const p of parts) {
+    if (Array.isArray(p.tokenGroups)) merged.tokenGroups.push(...p.tokenGroups);
+    if (Array.isArray(p.mgGroups)) merged.mgGroups.push(...p.mgGroups);
+    if (Array.isArray(p.saltFieldTeams)) {
+      merged.saltFieldTeams.push(...p.saltFieldTeams);
+    }
+    if (p.keyIndex && typeof p.keyIndex === "object") {
+      Object.assign(merged.keyIndex, p.keyIndex);
+    }
+  }
+  // 同名分组 / 同队长队伍去重：后行覆盖前行
+  const uniqByKey = (arr, keyFn) => {
+    const m = new Map();
+    for (const item of arr) {
+      const k = keyFn(item);
+      if (k) m.set(k, item);
+    }
+    return [...m.values()];
+  };
+  merged.tokenGroups = uniqByKey(merged.tokenGroups, (g) =>
+    normalizeName(g && g.name),
+  );
+  merged.mgGroups = uniqByKey(merged.mgGroups, (g) =>
+    normalizeName(g && g.name),
+  );
+  merged.saltFieldTeams = uniqByKey(merged.saltFieldTeams, (t) =>
+    normalizeKey(t && t.leaderKey),
+  );
+  return merged;
+}
+
+/**
  * 合并一组「简单分组」（tokenGroups / mgGroups 共用同一结构）。
  * @returns {{added:number, updated:number, skipped:number}}
  */
