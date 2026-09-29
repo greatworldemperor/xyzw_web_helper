@@ -10,10 +10,19 @@ export const HELPER_MAX_RETRIES = 2;
 export const RATE_LIMIT_RETRY_DELAY_MS = 5000;
 export const RATE_LIMIT_MAX_RETRIES = Infinity;
 
-// 统一超时重试口径（2026-09-29 master 口径）：
-//   「请求超时」不应直接判死跳过账号，自动重试后再失败才算失败。
-//   ⚠️ 语义说明：超时 ≠ 未送达，非幂等命令（招募/购买等）重试在极少数情况下
-//   可能重复执行一次；重试仅 1 次 + 3 秒间隔，日志可见（warning）。
+// 统一连接类错误重试口径（2026-09-29 master 口径扩展）：
+//   「除了 token 明确无效、服务器明确拒绝（业务错误码），其余连接失败类型
+//   —— 无响应（超时）、断连、断网 —— 都应该重试，不应判死账号」。
+//   背景：master 批量跑批时频繁切换 IP，断网/断连是常态而非异常。
+//   分两层：
+//   · 发送前失败（WebSocket未连接 / 连接已关闭）= 帧肯定没发出去 → 重发零
+//     双执行风险 → 重试 3 次 × 5 秒，每次先重建连接；
+//   · 请求超时（帧可能已执行、响应丢失）→ 重发有双执行风险 → 仅 1 次 × 3 秒，
+//     重试前也重建连接（超时常伴随连接假死）。
+//   限流（400340 等）由 tokenStore 统一控制器内部自愈（弹窗 + 每 5 秒重试 +
+//   15 分钟上限），批量任务层平时收不到，无需在此处理。
+export const OFFLINE_SEND_RETRY_MAX = 3;
+export const OFFLINE_SEND_RETRY_DELAY_MS = 5000;
 export const TIMEOUT_RETRY_DELAY_MS = 3000;
 export const TIMEOUT_RETRY_MAX = 1;
 
@@ -162,11 +171,45 @@ export function isTimeoutError(error) {
 }
 
 /**
- * 通用「请求超时」重试：execute 整体重跑（不是重发单帧）。
- * 适合任务级恢复——execute 内部会重新读进度/库存的任务（如金鱼消耗）重跑是安全的。
- * 非「请求超时」错误原样抛出；用户停止（shouldStop）后不再重试。
+ * 发送前失败（帧肯定没有发出去）：
+ * - 「WebSocket未连接」= tokenStore.sendMessage 检查 connection 状态后拒绝；
+ * - 「WebSocket 连接已关闭」= client.sendWithPromise 开头拒绝。
+ * 这类错误重发零「双执行」风险，可放心多次重试（配合重建连接）。
  */
-export async function runWithTimeoutRetry({
+export function isOfflineSendError(error) {
+  const message = getErrorMessage(error);
+  return (
+    message.includes("WebSocket未连接") ||
+    message.includes("WebSocket 连接已关闭")
+  );
+}
+
+/** 连接失败类错误总集：无响应（超时）/ 断连 / 断网 —— 按口径都应重试 */
+export function isConnectionError(error) {
+  if (isTimeoutError(error) || isOfflineSendError(error)) return true;
+
+  const message = getErrorMessage(error);
+  return (
+    message.includes("连接超时") ||
+    message.includes("Failed to fetch") ||
+    message.includes("fetch failed") ||
+    message.includes("NetworkError") ||
+    message.includes("network error") ||
+    message.includes("ENOTFOUND") ||
+    message.includes("ECONNREFUSED") ||
+    message.includes("ECONNRESET") ||
+    message.includes("EHOSTUNREACH") ||
+    message.includes("ENETUNREACH") ||
+    message.includes("socket hang up")
+  );
+}
+
+/**
+ * 任务级「连接失败类」重试：execute 整体重跑（不是重发单帧）。
+ * 适合任务级恢复——execute 内部会重新读进度/库存的任务（如金鱼消耗）重跑安全。
+ * 非连接类错误（业务拒绝 / token 无效等）原样抛出；用户停止（shouldStop）后不再重试。
+ */
+export async function runWithConnectionRetry({
   execute,
   retryDelayMs = TIMEOUT_RETRY_DELAY_MS,
   maxRetries = TIMEOUT_RETRY_MAX,
@@ -182,7 +225,7 @@ export async function runWithTimeoutRetry({
     try {
       return await execute();
     } catch (error) {
-      if (attempt >= retryLimit || !isTimeoutError(error) || shouldStop?.()) {
+      if (attempt >= retryLimit || !isConnectionError(error) || shouldStop?.()) {
         throw error;
       }
       await onRetry?.({ error, retryCount: attempt + 1, maxRetries: retryLimit });
@@ -192,29 +235,31 @@ export async function runWithTimeoutRetry({
   }
 }
 
+/** 兼容别名：早期只做超时重试时的函数名 */
+export const runWithTimeoutRetry = runWithConnectionRetry;
+
 /**
- * tokenStore 发送层的超时自动重试（2026-09-29 master 口径：超时应重试而不是跳过）。
- * 返回包装后的 tokenStore：sendMessageWithPromise 遇「请求超时」→ 等 3 秒 → 原样重发 1 次；
- * 其他错误原样抛出。重试前检查 shouldStop（用户点了停止就不再重试）。
- *
- * ⚠️ 为什么不在这一层做多次重试：超时的帧可能已送达并执行（响应只是丢了），
- * 非幂等命令重复执行会双倍消耗。这里只兜 1 次，任务级需要更强恢复（如金鱼
- * 「读进度→补差值」step 重跑）由各编排器自行叠加。
+ * tokenStore 发送层的连接类错误自动重试（全站批量任务收口点）。
+ * 返回包装后的 tokenStore，按错误类别分档：
+ * - 发送前失败（WebSocket未连接 / 连接已关闭，帧未发出，零双执行风险）
+ *   → 重建连接 → 最多 3 次 × 5 秒重发；
+ * - 请求超时（帧可能已执行，双执行风险）→ 重建连接 → 仅 1 次 × 3 秒重发；
+ * - 其他错误（业务拒绝 / token 无效等）原样抛出；shouldStop 为真立即放弃。
+ * reconnect(tokenId) 由调用方注入（如 createWebSocketConnection），缺省仅等待。
  */
-export function wrapTokenStoreWithTimeoutRetry(tokenStore, options = {}) {
+export function wrapTokenStoreWithConnectionRetry(tokenStore, options = {}) {
   const {
-    retryDelayMs = TIMEOUT_RETRY_DELAY_MS,
-    maxRetries = TIMEOUT_RETRY_MAX,
     onRetry,
+    reconnect,
     shouldStop,
     sleepFn = sleep,
+    offlineRetryDelayMs = OFFLINE_SEND_RETRY_DELAY_MS,
+    offlineMaxRetries = OFFLINE_SEND_RETRY_MAX,
+    timeoutRetryDelayMs = TIMEOUT_RETRY_DELAY_MS,
+    timeoutMaxRetries = TIMEOUT_RETRY_MAX,
   } = options;
 
-  const retryLimit = Number.isFinite(Number(maxRetries))
-    ? Math.max(0, Math.trunc(Number(maxRetries)))
-    : 0;
-
-  const sendWithTimeoutRetry = async (tokenId, cmd, params, timeout) => {
+  const sendWithConnectionRetry = async (tokenId, cmd, params, timeout) => {
     for (let attempt = 0; ; attempt += 1) {
       try {
         return await tokenStore.sendMessageWithPromise(
@@ -224,15 +269,29 @@ export function wrapTokenStoreWithTimeoutRetry(tokenStore, options = {}) {
           timeout,
         );
       } catch (error) {
-        if (
-          attempt >= retryLimit ||
-          !isTimeoutError(error) ||
-          shouldStop?.()
-        ) {
+        const offline = isOfflineSendError(error);
+        const retryable = isConnectionError(error);
+        const maxRetries = offline ? offlineMaxRetries : timeoutMaxRetries;
+        const delayMs = offline ? offlineRetryDelayMs : timeoutRetryDelayMs;
+
+        if (attempt >= maxRetries || !retryable || shouldStop?.()) {
           throw error;
         }
-        onRetry?.({ tokenId, cmd, error, retryCount: attempt + 1 });
-        await sleepFn(retryDelayMs);
+
+        onRetry?.({
+          tokenId,
+          cmd,
+          error,
+          retryCount: attempt + 1,
+          maxRetries,
+          offline,
+        });
+        try {
+          await reconnect?.(tokenId);
+        } catch {
+          /* 重连失败不阻断重试：下次重发会再尝试 */
+        }
+        await sleepFn(delayMs);
         if (shouldStop?.()) throw error;
       }
     }
@@ -241,13 +300,16 @@ export function wrapTokenStoreWithTimeoutRetry(tokenStore, options = {}) {
   return new Proxy(tokenStore, {
     get(target, property, receiver) {
       if (property === "sendMessageWithPromise") {
-        return sendWithTimeoutRetry;
+        return sendWithConnectionRetry;
       }
       const value = Reflect.get(target, property, receiver);
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
 }
+
+/** 兼容别名：早期只做超时重试时的函数名 */
+export const wrapTokenStoreWithTimeoutRetry = wrapTokenStoreWithConnectionRetry;
 
 export async function runWithWebSocketReconnectRetry({
   execute,

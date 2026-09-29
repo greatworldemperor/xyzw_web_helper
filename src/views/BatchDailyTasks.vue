@@ -3892,7 +3892,7 @@ import {
   RATE_LIMIT_MAX_RETRIES,
   RATE_LIMIT_RETRY_DELAY_MS,
   runWithRateLimitRetry,
-  wrapTokenStoreWithTimeoutRetry,
+  wrapTokenStoreWithConnectionRetry,
 } from "@/utils/helperTaskRunner";
 import { preloadQuestions } from "@/utils/studyQuestionsFromJSON.js";
 import { useDialog, useMessage } from "naive-ui";
@@ -7889,16 +7889,27 @@ const ensureConnection = async (
 // 金鱼限流已统一到 tokenStore 的全局 400340 控制器（弹窗 + 每 5 秒自动重试 + 成功自关），
 // 不再需要单独的 onRateLimitPause 弹框钩子。
 
-// 2026-09-29 master 口径：「请求超时」应重试而不是跳过 —— 全站批量任务的
-// 发送统一走这一层（独立按钮/金鱼/自由模板都经 createTaskDeps().tokenStore）。
-// 帧遇超时 → 3 秒后原样重发 1 次；仍失败才抛给任务层。日志可见。
-const guardedTokenStore = wrapTokenStoreWithTimeoutRetry(tokenStore, {
+// 2026-09-29 master 口径：连接失败类（无响应/断连/断网）都应重试而非判死账号
+// —— 批量跑批时频繁切换 IP，断网是常态。全站批量任务的发送统一走这一层
+// （独立按钮/金鱼/自由模板都经 createTaskDeps().tokenStore）。
+// · 发送前失败（WebSocket未连接/连接已关闭，帧未发出）→ 重建连接 → 3 次 × 5 秒；
+// · 请求超时（帧可能已执行）→ 重建连接 → 1 次 × 3 秒；
+// · 限流 400340 由 tokenStore 统一控制器内部自愈，不经过这里。
+const guardedTokenStore = wrapTokenStoreWithConnectionRetry(tokenStore, {
   shouldStop: () => shouldStop.value,
-  onRetry: ({ tokenId, cmd }) => {
+  reconnect: async (tokenId) => {
+    const base64Token = gameTokens.value.find((item) => item.id === tokenId)
+      ?.token;
+    if (!base64Token) return;
+    // createWebSocketConnection 内部会先优雅关闭旧连接，自带连接锁防竞态
+    await tokenStore.createWebSocketConnection(tokenId, base64Token);
+  },
+  onRetry: ({ tokenId, cmd, offline, retryCount, maxRetries }) => {
     const token = tokens.value.find((item) => item.id === tokenId);
+    const reason = offline ? "连接断开" : "请求超时";
     addLog({
       time: new Date().toLocaleTimeString(),
-      message: `⏱️ ${token?.name || tokenId} ${cmd} 请求超时，3 秒后自动重试`,
+      message: `⏱️ ${token?.name || tokenId} ${cmd} ${reason}，自动重试（${retryCount}/${maxRetries}）`,
       type: "warning",
     });
   },

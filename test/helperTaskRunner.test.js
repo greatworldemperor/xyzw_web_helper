@@ -6,18 +6,20 @@ import {
   getClaimableBoxPoints,
   getItemQuantity,
   is400340Error,
+  isConnectionError,
   isModuleUnavailableError,
+  isOfflineSendError,
   isRateLimitError,
   isTimeoutError,
   markRateLimitRetriesExhausted,
   isSkippableTaskError,
   isWebSocketNotConnectedError,
   runInventoryVerifiedGameCommand,
+  runWithConnectionRetry,
   runWithRateLimitRetry,
-  runWithTimeoutRetry,
   runWithWebSocketReconnectRetry,
   runBatchedGameCommand,
-  wrapTokenStoreWithTimeoutRetry,
+  wrapTokenStoreWithConnectionRetry,
 } from "../src/utils/helperTaskRunner.js";
 
 test("isRateLimitError recognizes server throttling responses", () => {
@@ -677,7 +679,7 @@ test("runInventoryVerifiedGameCommand does not consume when inventory is insuffi
   );
 });
 
-// ---------------------------------------------------------------- 超时重试（2026-09-29 master 口径）
+// ------------------------------------------------ 连接类错误重试（2026-09-29 master 口径）
 
 test("isTimeoutError matches only request-timeout failures", () => {
   assert.equal(isTimeoutError(new Error("请求超时: hero_recruit (8000ms)")), true);
@@ -685,10 +687,29 @@ test("isTimeoutError matches only request-timeout failures", () => {
   assert.equal(isTimeoutError(new Error("WebSocket 连接已关闭")), false);
 });
 
-test("runWithTimeoutRetry reruns the task once after a timeout then succeeds", async () => {
+test("isOfflineSendError matches pre-send failures only", () => {
+  assert.equal(isOfflineSendError(new Error("WebSocket未连接 [t1]")), true);
+  assert.equal(isOfflineSendError(new Error("WebSocket 连接已关闭")), true);
+  assert.equal(isOfflineSendError(new Error("请求超时: hero_recruit (8000ms)")), false);
+  assert.equal(isOfflineSendError(new Error("服务器错误: 200020")), false);
+});
+
+test("isConnectionError covers timeout / offline / network errors", () => {
+  assert.equal(isConnectionError(new Error("请求超时: hero_recruit (8000ms)")), true);
+  assert.equal(isConnectionError(new Error("WebSocket未连接 [t1]")), true);
+  assert.equal(isConnectionError(new Error("WebSocket 连接已关闭")), true);
+  assert.equal(isConnectionError(new Error("连接超时")), true);
+  assert.equal(isConnectionError(new Error("TypeError: Failed to fetch")), true);
+  assert.equal(isConnectionError(new Error("getaddrinfo ENOTFOUND x.com")), true);
+  // 非连接类：业务拒绝 / token 无效 —— 不该重试
+  assert.equal(isConnectionError(new Error("服务器错误: 200020 - 出了点小问题")), false);
+  assert.equal(isConnectionError(new Error("Token 为空或已失效，且自动刷新失败")), false);
+});
+
+test("runWithConnectionRetry reruns the task once after a timeout then succeeds", async () => {
   let attempts = 0;
   let retries = 0;
-  const result = await runWithTimeoutRetry({
+  const result = await runWithConnectionRetry({
     execute: async () => {
       attempts += 1;
       if (attempts === 1) throw new Error("请求超时: hero_recruit (8000ms)");
@@ -705,10 +726,25 @@ test("runWithTimeoutRetry reruns the task once after a timeout then succeeds", a
   assert.equal(retries, 1);
 });
 
-test("runWithTimeoutRetry gives up after the retry still times out", async () => {
+test("runWithConnectionRetry also retries offline-send errors", async () => {
+  let attempts = 0;
+  const result = await runWithConnectionRetry({
+    execute: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("WebSocket未连接 [t1]");
+      return "ok";
+    },
+    sleepFn: async () => {},
+  });
+
+  assert.equal(result, "ok");
+  assert.equal(attempts, 2);
+});
+
+test("runWithConnectionRetry gives up after the retry still fails", async () => {
   let attempts = 0;
   await assert.rejects(
-    runWithTimeoutRetry({
+    runWithConnectionRetry({
       execute: async () => {
         attempts += 1;
         throw new Error("请求超时: hero_recruit (8000ms)");
@@ -720,10 +756,10 @@ test("runWithTimeoutRetry gives up after the retry still times out", async () =>
   assert.equal(attempts, 2); // 初次 + 1 次重试
 });
 
-test("runWithTimeoutRetry does not retry non-timeout errors", async () => {
+test("runWithConnectionRetry does not retry business rejections", async () => {
   let attempts = 0;
   await assert.rejects(
-    runWithTimeoutRetry({
+    runWithConnectionRetry({
       execute: async () => {
         attempts += 1;
         throw new Error("服务器错误: 200020 - 出了点小问题");
@@ -735,10 +771,10 @@ test("runWithTimeoutRetry does not retry non-timeout errors", async () => {
   assert.equal(attempts, 1);
 });
 
-test("runWithTimeoutRetry stops retrying once shouldStop is set", async () => {
+test("runWithConnectionRetry stops retrying once shouldStop is set", async () => {
   let attempts = 0;
   await assert.rejects(
-    runWithTimeoutRetry({
+    runWithConnectionRetry({
       execute: async () => {
         attempts += 1;
         throw new Error("请求超时: hero_recruit (8000ms)");
@@ -751,8 +787,9 @@ test("runWithTimeoutRetry stops retrying once shouldStop is set", async () => {
   assert.equal(attempts, 1);
 });
 
-test("wrapTokenStoreWithTimeoutRetry retries timed-out sends transparently", async () => {
+test("wrapTokenStoreWithConnectionRetry retries timed-out sends once", async () => {
   let calls = 0;
+  let reconnects = 0;
   const baseStore = {
     sendMessageWithPromise: async (tokenId, cmd, params, timeout) => {
       calls += 1;
@@ -764,27 +801,98 @@ test("wrapTokenStoreWithTimeoutRetry retries timed-out sends transparently", asy
     },
   };
   const retries = [];
-  const wrapped = wrapTokenStoreWithTimeoutRetry(baseStore, {
+  const wrapped = wrapTokenStoreWithConnectionRetry(baseStore, {
     sleepFn: async () => {},
+    reconnect: async () => {
+      reconnects += 1;
+    },
     onRetry: (info) => retries.push(info),
-    shouldStop: () => false,
   });
 
   assert.equal(await wrapped.otherMethod(), "passthrough");
   const res = await wrapped.sendMessageWithPromise("t1", "hero_recruit", { n: 1 }, 8000);
   assert.deepEqual(res, { cmd: "hero_recruit", echoed: { n: 1 } });
   assert.equal(calls, 2);
+  assert.equal(reconnects, 1); // 超时重试前也重建连接
   assert.equal(retries.length, 1);
-  assert.equal(retries[0].cmd, "hero_recruit");
+  assert.equal(retries[0].offline, false);
 });
 
-test("wrapTokenStoreWithTimeoutRetry passes non-timeout errors straight through", async () => {
+test("wrapTokenStoreWithConnectionRetry retries offline sends up to 3 times with reconnect", async () => {
+  let calls = 0;
+  let reconnects = 0;
+  const baseStore = {
+    sendMessageWithPromise: async () => {
+      calls += 1;
+      if (calls < 3) throw new Error("WebSocket未连接 [t1]"); // 前两次断连，第 3 次成功
+      return "sent";
+    },
+  };
+  const wrapped = wrapTokenStoreWithConnectionRetry(baseStore, {
+    sleepFn: async () => {},
+    reconnect: async () => {
+      reconnects += 1;
+    },
+  });
+
+  const res = await wrapped.sendMessageWithPromise("t1", "hero_recruit", {}, 8000);
+  assert.equal(res, "sent");
+  assert.equal(calls, 3);
+  assert.equal(reconnects, 2); // 每次重试前重建连接
+});
+
+test("wrapTokenStoreWithConnectionRetry gives up after offline retry budget exhausted", async () => {
+  let calls = 0;
+  let reconnects = 0;
+  const baseStore = {
+    sendMessageWithPromise: async () => {
+      calls += 1;
+      throw new Error("WebSocket 连接已关闭");
+    },
+  };
+  const wrapped = wrapTokenStoreWithConnectionRetry(baseStore, {
+    sleepFn: async () => {},
+    reconnect: async () => {
+      reconnects += 1;
+    },
+  });
+
+  await assert.rejects(
+    wrapped.sendMessageWithPromise("t1", "hero_recruit", {}, 8000),
+    /WebSocket 连接已关闭/,
+  );
+  assert.equal(calls, 4); // 初次 + 3 次重试
+  assert.equal(reconnects, 3);
+});
+
+test("wrapTokenStoreWithConnectionRetry treats reconnect failure as non-fatal", async () => {
+  let calls = 0;
+  const baseStore = {
+    sendMessageWithPromise: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("WebSocket未连接 [t1]");
+      return "sent";
+    },
+  };
+  const wrapped = wrapTokenStoreWithConnectionRetry(baseStore, {
+    sleepFn: async () => {},
+    reconnect: async () => {
+      throw new Error("重建失败");
+    },
+  });
+
+  const res = await wrapped.sendMessageWithPromise("t1", "hero_recruit", {}, 8000);
+  assert.equal(res, "sent"); // 重连失败不阻断重试
+  assert.equal(calls, 2);
+});
+
+test("wrapTokenStoreWithConnectionRetry passes business rejections straight through", async () => {
   const baseStore = {
     sendMessageWithPromise: async () => {
       throw new Error("服务器错误: 200020 - 出了点小问题");
     },
   };
-  const wrapped = wrapTokenStoreWithTimeoutRetry(baseStore, {
+  const wrapped = wrapTokenStoreWithConnectionRetry(baseStore, {
     sleepFn: async () => {},
   });
 
