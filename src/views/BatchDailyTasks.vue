@@ -3892,6 +3892,7 @@ import {
   RATE_LIMIT_MAX_RETRIES,
   RATE_LIMIT_RETRY_DELAY_MS,
   runWithRateLimitRetry,
+  wrapTokenStoreWithTimeoutRetry,
 } from "@/utils/helperTaskRunner";
 import { preloadQuestions } from "@/utils/studyQuestionsFromJSON.js";
 import { useDialog, useMessage } from "naive-ui";
@@ -7888,6 +7889,21 @@ const ensureConnection = async (
 // 金鱼限流已统一到 tokenStore 的全局 400340 控制器（弹窗 + 每 5 秒自动重试 + 成功自关），
 // 不再需要单独的 onRateLimitPause 弹框钩子。
 
+// 2026-09-29 master 口径：「请求超时」应重试而不是跳过 —— 全站批量任务的
+// 发送统一走这一层（独立按钮/金鱼/自由模板都经 createTaskDeps().tokenStore）。
+// 帧遇超时 → 3 秒后原样重发 1 次；仍失败才抛给任务层。日志可见。
+const guardedTokenStore = wrapTokenStoreWithTimeoutRetry(tokenStore, {
+  shouldStop: () => shouldStop.value,
+  onRetry: ({ tokenId, cmd }) => {
+    const token = tokens.value.find((item) => item.id === tokenId);
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `⏱️ ${token?.name || tokenId} ${cmd} 请求超时，3 秒后自动重试`,
+      type: "warning",
+    });
+  },
+});
+
 const createTaskDeps = () => ({
   selectedTokens,
   tokens,
@@ -7899,7 +7915,7 @@ const createTaskDeps = () => ({
   releaseConnectionSlot,
   connectionQueue,
   batchSettings,
-  tokenStore,
+  tokenStore: guardedTokenStore,
   sendRoleInfo,
   addLog,
   message,
@@ -8450,7 +8466,7 @@ const getFlexibleTemplateValidationError = (template) => {
 };
 
 const createFlexibleTokenStore = () =>
-  new Proxy(tokenStore, {
+  new Proxy(guardedTokenStore, {
     get(target, property, receiver) {
       if (property === "closeWebSocketConnection") {
         return async () => {};

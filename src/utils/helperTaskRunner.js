@@ -10,6 +10,13 @@ export const HELPER_MAX_RETRIES = 2;
 export const RATE_LIMIT_RETRY_DELAY_MS = 5000;
 export const RATE_LIMIT_MAX_RETRIES = Infinity;
 
+// 统一超时重试口径（2026-09-29 master 口径）：
+//   「请求超时」不应直接判死跳过账号，自动重试后再失败才算失败。
+//   ⚠️ 语义说明：超时 ≠ 未送达，非幂等命令（招募/购买等）重试在极少数情况下
+//   可能重复执行一次；重试仅 1 次 + 3 秒间隔，日志可见（warning）。
+export const TIMEOUT_RETRY_DELAY_MS = 3000;
+export const TIMEOUT_RETRY_MAX = 1;
+
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function buildTenBatchPlan(total, batchSize = HELPER_BATCH_SIZE) {
@@ -147,6 +154,99 @@ export async function runWithRateLimitRetry({
 
 export function isWebSocketNotConnectedError(error) {
   return getErrorSearchText(error).includes("WebSocket未连接");
+}
+
+/** 「请求超时」= 帧发出后 timeoutMs 内没等到响应（xyzwWebSocket 超时器） */
+export function isTimeoutError(error) {
+  return getErrorMessage(error).includes("请求超时");
+}
+
+/**
+ * 通用「请求超时」重试：execute 整体重跑（不是重发单帧）。
+ * 适合任务级恢复——execute 内部会重新读进度/库存的任务（如金鱼消耗）重跑是安全的。
+ * 非「请求超时」错误原样抛出；用户停止（shouldStop）后不再重试。
+ */
+export async function runWithTimeoutRetry({
+  execute,
+  retryDelayMs = TIMEOUT_RETRY_DELAY_MS,
+  maxRetries = TIMEOUT_RETRY_MAX,
+  shouldStop,
+  onRetry,
+  sleepFn = sleep,
+}) {
+  const retryLimit = Number.isFinite(Number(maxRetries))
+    ? Math.max(0, Math.trunc(Number(maxRetries)))
+    : 0;
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await execute();
+    } catch (error) {
+      if (attempt >= retryLimit || !isTimeoutError(error) || shouldStop?.()) {
+        throw error;
+      }
+      await onRetry?.({ error, retryCount: attempt + 1, maxRetries: retryLimit });
+      if (shouldStop?.()) throw error;
+      await sleepFn(retryDelayMs);
+    }
+  }
+}
+
+/**
+ * tokenStore 发送层的超时自动重试（2026-09-29 master 口径：超时应重试而不是跳过）。
+ * 返回包装后的 tokenStore：sendMessageWithPromise 遇「请求超时」→ 等 3 秒 → 原样重发 1 次；
+ * 其他错误原样抛出。重试前检查 shouldStop（用户点了停止就不再重试）。
+ *
+ * ⚠️ 为什么不在这一层做多次重试：超时的帧可能已送达并执行（响应只是丢了），
+ * 非幂等命令重复执行会双倍消耗。这里只兜 1 次，任务级需要更强恢复（如金鱼
+ * 「读进度→补差值」step 重跑）由各编排器自行叠加。
+ */
+export function wrapTokenStoreWithTimeoutRetry(tokenStore, options = {}) {
+  const {
+    retryDelayMs = TIMEOUT_RETRY_DELAY_MS,
+    maxRetries = TIMEOUT_RETRY_MAX,
+    onRetry,
+    shouldStop,
+    sleepFn = sleep,
+  } = options;
+
+  const retryLimit = Number.isFinite(Number(maxRetries))
+    ? Math.max(0, Math.trunc(Number(maxRetries)))
+    : 0;
+
+  const sendWithTimeoutRetry = async (tokenId, cmd, params, timeout) => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await tokenStore.sendMessageWithPromise(
+          tokenId,
+          cmd,
+          params,
+          timeout,
+        );
+      } catch (error) {
+        if (
+          attempt >= retryLimit ||
+          !isTimeoutError(error) ||
+          shouldStop?.()
+        ) {
+          throw error;
+        }
+        onRetry?.({ tokenId, cmd, error, retryCount: attempt + 1 });
+        await sleepFn(retryDelayMs);
+        if (shouldStop?.()) throw error;
+      }
+    }
+  };
+
+  return new Proxy(tokenStore, {
+    get(target, property, receiver) {
+      if (property === "sendMessageWithPromise") {
+        return sendWithTimeoutRetry;
+      }
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 export async function runWithWebSocketReconnectRetry({

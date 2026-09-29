@@ -8,13 +8,16 @@ import {
   is400340Error,
   isModuleUnavailableError,
   isRateLimitError,
+  isTimeoutError,
   markRateLimitRetriesExhausted,
   isSkippableTaskError,
   isWebSocketNotConnectedError,
   runInventoryVerifiedGameCommand,
   runWithRateLimitRetry,
+  runWithTimeoutRetry,
   runWithWebSocketReconnectRetry,
   runBatchedGameCommand,
+  wrapTokenStoreWithTimeoutRetry,
 } from "../src/utils/helperTaskRunner.js";
 
 test("isRateLimitError recognizes server throttling responses", () => {
@@ -671,5 +674,122 @@ test("runInventoryVerifiedGameCommand does not consume when inventory is insuffi
       }),
     }),
     /库存不足/,
+  );
+});
+
+// ---------------------------------------------------------------- 超时重试（2026-09-29 master 口径）
+
+test("isTimeoutError matches only request-timeout failures", () => {
+  assert.equal(isTimeoutError(new Error("请求超时: hero_recruit (8000ms)")), true);
+  assert.equal(isTimeoutError(new Error("服务器错误: 200020 - 出了点小问题")), false);
+  assert.equal(isTimeoutError(new Error("WebSocket 连接已关闭")), false);
+});
+
+test("runWithTimeoutRetry reruns the task once after a timeout then succeeds", async () => {
+  let attempts = 0;
+  let retries = 0;
+  const result = await runWithTimeoutRetry({
+    execute: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("请求超时: hero_recruit (8000ms)");
+      return "ok";
+    },
+    sleepFn: async () => {},
+    onRetry: () => {
+      retries += 1;
+    },
+  });
+
+  assert.equal(result, "ok");
+  assert.equal(attempts, 2);
+  assert.equal(retries, 1);
+});
+
+test("runWithTimeoutRetry gives up after the retry still times out", async () => {
+  let attempts = 0;
+  await assert.rejects(
+    runWithTimeoutRetry({
+      execute: async () => {
+        attempts += 1;
+        throw new Error("请求超时: hero_recruit (8000ms)");
+      },
+      sleepFn: async () => {},
+    }),
+    /请求超时/,
+  );
+  assert.equal(attempts, 2); // 初次 + 1 次重试
+});
+
+test("runWithTimeoutRetry does not retry non-timeout errors", async () => {
+  let attempts = 0;
+  await assert.rejects(
+    runWithTimeoutRetry({
+      execute: async () => {
+        attempts += 1;
+        throw new Error("服务器错误: 200020 - 出了点小问题");
+      },
+      sleepFn: async () => {},
+    }),
+    /200020/,
+  );
+  assert.equal(attempts, 1);
+});
+
+test("runWithTimeoutRetry stops retrying once shouldStop is set", async () => {
+  let attempts = 0;
+  await assert.rejects(
+    runWithTimeoutRetry({
+      execute: async () => {
+        attempts += 1;
+        throw new Error("请求超时: hero_recruit (8000ms)");
+      },
+      shouldStop: () => true,
+      sleepFn: async () => {},
+    }),
+    /请求超时/,
+  );
+  assert.equal(attempts, 1);
+});
+
+test("wrapTokenStoreWithTimeoutRetry retries timed-out sends transparently", async () => {
+  let calls = 0;
+  const baseStore = {
+    sendMessageWithPromise: async (tokenId, cmd, params, timeout) => {
+      calls += 1;
+      if (calls === 1) throw new Error(`请求超时: ${cmd} (${timeout}ms)`);
+      return { cmd, echoed: params };
+    },
+    otherMethod() {
+      return "passthrough";
+    },
+  };
+  const retries = [];
+  const wrapped = wrapTokenStoreWithTimeoutRetry(baseStore, {
+    sleepFn: async () => {},
+    onRetry: (info) => retries.push(info),
+    shouldStop: () => false,
+  });
+
+  assert.equal(await wrapped.otherMethod(), "passthrough");
+  const res = await wrapped.sendMessageWithPromise("t1", "hero_recruit", { n: 1 }, 8000);
+  assert.deepEqual(res, { cmd: "hero_recruit", echoed: { n: 1 } });
+  assert.equal(calls, 2);
+  assert.equal(retries.length, 1);
+  assert.equal(retries[0].cmd, "hero_recruit");
+});
+
+test("wrapTokenStoreWithTimeoutRetry passes non-timeout errors straight through", async () => {
+  const baseStore = {
+    sendMessageWithPromise: async () => {
+      throw new Error("服务器错误: 200020 - 出了点小问题");
+    },
+  };
+  const wrapped = wrapTokenStoreWithTimeoutRetry(baseStore, {
+    sleepFn: async () => {},
+  });
+
+  await assert.rejects(
+    wrapped.sendMessageWithPromise("t1", "hero_recruit", {}, 8000),
+    /200020/,
   );
 });

@@ -54,6 +54,7 @@ import {
   resolveGoldenfishActivity,
   shouldKeepLooping,
 } from "../goldenfishConsumePlan.js";
+import { runWithTimeoutRetry } from "@/utils/helperTaskRunner";
 
 /**
  * 金鱼消耗目标默认值（页面可调）
@@ -393,7 +394,24 @@ export function createTasksGoldenfish(deps) {
           const step = STEPS[stepId];
           if (!step) continue;
           try {
-            await step({ tokenId, token, count, config });
+            // 2026-09-29 master 口径：「请求超时」应重试而不是跳过。
+            // 帧层已有 1 次自动重发（wrapTokenStoreWithTimeoutRetry）；
+            // 这里是任务级第二层：重跑整个 step —— 消耗类 step 开头都会重新
+            // activity_get 读进度再补差值，重跑安全，不会重复消耗。
+            await runWithTimeoutRetry({
+              execute: () => step({ tokenId, token, count, config }),
+              shouldStop: () => shouldStop.value || consumeAbortAll,
+              onRetry: async () => {
+                log(
+                  tokenName,
+                  `⏱️ ${stepId} 请求超时，3 秒后重跑该步骤（重新读进度续跑）`,
+                  "warning",
+                );
+                // 超时常伴随连接假死：重建连接再跑，避免原连接继续超时
+                await tokenStore.closeWebSocketConnection(tokenId);
+                await ensureConnection(tokenId);
+              },
+            });
           } catch (error) {
             // 限流(400340)由 tokenStore 统一处理（弹窗 + 每 5 秒自动重试 + 成功自关），
             // 这里只在兜底时跳过本步骤。
