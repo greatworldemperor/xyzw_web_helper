@@ -119,13 +119,18 @@
                   align-items: center;
                 "
               >
-                <n-button
-                  type="info"
-                  size="small"
-                  @click="showGroupManageModal = true"
-                >
-                  管理分组
-                </n-button>
+                <n-space size="small">
+                  <n-button
+                    type="info"
+                    size="small"
+                    @click="showGroupManageModal = true"
+                  >
+                    管理分组
+                  </n-button>
+                  <n-button size="small" @click="exportGroupsFromBatch">
+                    导出分组
+                  </n-button>
+                </n-space>
                 <span
                   v-if="selectedGroups.length > 0"
                   style="font-size: 12px; color: #86909c"
@@ -3933,6 +3938,12 @@ import {
 } from "@/stores/weirdTowerAssist";
 import { getWeirdTowerCycleKey } from "@/utils/weirdTowerShareWindow.js";
 import { copyToClipboard } from "@/utils/clubBattleUtils";
+import {
+  buildGroupExport,
+  serializeGroupExport,
+  downloadJson,
+  defaultExportFilename,
+} from "@/utils/groupExport";
 import WeirdTowerShareCard from "@/components/cards/WeirdTowerShareCard.vue";
 
 // Import batch task modules
@@ -7282,6 +7293,31 @@ const toggleGroupSelection = (groupId) => {
  */
 const isGroupSelected = (groupId) => {
   return selectedGroups.value.includes(groupId);
+};
+
+/**
+ * 导出当前分组信息（仅 tokenGroups，不含任何 token 密钥）。
+ * 复制到剪贴板 + 下载 .json，方便从电脑拷贝到手机。
+ */
+const exportGroupsFromBatch = async () => {
+  if (!tokenGroups.value || tokenGroups.value.length === 0) {
+    message.warning("当前还没有分组，先去「管理分组」建好再导出");
+    return;
+  }
+  const text = serializeGroupExport(
+    buildGroupExport({
+      includeTokenGroups: true,
+      includeMgGroups: false,
+      includeSaltFieldTeams: false,
+    }),
+  );
+  try {
+    await copyToClipboard(text);
+    message.success("分组已复制到剪贴板，去手机粘贴即可");
+  } catch (e) {
+    message.error("复制失败：" + (e && e.message ? e.message : e));
+  }
+  downloadJson(defaultExportFilename(), text);
 };
 
 /**

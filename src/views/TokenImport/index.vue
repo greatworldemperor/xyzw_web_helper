@@ -199,6 +199,14 @@
             <n-button size="small" @click="showGroupManageModal = true">
               分组管理
             </n-button>
+            <n-space size="small">
+              <n-button size="small" @click="exportGroupsFromTokenPage">
+                导出分组
+              </n-button>
+              <n-button size="small" @click="showImportModal = true">
+                导入分组
+              </n-button>
+            </n-space>
             <n-popover
               v-model:show="showServerSelectPopover"
               trigger="click"
@@ -1054,6 +1062,66 @@
         </div>
       </template>
     </n-modal>
+
+    <!-- 分组导入弹窗（从电脑拷贝过来） -->
+    <n-modal
+      v-model:show="showImportModal"
+      preset="card"
+      style="width: 640px; max-width: 92vw"
+      title="导入分组（从电脑拷贝过来）"
+    >
+      <n-alert type="info" :show-icon="true" style="margin-bottom: 12px">
+        把电脑上「导出分组」得到的文本粘贴到下面，点「粘贴并导入」即可。已存在的分组按名字合并更新；盐场队伍按队长身份匹配；找不到对应队长的队伍会被跳过并列出。
+        <br />（本站点为 HTTP，无法自动读取剪贴板，请手动长按粘贴。）
+      </n-alert>
+      <n-input
+        v-model:value="importGroupText"
+        type="textarea"
+        placeholder="在此粘贴导出的分组 JSON 文本"
+        :autosize="{ minRows: 6, maxRows: 16 }"
+        style="margin-bottom: 12px"
+      />
+      <div
+        style="
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 8px;
+        "
+      >
+        <n-space size="small">
+          <n-button type="primary" :disabled="!importGroupText" @click="doImportGroups">
+            粘贴并导入
+          </n-button>
+          <n-button @click="importGroupText = ''">清空</n-button>
+        </n-space>
+        <n-button text @click="showImportModal = false">关闭</n-button>
+      </div>
+
+      <n-alert
+        v-if="importReport"
+        type="success"
+        :show-icon="true"
+        style="margin-top: 16px"
+      >
+        <template #header>导入完成</template>
+        <div style="line-height: 1.8">
+          <div>token 管理分组：新增 {{ importReport.addedMgGroups }} / 更新
+            {{ importReport.updatedMgGroups }} / 跳过 {{ importReport.skippedMgGroups }}</div>
+          <div>批量日常分组：新增 {{ importReport.addedTokenGroups }} / 更新
+            {{ importReport.updatedTokenGroups }} / 跳过 {{ importReport.skippedTokenGroups }}</div>
+          <div>盐场队伍：新增 {{ importReport.addedTeams }} / 更新
+            {{ importReport.updatedTeams }} / 跳过 {{ importReport.skippedTeams }}</div>
+          <div v-if="importReport.unresolvedLeaders.length" style="color: #d4380d">
+            未匹配到队长（已跳过）：
+            <span v-for="(u, i) in importReport.unresolvedLeaders" :key="i">
+              {{ u.teamName || u.leaderKey }}<span v-if="i < importReport.unresolvedLeaders.length - 1">、</span>
+            </span>
+          </div>
+          <div v-else style="color: #389e0d">所有盐场队伍均已匹配到本机队长。</div>
+        </div>
+      </n-alert>
+    </n-modal>
   </div>
 </template>
 
@@ -1095,6 +1163,14 @@ import { $emit } from "@/stores/events/index.ts";
 import useIndexedDB from "@/hooks/useIndexedDB";
 import { prepareMultiGameLaunch } from "@/utils/gameLauncher";
 import { copyToClipboard } from "@/utils/clubBattleUtils";
+import {
+  buildGroupExport,
+  serializeGroupExport,
+  parseGroupExport,
+  applyGroupImport,
+  downloadJson,
+  defaultExportFilename,
+} from "@/utils/groupExport";
 import {
   pruneTokenSelection,
   selectAllTokenIds,
@@ -1261,6 +1337,50 @@ function confirmCreateMgGroup() {
   newGroupIncludeSelected.value = false;
   message.success(`已创建分组「${name}」`);
 }
+
+/* ---------------- 分组导出 / 导入（PC → 手机） ---------------- */
+const showImportModal = ref(false);
+const importGroupText = ref("");
+const importReport = ref(null);
+
+// token 管理页导出：独立分组(mgGroups) + 盐场队伍（按用户要求合并导出）
+const exportGroupsFromTokenPage = async () => {
+  const text = serializeGroupExport(
+    buildGroupExport({
+      includeTokenGroups: false,
+      includeMgGroups: true,
+      includeSaltFieldTeams: true,
+    }),
+  );
+  try {
+    await copyToClipboard(text);
+    message.success("分组已复制到剪贴板，去手机粘贴即可");
+  } catch (e) {
+    message.error("复制失败：" + (e && e.message ? e.message : e));
+  }
+  downloadJson(defaultExportFilename(), text);
+};
+
+const doImportGroups = () => {
+  if (!importGroupText.value || !importGroupText.value.trim()) {
+    message.warning("请先粘贴导出的分组文本");
+    return;
+  }
+  let payload;
+  try {
+    payload = parseGroupExport(importGroupText.value);
+  } catch (e) {
+    message.error(e && e.message ? e.message : String(e));
+    return;
+  }
+  try {
+    const report = applyGroupImport(payload, { mode: "merge" });
+    importReport.value = report;
+    message.success("导入完成，详见下方报告");
+  } catch (e) {
+    message.error("导入失败：" + (e && e.message ? e.message : e));
+  }
+};
 
 function confirmDeleteMgGroup(groupId) {
   const group = mgGroups.value.find((g) => g.id === groupId);

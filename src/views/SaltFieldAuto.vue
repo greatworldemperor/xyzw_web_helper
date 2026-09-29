@@ -8,6 +8,7 @@
       <div class="page-header__actions">
         <n-tag :type="activityTag.type" size="small">{{ activityTag.text }}</n-tag>
         <n-button size="small" :loading="syncing" @click="syncRoles">同步角色信息</n-button>
+        <n-button size="small" @click="exportGroupsFromSaltField">导出分组</n-button>
         <n-button size="small" type="primary" :disabled="!canRun" @click="runAll">一键执行</n-button>
         <n-button size="small" :disabled="!isRunning" @click="stop">停止</n-button>
       </div>
@@ -285,8 +286,38 @@ import { createConnectionManager } from "@/utils/batch/connectionManager";
 import { createTasksSaltField } from "@/utils/batch/tasksSaltField";
 import { isDeployedState } from "@/utils/legionWarState";
 import * as cfg from "@/utils/saltFieldConfig";
+import { copyToClipboard } from "@/utils/clubBattleUtils";
+import {
+  buildGroupExport,
+  serializeGroupExport,
+  downloadJson,
+  defaultExportFilename,
+} from "@/utils/groupExport";
 
 const message = useMessage();
+
+// 自动盐场导出：仅队伍（token 管理分组已并入 token 管理页的导出里）
+const exportGroupsFromSaltField = async () => {
+  const teams = cfg.getTeams() || [];
+  if (teams.length === 0) {
+    message.warning("当前还没有盐场队伍，先到 Token 管理勾选队长角色");
+    return;
+  }
+  const text = serializeGroupExport(
+    buildGroupExport({
+      includeTokenGroups: false,
+      includeMgGroups: false,
+      includeSaltFieldTeams: true,
+    }),
+  );
+  try {
+    await copyToClipboard(text);
+    message.success("队伍已复制到剪贴板，去手机粘贴即可");
+  } catch (e) {
+    message.error("复制失败：" + (e && e.message ? e.message : e));
+  }
+  downloadJson(defaultExportFilename(), text);
+};
 const tokenStore = useTokenStore();
 
 /* ------------------------------ 日志 ------------------------------ */
