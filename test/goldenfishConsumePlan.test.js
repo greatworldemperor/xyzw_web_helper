@@ -80,6 +80,72 @@ test("planCountConsume: 尾差 50 次切 5 批", () => {
   assert.deepEqual(plan.batches, [10, 10, 10, 10, 10]);
 });
 
+// --------------------------------------- alignDown：余数不足一批不做（2026-09-29 master 口径）
+// 抓包口径：招募/钓鱼单发固定 10，余数批次（如 recruitNumber:3）会被服务端 200020 拒绝。
+
+test("planCountConsume alignDown: 差 3 次不足一批 → 不发（留待最后补满）", () => {
+  const plan = planCountConsume({
+    done: 3897,
+    target: 3900,
+    stock: 351,
+    batchSize: 10,
+    alignDown: true,
+  });
+  assert.equal(plan.willDo, 0);
+  assert.deepEqual(plan.batches, []);
+  assert.equal(plan.alignedShort, true);
+  assert.equal(plan.stockShort, true); // 有未完成量
+  assert.equal(plan.reached, false);
+});
+
+test("planCountConsume alignDown: 差 17 → 只发一批 10，余 7 留待补满", () => {
+  const plan = planCountConsume({
+    done: 3883,
+    target: 3900,
+    stock: 351,
+    batchSize: 10,
+    alignDown: true,
+  });
+  assert.equal(plan.willDo, 10);
+  assert.deepEqual(plan.batches, [10]);
+  assert.equal(plan.alignedShort, true);
+});
+
+test("planCountConsume alignDown: 差值恰为整批 → 全量发不受影响", () => {
+  const plan = planCountConsume({
+    done: 3850,
+    target: 3900,
+    stock: 351,
+    batchSize: 10,
+    alignDown: true,
+  });
+  assert.equal(plan.willDo, 50);
+  assert.deepEqual(plan.batches, [10, 10, 10, 10, 10]);
+  assert.equal(plan.alignedShort, false);
+  assert.equal(plan.stockShort, false);
+});
+
+test("planCountConsume alignDown: 库存不足整批 → 一批也不发", () => {
+  const plan = planCountConsume({
+    done: 3893,
+    target: 3900,
+    stock: 5,
+    batchSize: 10,
+    alignDown: true,
+  });
+  assert.equal(plan.willDo, 0); // 库存 5 不够一批 10，发 5 也会被 200020 拒
+  assert.deepEqual(plan.batches, []);
+  assert.equal(plan.alignedShort, true);
+  assert.equal(plan.stockShort, true);
+});
+
+test("planCountConsume alignDown: 未开启时不影响既有行为", () => {
+  const plan = planCountConsume({ done: 3897, target: 3900, stock: 351, batchSize: 10 });
+  assert.equal(plan.willDo, 3); // 既有口径：余数照发（开箱等场景仍需要）
+  assert.deepEqual(plan.batches, [3]);
+  assert.equal(plan.alignedShort, false);
+});
+
 // ------------------------------------------------------- 宝箱库存读取
 
 test("readChestInventory: 对象形式 + 缺项补 0", () => {

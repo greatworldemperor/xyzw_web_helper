@@ -54,7 +54,9 @@ import {
   resolveGoldenfishActivity,
   shouldKeepLooping,
 } from "../goldenfishConsumePlan.js";
-import { runWithConnectionRetry } from "@/utils/helperTaskRunner";
+// ⚠️ 用相对路径而非 @/ 别名：tasksGoldenfishConsume.test.js 在裸 node 环境
+// 直接 import 本文件，@/ 别名会 ERR_MODULE_NOT_FOUND（2026-09-29 踩实）
+import { runWithConnectionRetry } from "../helperTaskRunner.js";
 
 /**
  * 金鱼消耗目标默认值（页面可调）
@@ -199,10 +201,6 @@ const errorText = (error) =>
 /** 活动未开 / 无效参数：提示为主，不算失败 */
 const isInactiveError = (error) =>
   /未开启|未开始|已结束|活动不存在|无效的/.test(errorText(error));
-
-/** 道具不足：提示为主 */
-const isNoItemError = (error) =>
-  /道具不足|数量不足|不足/.test(errorText(error));
 
 /** 服务端限流（沿用项目通用码） */
 const isRateLimitError = (error) => Number(error?.code) === 400340;
@@ -389,6 +387,7 @@ export function createTasksGoldenfish(deps) {
 
         await ensureConnection(tokenId);
 
+        const failedSteps = [];
         for (const stepId of stepIds) {
           if (shouldStop.value || consumeAbortAll) break;
           const step = STEPS[stepId];
@@ -413,33 +412,44 @@ export function createTasksGoldenfish(deps) {
               },
             });
           } catch (error) {
-            // 限流(400340)由 tokenStore 统一处理（弹窗 + 每 5 秒自动重试 + 成功自关），
-            // 这里只在兜底时跳过本步骤。
-            if (isRateLimitError(error)) {
-              log(tokenName, `触发限流，跳过本步骤（tokenStore 会自动重试）`, "warning");
+            // 限流(400340)已由 tokenStore 自愈重试 15 分钟才到这 / 活动未开：
+            // 整个号没有继续的意义，中断后续步骤。
+            if (isRateLimitError(error) || isInactiveError(error)) {
+              log(
+                tokenName,
+                `触发限流或活动未开（${errorText(error)}），中断后续步骤`,
+                "warning",
+              );
               break;
             }
-            if (isInactiveError(error)) {
-              log(tokenName, `金鱼活动未开启（${errorText(error)}），跳过`, "warning");
-              break;
-            }
-            if (isNoItemError(error)) {
-              log(tokenName, `投掷道具不足（${errorText(error)}），跳过`, "warning");
-              break;
-            }
-            throw error;
+            // 其余错误（如 200020 参数拒绝）：跳过本步骤，继续后续步骤。
+            // （2026-09-29 master：招募差 3 触发 200020，不该拦住宝箱/钓鱼）
+            failedSteps.push(stepId);
+            log(
+              tokenName,
+              `⏭️ ${stepId} 失败（${errorText(error)}），跳过本步骤继续后续`,
+              "error",
+            );
+            continue;
           }
           await sleep();
         }
 
-        if (tokenStatus.value[tokenId] !== "failed") {
+        if (failedSteps.length > 0) {
+          tokenStatus.value[tokenId] = "failed";
+          addLog({
+            time: nowText(),
+            message: `=== ${tokenName} ${title}结束（部分失败：${failedSteps.join("、")}；其余步骤已执行） ===`,
+            type: "error",
+          });
+        } else if (tokenStatus.value[tokenId] !== "failed") {
           tokenStatus.value[tokenId] = "completed";
+          addLog({
+            time: nowText(),
+            message: `=== ${tokenName} ${title}结束 ===`,
+            type: "success",
+          });
         }
-        addLog({
-          time: nowText(),
-          message: `=== ${tokenName} ${title}结束 ===`,
-          type: "success",
-        });
       } catch (error) {
         tokenStatus.value[tokenId] = "failed";
         addLog({
@@ -554,6 +564,7 @@ export function createTasksGoldenfish(deps) {
       target,
       stock,
       batchSize: 10,
+      alignDown: true, // 抓包口径单发固定 10：余数批次会被 200020 拒绝（2026-09-29）
     });
     if (!plan.ok) {
       log(token.name, `招募消耗跳过：进度不可读（${progressText(target, null, stock, "招募令")}）`, "warning");
@@ -589,9 +600,11 @@ export function createTasksGoldenfish(deps) {
     log(
       token.name,
       `招募消耗结束：本次 ${fmtNum(plan.willDo)}，累计 ${fmtNum(done)}/${fmtNum(target)}` +
-        (plan.stockShort
-          ? `；⚠️ 招募令不足，还差 ${fmtNum(plan.remaining - plan.willDo)} 次，等黑市补货后再跑`
-          : ""),
+        (plan.alignedShort
+          ? `；⏸️ 差 ${fmtNum(plan.remaining - plan.willDo)} 次不足一批(10)，按口径不做、留待最后补满`
+          : plan.stockShort
+            ? `；⚠️ 招募令不足，还差 ${fmtNum(plan.remaining - plan.willDo)} 次，等黑市补货后再跑`
+            : ""),
       plan.stockShort ? "warning" : "success",
     );
   };
@@ -622,6 +635,7 @@ export function createTasksGoldenfish(deps) {
       target,
       stock,
       batchSize: 10,
+      alignDown: true, // 抓包口径单发固定 10：余数批次会被 200020 拒绝（2026-09-29）
     });
     if (!plan.ok) {
       log(token.name, `钓鱼消耗跳过：进度不可读（${progressText(target, null, stock, "黄金鱼竿")}）`, "warning");
@@ -657,9 +671,11 @@ export function createTasksGoldenfish(deps) {
     log(
       token.name,
       `钓鱼消耗结束：本次 ${fmtNum(plan.willDo)}，累计 ${fmtNum(done)}/${fmtNum(target)}` +
-        (plan.stockShort
-          ? `；⚠️ 黄金鱼竿不足，还差 ${fmtNum(plan.remaining - plan.willDo)} 次，等商店补货后再跑`
-          : ""),
+        (plan.alignedShort
+          ? `；⏸️ 差 ${fmtNum(plan.remaining - plan.willDo)} 次不足一批(10)，按口径不做、留待最后补满`
+          : plan.stockShort
+            ? `；⚠️ 黄金鱼竿不足，还差 ${fmtNum(plan.remaining - plan.willDo)} 次，等商店补货后再跑`
+            : ""),
       plan.stockShort ? "warning" : "success",
     );
   };

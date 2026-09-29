@@ -164,23 +164,25 @@ test("招募消耗：已达标不发命令", async () => {
 
 // ---------------------------------------------------------------- 钓鱼
 
-test("钓鱼消耗：只用黄金鱼竿，库存不足正常停（还差 25 次警告）", async () => {
+test("钓鱼消耗：只用黄金鱼竿，库存不足正常停（整批发 20，余 5 不做）", async () => {
   const h = createHarness({
     state: { fishDone: 1100, goldRods: 25 },
   });
   await h.tasks.goldenfishFish({ fishTarget: 1150 });
 
+  // alignDown（2026-09-29 口径）：lotteryNumber 余数批会被 200020 拒 → 只发整批
   assert.deepEqual(
     h.sent.filter((s) => s.cmd === "artifact_lottery").map((s) => s.params),
     [
       { type: 2, lotteryNumber: 10, newFree: true },
       { type: 2, lotteryNumber: 10, newFree: true },
-      { type: 2, lotteryNumber: 5, newFree: true },
     ],
   );
-  assert.equal(h.state.fishDone, 1125);
-  assert.equal(h.state.items[1012], 0);
-  assert.ok(h.logs.some((l) => l.message.includes("黄金鱼竿不足") && l.message.includes("还差 25 次")));
+  assert.equal(h.state.fishDone, 1120);
+  assert.equal(h.state.items[1012], 5); // 余 5 根留着
+  assert.ok(
+    h.logs.some((l) => l.message.includes("不足一批(10)") && l.message.includes("留待最后补满")),
+  );
   assert.equal(h.errorLogs().length, 0);
 });
 
@@ -359,17 +361,18 @@ function createRealActivityHarness({ commonActivityInfo, items = {}, cmds = {} }
   };
 }
 
-test("阶段B 真实数据：招募进度 3685 → 差值 215 → 21 发 10 + 1 发 5；activity_get 先于 role", async () => {
+test("阶段B 真实数据：招募进度 3685 → 差值 215 → 21 发 10（余 5 不做）；activity_get 先于 role", async () => {
   const h = createRealActivityHarness({
     commonActivityInfo: CAPTURE_COMMON,
     items: { 1001: { quantity: 500 } },
   });
   await h.tasks.goldenfishRecruit({ recruitTarget: 3900 });
 
+  // alignDown（2026-09-29 口径）：recruitNumber 余数批会被 200020 拒 → 只发整批
   const recruits = h.sent.filter((s) => s.cmd === "hero_recruit").map((s) => s.params);
-  assert.equal(recruits.length, 22);
-  assert.deepEqual(recruits.slice(0, 21), Array.from({ length: 21 }, () => ({ recruitType: 1, recruitNumber: 10 })));
-  assert.deepEqual(recruits[21], { recruitType: 1, recruitNumber: 5 });
+  assert.equal(recruits.length, 21);
+  assert.deepEqual(recruits, Array.from({ length: 21 }, () => ({ recruitType: 1, recruitNumber: 10 })));
+  assert.ok(h.logs.some((l) => l.message.includes("不足一批(10)")));
 
   // 进度靠 activity_get（不是 role）→ 它必须先发
   const seq = h.cmds();

@@ -130,8 +130,16 @@ export const chunkBatches = (count, size = OPENBOX_BATCH_SIZE) => {
   return out;
 };
 
-/** 消耗类任务（招募/钓鱼）差值规划：进度未知时拒绝执行（断点续跑基准） */
-export const planCountConsume = ({ done, target, stock, batchSize }) => {
+/**
+ * 消耗类任务（招募/钓鱼）差值规划：进度未知时拒绝执行（断点续跑基准）
+ *
+ * alignDown（2026-09-29 master 口径）：招募/钓鱼抓包口径单发固定 10（recruitNumber /
+ * lotteryNumber 余数批次会被服务端 200020 拒绝 —— 实测差 3 发 recruitNumber:3 直接报
+ * 「出了点小问题」）。开启后 willDo 向下取整到 batchSize 的整批倍数，余数不做：
+ * 「差 3 次不做就不做了，没必要非做不可，本来就是留一点点余量等着最后一天补满的」。
+ * alignedShort = 因对齐被跳过的余数（区别于库存不足）。
+ */
+export const planCountConsume = ({ done, target, stock, batchSize, alignDown = false }) => {
   if (done == null || !Number.isFinite(Number(done))) {
     return { ok: false, reason: "progress-unknown" };
   }
@@ -139,16 +147,24 @@ export const planCountConsume = ({ done, target, stock, batchSize }) => {
   const doneNum = Math.max(0, Math.floor(Number(done)));
   const remaining = Math.max(0, tgt - doneNum);
   if (remaining === 0) {
-    return { ok: true, remaining: 0, willDo: 0, batches: [], stockShort: false, reached: true };
+    return { ok: true, remaining: 0, willDo: 0, batches: [], stockShort: false, alignedShort: false, reached: true };
   }
   const stockNum = stock == null ? Infinity : Math.max(0, Math.floor(Number(stock) || 0));
-  const willDo = Math.min(remaining, stockNum);
+  let willDo = Math.min(remaining, stockNum);
+  let alignedShort = false;
+  if (alignDown) {
+    const step = Math.max(1, Math.floor(Number(batchSize) || 1));
+    const aligned = Math.floor(willDo / step) * step;
+    alignedShort = aligned < willDo;
+    willDo = aligned;
+  }
   return {
     ok: true,
     remaining,
     willDo,
     batches: chunkBatches(willDo, batchSize),
     stockShort: willDo < remaining,
+    alignedShort,
     reached: false,
   };
 };
