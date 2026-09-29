@@ -583,7 +583,12 @@ export function createTasksGoldenfish(deps) {
 
   if (typeof window !== "undefined" && !leaseUnloadHookInstalled) {
     leaseUnloadHookInstalled = true;
-    window.addEventListener("pagehide", releaseAllOwnLeases);
+    window.addEventListener("pagehide", (event) => {
+      // ⚠️ `persisted === true` = 页面进了 bfcache（前进/后退还会原样回来），
+      //    此时运行可能仍在继续，不能把租约还掉，否则会被别的上下文抢走。
+      if (event?.persisted) return;
+      releaseAllOwnLeases();
+    });
   }
 
   /**

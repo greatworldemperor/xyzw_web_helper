@@ -903,9 +903,13 @@ test("并发租约：pagehide（关标签页/刷新）归还本标签页的租�
 
       const hook = listeners.find((x) => x.type === "pagehide");
       assert.ok(hook, "应注册 pagehide 卸载钩子");
-      hook.fn();
 
-      assert.equal(ls.getItem(LEASE_KEY), null, "自己的租约应在卸载时归还");
+      // bfcache（persisted=true）时页面还会回来 → 不能归还租约
+      hook.fn({ persisted: true });
+      assert.ok(ls.getItem(LEASE_KEY) != null, "进 bfcache 时不应归还租约");
+
+      hook.fn({ persisted: false });
+      assert.equal(ls.getItem(LEASE_KEY), null, "自己的租约应在真正卸载时归还");
       assert.ok(ls.getItem(OTHER_KEY) != null, "别人的租约不能被误删");
     },
   );
