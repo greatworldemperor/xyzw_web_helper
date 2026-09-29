@@ -1060,8 +1060,8 @@
                   「宝箱数量已发生变化，请重新操作」——所以开箱一律按整批对齐，
                   余数不足一批的（如木箱扣掉保留 200 后只剩几个）<b>直接不开</b>，日志会提示「开不动」。
                   招募 hero_recruit 消耗招募令 1001；宝箱
-                  item_openbox + 积分兑换（<b>积分 ≥ 1000 走一键 item_batchclaimboxpointreward，
-                  一帧兑完；不足才逐档 item_claimboxpointreward</b>）
+                  item_openbox + 积分兑换（<b>积分 ≥ 1000 走一键 item_batchclaimboxpointreward
+                  一帧兑光；不足 1000 不兑换、攒着</b>，金鱼期间优先效率、不做逐档抠零头）
                   迭代推进到目标，钻石宝箱一律不开、木箱保留 200
                   个，退出后差值精确开箱（同样整批）、剩余积分不兑换留活动结束；钓鱼
                   artifact_lottery 只用黄金鱼竿 1012，<b>有多少做多少</b>，缺口记日志留待收尾阶段金砖买竿补全。

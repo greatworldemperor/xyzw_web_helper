@@ -125,6 +125,8 @@ function createHarness({ state } = {}) {
           return { role: { ...rolePayload().role, items: st.items } };
         }
         case "item_claimboxpointreward": {
+          // 逐档兑换。**金鱼消耗路径已不再调用它**（改成 ≥1000 一键兑光了），
+          // 这里保留是让 mock 忠实于服务端（smartOpenBox 等其它路径仍在用该命令）。
           const cost = BOX_POINT_COSTS[st.boxPointLastReward] ?? 0;
           st.boxPoint = Math.max(0, st.boxPoint - cost);
           st.boxPointLastReward = (st.boxPointLastReward + 1) % BOX_POINT_COSTS.length;
@@ -413,9 +415,9 @@ test("宝箱消耗：积分兑换按档位消耗 boxPoint（响应驱动）", as
   assert.equal(h.errorLogs().length, 0);
 });
 
-test("宝箱消耗：积分 ≥ 1000 → 一键兑换（item_batchclaimboxpointreward，一帧兑完，不再逐档）", async () => {
+test("宝箱消耗：积分 ≥ 1000（边界值）→ 一键兑换一帧兑光，不发逐档", async () => {
   const h = createHarness({
-    state: { boxScoreDone: 98000, boxPoint: 1600, boxPointLastReward: 0, wooden: 350 },
+    state: { boxScoreDone: 98000, boxPoint: 1000, boxPointLastReward: 0, wooden: 350 },
   });
   await h.tasks.goldenfishBoxes({ boxTarget: 99000 });
 
@@ -425,7 +427,7 @@ test("宝箱消耗：积分 ≥ 1000 → 一键兑换（item_batchclaimboxpointr
   assert.equal(
     h.sent.filter((s) => s.cmd === "item_claimboxpointreward").length,
     0,
-    "够门槛时不该再逐档兑换",
+    "金鱼活动期间不再走逐档兑换",
   );
   assert.ok(
     h.logs.some((l) => l.message.includes("积分一键兑换")),
@@ -438,9 +440,9 @@ test("宝箱消耗：积分 ≥ 1000 → 一键兑换（item_batchclaimboxpointr
   assert.equal(h.errorLogs().length, 0);
 });
 
-test("宝箱消耗：积分 < 1000 → 仍走逐档兑换（不发一键兑换）", async () => {
+test("宝箱消耗：积分 < 1000（999）→ 完全不兑换，一帧不发，积分原样留着", async () => {
   const h = createHarness({
-    state: { boxScoreDone: 98000, boxPoint: 130, boxPointLastReward: 0, wooden: 350 },
+    state: { boxScoreDone: 98000, boxPoint: 999, boxPointLastReward: 0, wooden: 350 },
   });
   await h.tasks.goldenfishBoxes({ boxTarget: 99000 });
 
@@ -449,13 +451,15 @@ test("宝箱消耗：积分 < 1000 → 仍走逐档兑换（不发一键兑换�
     0,
     "不足门槛不该发一键兑换",
   );
-  const tier = h.sent.filter((s) => s.cmd === "item_claimboxpointreward");
-  // 130 = 10+20+30+40 = 100 → 剩 30，下一档 80 付不起 ⇒ 逐档 4 次
-  assert.equal(tier.length, 4, `不足门槛应逐档兑换（实际 ${tier.length} 次）`);
-  assert.equal(h.state.boxPoint, 30);
+  assert.equal(
+    h.sent.filter((s) => s.cmd === "item_claimboxpointreward").length,
+    0,
+    "金鱼活动期间不做逐档抠零头（攒着，够了一次兑光）",
+  );
+  assert.equal(h.state.boxPoint, 999, "积分应原样留着");
   assert.ok(
-    h.logs.some((l) => l.message.includes("逐档 4 档")),
-    "完成日志应写明逐档次数",
+    h.logs.some((l) => l.message.includes("未到一键兑换门槛")),
+    "应说明为何本次不兑换",
   );
   assert.equal(h.errorLogs().length, 0);
 });
