@@ -43,6 +43,7 @@ const nowText = () => new Date().toLocaleTimeString();
  *   `activity_get`。活动实例 ID 由 `resolveGoldenfishActivity` 自动探测（task 键全部落在 1..5）。
  */
 import {
+  BOX_POINT_BATCH_MIN,
   BOX_POINT_STEP_COSTS,
   GOLDENFISH_CONSUME_DEFAULTS,
   OPENBOX_BATCH_SIZE,
@@ -1092,17 +1093,59 @@ export function createTasksGoldenfish(deps) {
     );
   };
 
-  /** 积分兑换：从当前档位逐档 claim 到付不起下一档（响应驱动 boxPoint/boxPointLastReward） */
+  /** 一键兑换最多重复几次（防止服务端只兑一部分时无限空转） */
+  const BOX_POINT_BATCH_MAX_CALLS = 20;
+
+  /**
+   * 积分兑换：**优先一键兑换**，不够门槛时逐档 claim（响应驱动 boxPoint/boxPointLastReward）
+   *
+   * 2026-09-29 master 口径：`boxPoint ≥ BOX_POINT_BATCH_MIN(1000)` 时直接发
+   *   `item_batchclaimboxpointreward`（无参数）一次把能兑的全兑掉 —— 原来「一档一帧」，
+   *   1600 分要发十几帧，现在 1 帧搞定。
+   * 抓包实证 + 门槛说明见 `goldenfishConsumePlan.BOX_POINT_BATCH_MIN` 注释
+   *   （`consumption_tasks.jsonl` id 1284/1286：请求体 `0800` 空参数，响应带最新 boxPoint）。
+   * 不足门槛的零头仍走逐档 `item_claimboxpointreward`（游戏里一键按钮也要够门槛才可用）。
+   */
   const exchangeAllScore = async ({ tokenId, token, role }) => {
     let boxPoint = Number(role?.boxPoint ?? 0) || 0;
     let pos = Number(role?.boxPointLastReward ?? 0) || 0;
-    let claimed = 0;
+    let batched = 0;
+    let tierClaims = 0;
+
+    // ① 一键兑换：够门槛就一次兑完（必要时重复，直到掉到门槛以下 / 不再变化 / 到次数上限）
+    while (boxPoint >= BOX_POINT_BATCH_MIN && batched < BOX_POINT_BATCH_MAX_CALLS) {
+      if (shouldStop.value) break;
+      const before = boxPoint;
+      const resp = await sendWithRateLimit(
+        tokenId,
+        "item_batchclaimboxpointreward",
+        {},
+        token,
+        8000,
+      );
+      batched += 1;
+      const r = resp?.role ?? {};
+      if (typeof r.boxPoint === "number") boxPoint = r.boxPoint;
+      if (typeof r.boxPointLastReward === "number") pos = r.boxPointLastReward;
+      log(
+        token.name,
+        `积分一键兑换（第 ${batched} 次，兑前 ${fmtNum(before)} ≥ ${fmtNum(BOX_POINT_BATCH_MIN)}）：` +
+          `剩余未兑换积分 ${fmtNum(boxPoint)}，下一档 ${fmtNum(pos)}`,
+        "info",
+      );
+      if (boxPoint >= before) {
+        log(token.name, "一键兑换后积分未下降，停止重试（避免空转）", "warning");
+        break;
+      }
+    }
+
+    // ② 不足门槛的零头：仍按逐档 claim 补齐
     for (;;) {
-      if (pos < 0 || pos >= BOX_POINT_STEP_COSTS.length || claimed >= 3000) break;
+      if (pos < 0 || pos >= BOX_POINT_STEP_COSTS.length || tierClaims >= 3000) break;
       const cost = BOX_POINT_STEP_COSTS[pos];
       if (boxPoint < cost) break;
       const resp = await sendWithRateLimit(tokenId, "item_claimboxpointreward", {}, token, 8000);
-      claimed += 1;
+      tierClaims += 1;
       const r = resp?.role ?? {};
       if (typeof r.boxPoint === "number") {
         boxPoint = r.boxPoint;
@@ -1114,12 +1157,17 @@ export function createTasksGoldenfish(deps) {
       } else {
         pos = (pos + 1) % BOX_POINT_STEP_COSTS.length;
       }
-      if (claimed % 20 === 0) {
-        log(token.name, `积分兑换进度：已兑 ${claimed} 档，剩余积分 ${fmtNum(boxPoint)}`, "info");
+      if (tierClaims % 20 === 0) {
+        log(token.name, `积分兑换进度：已逐档兑 ${tierClaims} 档，剩余积分 ${fmtNum(boxPoint)}`, "info");
       }
     }
-    log(token.name, `积分兑换完成：本次兑换 ${claimed} 档，剩余未兑换积分 ${fmtNum(boxPoint)}`, "success");
-    return claimed;
+    log(
+      token.name,
+      `积分兑换完成：一键兑换 ${batched} 次${tierClaims > 0 ? ` + 逐档 ${tierClaims} 档` : ""}，` +
+        `剩余未兑换积分 ${fmtNum(boxPoint)}`,
+      "success",
+    );
+    return { batched, tierClaims };
   };
 
   /** 开箱计划逐批发送（10/发+余数），返回最后一份带 role 的响应。

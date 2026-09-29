@@ -121,6 +121,21 @@ export const BOX_POINT_STEP_COSTS = [10, 20, 30, 40, 80, 100, 70, 50, 100];
 export const BOX_POINT_ROUND_TOTAL = 500;
 
 /**
+ * 「一键兑换」的最小积分门槛（2026-09-29 master 口径）。
+ *
+ * `boxPoint ≥ 1000` 时直接发 `item_batchclaimboxpointreward`（**无参数**）一次把能兑的档位
+ * 全兑掉，不再「一档一帧」——省掉几十帧往返、显著提速。低于门槛仍走逐档
+ * `item_claimboxpointreward`（游戏里一键按钮本身也要够门槛才可用）。
+ *
+ * 抓包实证 `local-data/goldenfish/consumption_tasks.jsonl`（id 1284 发送 / 1286 响应）：
+ *   发送 `item_batchclaimboxpointreward`，请求体 2 字节 `0800`（空参数）；
+ *   响应为 `Item_OpenBoxResp`（`resp` = 请求 `seq`），带 `role.boxPoint`（1638 → 38）
+ *   与 `role.boxPointLastReward` ⇒ 与逐档 claim 读的是同一组字段。
+ * 该命令在 `xyzwWebSocket.js` 已注册，`BoxHelperCard.vue` / `tasksItem.js` 也早就在用。
+ */
+export const BOX_POINT_BATCH_MIN = 1000;
+
+/**
  * 每档兑换的**产出**（2026-09-28 master 补充，原文附录1「宝箱积分回收数据」）
  *
  * | Turn | 消耗 | 产出 | 内容 | | Turn | 消耗 | 产出 | 内容 | | Turn | 消耗 | 产出 | 内容 |
@@ -521,6 +536,7 @@ export default {
   CHEST_POINTS,
   WOODEN_RESERVE,
   OPENBOX_BATCH_SIZE,
+  BOX_POINT_BATCH_MIN,
   alignDownToBatch,
   chunkBatches,
   planCountConsume,

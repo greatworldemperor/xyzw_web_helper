@@ -17,7 +17,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { createTasksGoldenfish } from "../src/utils/batch/tasksGoldenfish.js";
-import { CHEST_POINTS, OPENBOX_BATCH_SIZE } from "../src/utils/goldenfishConsumePlan.js";
+import {
+  BOX_POINT_BATCH_MIN,
+  BOX_POINT_STEP_COSTS,
+  CHEST_POINTS,
+  OPENBOX_BATCH_SIZE,
+} from "../src/utils/goldenfishConsumePlan.js";
+
+/** 宝箱积分兑换的 9 档成本（与生产同一份定义，避免测试里再抄一遍） */
+const BOX_POINT_COSTS = BOX_POINT_STEP_COSTS;
 
 /**
  * 模拟服务端：维护活动进度与库存，按命令推进状态
@@ -117,10 +125,23 @@ function createHarness({ state } = {}) {
           return { role: { ...rolePayload().role, items: st.items } };
         }
         case "item_claimboxpointreward": {
-          const costs = [10, 20, 30, 40, 80, 100, 70, 50, 100];
-          const cost = costs[st.boxPointLastReward] ?? 0;
+          const cost = BOX_POINT_COSTS[st.boxPointLastReward] ?? 0;
           st.boxPoint = Math.max(0, st.boxPoint - cost);
-          st.boxPointLastReward = (st.boxPointLastReward + 1) % 9;
+          st.boxPointLastReward = (st.boxPointLastReward + 1) % BOX_POINT_COSTS.length;
+          return { role: { ...rolePayload().role } };
+        }
+        case "item_batchclaimboxpointreward": {
+          // 一键兑换：从当前档位起把「付得起」的档位连续兑到付不起（响应驱动，见 runGoldenfish
+          // 注释里的抓包实证 1638 → 38）；无参数调用，响应仍带 role.boxPoint/boxPointLastReward
+          let guard = 0;
+          for (;;) {
+            if (guard > 3000) break;
+            guard += 1;
+            const cost = BOX_POINT_COSTS[st.boxPointLastReward] ?? 0;
+            if (st.boxPoint < cost) break;
+            st.boxPoint -= cost;
+            st.boxPointLastReward = (st.boxPointLastReward + 1) % BOX_POINT_COSTS.length;
+          }
           return { role: { ...rolePayload().role } };
         }
         default:
@@ -389,6 +410,53 @@ test("宝箱消耗：积分兑换按档位消耗 boxPoint（响应驱动）", as
   // shouldKeepLooping(90000, 全 0, 99000) → true → planOpenAll 空 → 暂停。
   // 兑换场景单独构造：boxPoint 不足以开箱 → 兑换不出宝箱 → 仍暂停（等补货）。
   assert.ok(h.logs.some((l) => l.message.includes("无箱可开")));
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("宝箱消耗：积分 ≥ 1000 → 一键兑换（item_batchclaimboxpointreward，一帧兑完，不再逐档）", async () => {
+  const h = createHarness({
+    state: { boxScoreDone: 98000, boxPoint: 1600, boxPointLastReward: 0, wooden: 350 },
+  });
+  await h.tasks.goldenfishBoxes({ boxTarget: 99000 });
+
+  const batch = h.sent.filter((s) => s.cmd === "item_batchclaimboxpointreward");
+  assert.equal(batch.length, 1, `积分 ≥ 门槛时应只发一帧一键兑换（实际 ${batch.length}）`);
+  assert.deepEqual(batch[0].params, {}, "一键兑换是无参数命令（抓包请求体 0800）");
+  assert.equal(
+    h.sent.filter((s) => s.cmd === "item_claimboxpointreward").length,
+    0,
+    "够门槛时不该再逐档兑换",
+  );
+  assert.ok(
+    h.logs.some((l) => l.message.includes("积分一键兑换")),
+    "应打出「积分一键兑换」日志",
+  );
+  assert.ok(
+    h.state.boxPoint < BOX_POINT_BATCH_MIN,
+    `一键兑换应把积分兑到门槛以下（实际 ${h.state.boxPoint}）`,
+  );
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("宝箱消耗：积分 < 1000 → 仍走逐档兑换（不发一键兑换）", async () => {
+  const h = createHarness({
+    state: { boxScoreDone: 98000, boxPoint: 130, boxPointLastReward: 0, wooden: 350 },
+  });
+  await h.tasks.goldenfishBoxes({ boxTarget: 99000 });
+
+  assert.equal(
+    h.sent.filter((s) => s.cmd === "item_batchclaimboxpointreward").length,
+    0,
+    "不足门槛不该发一键兑换",
+  );
+  const tier = h.sent.filter((s) => s.cmd === "item_claimboxpointreward");
+  // 130 = 10+20+30+40 = 100 → 剩 30，下一档 80 付不起 ⇒ 逐档 4 次
+  assert.equal(tier.length, 4, `不足门槛应逐档兑换（实际 ${tier.length} 次）`);
+  assert.equal(h.state.boxPoint, 30);
+  assert.ok(
+    h.logs.some((l) => l.message.includes("逐档 4 档")),
+    "完成日志应写明逐档次数",
+  );
   assert.equal(h.errorLogs().length, 0);
 });
 

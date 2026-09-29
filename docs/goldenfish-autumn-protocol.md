@@ -94,8 +94,9 @@ RESP Store_SetPurchaseResp  回显设置后的列表（按 itemId 升序，与�
 | --- | --- | --- |
 | 招募 | `hero_recruit { recruitType:1, recruitNumber:N }` | 10/发+余数，消耗招募令 1001 |
 | 开宝箱 | `item_openbox { itemId, number:N }` | 10/发+余数；铂金 50/黄金 20/青铜 10/木质 1 分 |
-| 积分兑宝箱 | `item_claimboxpointreward {}` | 一轮 9 档共 500 分，第 9 档必得钻石宝箱(2005) |
-| 未兑换积分 | `role.boxPoint` / `role.boxPointLastReward` | 下一档索引 0~8 |
+| 积分兑宝箱（逐档） | `item_claimboxpointreward {}` | 一轮 9 档共 500 分，第 9 档必得钻石宝箱(2005)。**仅在 `boxPoint < 1000` 时用** |
+| 积分兑宝箱（**一键**） | `item_batchclaimboxpointreward {}` | **无参数**；`boxPoint ≥ 1000` 时一次把能兑的档位全兑掉（抓包实证 1638 → 38）。2026-09-29 master 口径：省掉几十帧往返 |
+| 未兑换积分 | `role.boxPoint` / `role.boxPointLastReward` | 下一档索引 0~8；一键兑换的响应（`Item_OpenBoxResp`）同样带这两个字段 |
 | 钓鱼 | `artifact_lottery { type:2, lotteryNumber:N, newFree:true }` | 只用黄金鱼竿 1012（master 拍板） |
 | **活动进度** | `activity_get {}` | 见下节；**进度不在 role 上** |
 
@@ -103,6 +104,13 @@ RESP Store_SetPurchaseResp  回显设置后的列表（按 itemId 升序，与�
 `while(累积 + 手里可开分 < 目标) { 全开 → 积分全兑 → 重查 }`，退出后差值精确开箱
 （铂金→黄金→青铜→木质，ceil 保证达标，超出留在未兑换积分不兑换）。
 **钻石宝箱一律不开；木箱全程保留 200 个**（2026-09-26 master 拍板）。
+
+⚠️ **「一键兑换」只用在金鱼消耗路径**（`tasksGoldenfish.exchangeAllScore`）：
+`boxPoint ≥ 1000` 走 `item_batchclaimboxpointreward` 一帧兑完，不足 1000 才回落到逐档
+`item_claimboxpointreward`。`src/utils/smartOpenBox.js`（智能开箱）**故意不改** ——
+它的兑换是「兑到刚好 3 个钻石宝箱就停」的逐档精确控制（兑换本身是亏的、要少兑），
+换成一键会把积分无差别兑光，破坏那个省积分的优化。
+门槛与抓包实证见 `goldenfishConsumePlan.BOX_POINT_BATCH_MIN` 注释。
 
 - 实现：`tasksGoldenfish.js` 三个 step + `goldenfishConsumeAll` 一键；
   ⚡ **招募/钓鱼并行 + 宝箱独占**：招募与钓鱼独立限流，协议层并发安全
@@ -277,15 +285,16 @@ SEND activity_claimtaskreward { activityId: 2609251, missionId: N }
 | 宝箱 | 99000 分 | 198 ~ 990 帧 | 1.1 ~ 5.5 | 需跨 **2~6 段**，最大消耗方 |
 
 宝箱帧数取决于主力箱型（加权均分 S）：纯铂金 50 分 → 1980 箱 = 198 帧；纯黄金 20 分 → 4950 箱 = 495 帧；
-纯青铜 10 分 → 9900 箱 = 990 帧。另需叠加 `item_claimboxpointreward` 的兑换帧
-（每档 1 帧，一轮 9 档消耗 500 分）。
+纯青铜 10 分 → 9900 箱 = 990 帧。兑换帧：**`boxPoint ≥ 1000` 时用一键
+`item_batchclaimboxpointreward` 一帧兑完**（2026-09-29 起），不足 1000 才逐档
+`item_claimboxpointreward`（每档 1 帧，一轮 9 档消耗 500 分）。
 
 ⚠️ 木箱(2001)只有 1 分 → 99000 分需 9900 帧（**55 个额度段**），所以木箱保留 200 个的策略
 在「靠木箱凑分」上是不可行的，分主要靠铂金/黄金/青铜。
 
-**总预算粗估（中位情形）** ≈ 招募 390 + 宝箱 300~500 + 兑换 200 + 钓鱼 115 ≈
-**1000~1200 帧**，而单 IP 各动作额度合计约 560 帧 ⇒ **一次任务运行必然要跨好几个额度段，
-中途吃 4~6 次冷却**。
+**总预算粗估（中位情形）** ≈ 招募 390 + 宝箱 300~500 + 兑换 1~3 + 钓鱼 115 ≈
+**810~1010 帧**（一键兑换把原来「兑换 200 帧」几乎清零），而单 IP 各动作额度合计约 560 帧
+⇒ **一次任务运行仍要跨额度段，但冷却次数明显减少**。
 
 ### master 拍板（2026-09-28）
 
