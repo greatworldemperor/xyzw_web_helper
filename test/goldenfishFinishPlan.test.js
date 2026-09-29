@@ -465,6 +465,42 @@ test("planRodPurchase：钓鱼 1300 是下限、1750 才是硬上限（master �
   assert.equal(planRodPurchase(base).master.fishAfter, GOLDENFISH_FISH_FULL);
 });
 
+test("planRodPurchase：收尾起点未必是 1140（库存不足少做的号，缺口/竿数按实际起点算）", () => {
+  // 🔴 master 2026-09-29 收尾口径：「最后一天：① 宝箱和招募全部做满；② 鱼竿和金砖维持当前策略，
+  //    但注意，起点未必是 1140」——
+  //    9 月若因鱼竿库存不足只做到 1000（消耗阶段「有多少做多少」），收尾必须按 1000 起算缺口，
+  //    不能假设 1140/1300。引擎以 progressBySlot[3] 为起点，本用例把这条口径钉死。
+  const at = (start, fishCap) =>
+    planRodPurchase({
+      progressBySlot: { 3: start, 5: 20389 },
+      needItems: 1,
+      goldInStock: 1000000,
+      rodsInStock: 0,
+      fishCap,
+    });
+
+  // 起点 1000（完成 14 轮）：补到 1300 下限还差 300 次 → ceil(300×0.9) = 270 根
+  const low = at(1000, GOLDENFISH_FISH_MIN_TARGET);
+  assert.equal(completedRounds(3, 1000), 14);
+  assert.equal(low.fishRoom, 300);
+  assert.equal(low.rodsForFishCap, 270);
+
+  // 同一 1000 起点、若推满 1750：还差 750 次 → 675 根
+  const lowFull = at(1000, GOLDENFISH_FISH_FULL);
+  assert.equal(lowFull.fishRoom, 750);
+  assert.equal(lowFull.rodsForFishCap, 675);
+
+  // 对照抓包起点 1140：补到 1300 只需 144 根 —— 起点低 140 次 ⇒ 多买 126 根
+  const cap = at(1140, GOLDENFISH_FISH_MIN_TARGET);
+  assert.equal(cap.rodsForFishCap, 144);
+  assert.equal(low.rodsForFishCap - cap.rodsForFishCap, 126);
+
+  // 起点已越过 1300 下限（库存充足做到 1400）⇒ 下限无需再补，room 归零
+  const over = at(1400, GOLDENFISH_FISH_MIN_TARGET);
+  assert.equal(over.fishRoom, 0);
+  assert.equal(over.rodsForFishCap, 0);
+});
+
 test("钓鱼常量：1300 下限 / 1750 全满（20 轮）", () => {
   assert.equal(GOLDENFISH_FISH_MIN_TARGET, 1300); // 1140 + 160，原文第 31 行
   assert.equal(GOLDENFISH_FISH_FULL, 1750); // 档位表 20 轮累计
