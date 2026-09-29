@@ -195,6 +195,26 @@ test("钓鱼消耗：只用黄金鱼竿，库存不足正常停（整批发 20�
   assert.equal(h.errorLogs().length, 0);
 });
 
+test("钓鱼消耗：鱼竿整批发完后仍缺口 → 日志给出缺口次数与竿数折算，留待收尾买竿", async () => {
+  // 2026-09-29 master 口径：有多少做多少，缺口靠收尾阶段金砖买竿补全（不即时买）
+  const h = createHarness({
+    state: { fishDone: 1000, goldRods: 30 }, // 差 150 次，库存 30 根（整批）→ 发 30，缺口 120 次
+  });
+  await h.tasks.goldenfishFish({ fishTarget: 1150 });
+
+  assert.equal(h.sent.filter((s) => s.cmd === "artifact_lottery").length, 3); // 3 帧 ×10
+  assert.equal(h.state.fishDone, 1030);
+  assert.equal(h.state.items[1012], 0);
+  const endLog = h.logs.find((l) => l.message.includes("钓鱼消耗结束"));
+  assert.ok(endLog, "应有结束日志");
+  assert.ok(endLog.message.includes("黄金鱼竿不足"), `应提示鱼竿不足：${endLog.message}`);
+  assert.ok(endLog.message.includes("还差 120 次"), `应给出缺口次数：${endLog.message}`);
+  assert.ok(endLog.message.includes("约 108 根"), `应给出竿数折算（120×0.9）：${endLog.message}`);
+  assert.ok(endLog.message.includes("留待收尾阶段金砖买竿补全"), `应指向收尾补竿：${endLog.message}`);
+  assert.equal(endLog.type, "warning");
+  assert.equal(h.errorLogs().length, 0); // 库存不足是正常暂停，不算失败
+});
+
 // ---------------------------------------------------------------- 扣减校验（2026-09-29 master 口径：必须得到反馈再继续，避免盲做）
 
 test("招募消耗：余额扣减不符 → 中止步骤防止盲做", async () => {

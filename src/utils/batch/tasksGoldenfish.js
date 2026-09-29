@@ -57,6 +57,10 @@ import {
 // ⚠️ 用相对路径而非 @/ 别名：tasksGoldenfishConsume.test.js 在裸 node 环境
 // 直接 import 本文件，@/ 别名会 ERR_MODULE_NOT_FOUND（2026-09-29 踩实）
 import { runWithConnectionRetry } from "../helperTaskRunner.js";
+// 收尾模块的鱼竿/次数折算（纯逻辑，无网络依赖）。
+// 用它而不是内联写死 0.9：返还率口径只有一处定义（GOLDENFISH_ROD_RETURN_RATE），
+// 将来 master 调整返还率时日志数字自动同步，不会漂移。
+import { fishesToRods } from "../goldenfishFinishPlan.js";
 
 /**
  * 金鱼消耗目标默认值（页面可调）
@@ -640,7 +644,11 @@ export function createTasksGoldenfish(deps) {
 
   /**
    * 消耗 step：钓鱼（artifact_lottery type:2 = 黄金鱼竿 1012，10/发+余数）
-   * master 口径：只用黄金鱼竿；库存不足 = 正常暂停（商店 8 折自动补货后再跑）
+   *
+   * master 口径（2026-09-29 拍板）：**只用黄金鱼竿；库存不足 = 有多少做多少**，
+   * 不做即时买入 —— 缺口记日志（含竿数折算），**留待收尾阶段用金砖买竿补全**
+   * （买竿本身就是金砖消耗任务的实现手段，一笔支出同时推进金砖 + 钓鱼两个任务；
+   *   商店购物清单里 1012 已有 8 折口径 `GOLDENFISH_SHOP_DEFAULTS`）。
    */
   const consumeFishStep = async ({ tokenId, token, config }) => {
     const target = clampCount(config?.fishTarget ?? GOLDENFISH_CONSUME_DEFAULTS.fishTarget);
@@ -712,7 +720,7 @@ export function createTasksGoldenfish(deps) {
         (plan.alignedShort
           ? `；⏸️ 差 ${fmtNum(plan.remaining - plan.willDo)} 次不足一批(10)，按口径不做、留待最后补满`
           : plan.stockShort
-            ? `；⚠️ 黄金鱼竿不足，还差 ${fmtNum(plan.remaining - plan.willDo)} 次，等商店补货后再跑`
+            ? `；⚠️ 黄金鱼竿不足，还差 ${fmtNum(plan.remaining - plan.willDo)} 次（约 ${fmtNum(fishesToRods(plan.remaining - plan.willDo))} 根，含 10% 返还折算），留待收尾阶段金砖买竿补全`
             : ""),
       plan.stockShort ? "warning" : "success",
     );
