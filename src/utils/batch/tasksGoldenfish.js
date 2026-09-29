@@ -1540,11 +1540,40 @@ export function createTasksGoldenfish(deps) {
    * 领取邮件奖励 —— master 2026-09-30 口径：「开了很多宝箱，会得到宝箱周的
    * 返还宝箱奖励的，虽然不多，聊胜于无」。
    *
-   * 与每日任务的「领取邮件奖励」同一命令：`mail_claimallattachment { category: 0 }`
-   * （普通分类全部附件一键领取，无附件时是空操作）。放在编排里**开箱之前**跑 ——
-   * 返还宝箱先落背包，直接被开箱循环吃掉换积分，而不是等下一轮。
+   * 命令与每日任务的「领取邮件奖励」相同：`mail_claimallattachment { category: 0 }`。
+   *
+   * 🔴 收取时机闸门（master 2026-09-30 补充）：宝箱周每**消耗价值 8000 积分的宝箱**
+   * 得 1 轮奖励、**最多 4 轮** ⇒ 累积积分 ≥ 32000 才去收（4 轮全出再收，别收早了）。
+   * 放在编排**最后**：本轮消耗把累积推过 32000 后，新到的轮次也能一并收进；
+   * 返还宝箱落背包后由下一轮开箱/救援循环消化。
    */
+  const GOLDENFISH_MAIL_CLAIM_MIN_SCORE = 32000; // 8000/轮 × 最多 4 轮
+
   const claimMailStep = async ({ tokenId, token }) => {
+    const activityResp = await fetchActivityWithLimit(tokenId, token);
+    const progress = readProgressOrSkip(activityResp, token.name, "邮件领取");
+    if (!progress) return; // 进度不可读：宁可不领，不可收早
+    if (progress.boxScoreDone == null) {
+      log(
+        token.name,
+        `邮件领取跳过：活动 ${progress.activityId} 缺 task.2（宝箱）进度字段`,
+        "warning",
+      );
+      return;
+    }
+    const accumulated = Math.max(
+      0,
+      Math.floor(Number(progress.boxScoreDone) || 0),
+    );
+    if (accumulated < GOLDENFISH_MAIL_CLAIM_MIN_SCORE) {
+      log(
+        token.name,
+        `邮件领取跳过：宝箱周累积 ${fmtNum(accumulated)}/${fmtNum(GOLDENFISH_MAIL_CLAIM_MIN_SCORE)}` +
+          `（每 8000 分 1 轮 × 最多 4 轮），未满不领、别收早了`,
+        "info",
+      );
+      return;
+    }
     await sendWithRateLimit(
       tokenId,
       "mail_claimallattachment",
@@ -1552,24 +1581,28 @@ export function createTasksGoldenfish(deps) {
       token,
       8000,
     );
-    log(token.name, "邮件奖励已领取（宝箱周返还宝箱等附件，随开箱循环消化）", "info");
+    log(
+      token.name,
+      `邮件奖励已领取（宝箱周 4 轮已全出：累积 ${fmtNum(accumulated)} ≥ ${fmtNum(GOLDENFISH_MAIL_CLAIM_MIN_SCORE)}；返还宝箱进背包，下一轮开箱消化）`,
+      "info",
+    );
     return {};
   };
 
   STEPS.claimMail = claimMailStep;
 
   /**
-   * 金鱼消耗一键编排：邮件 + 招募 + 宝箱 + 钓鱼
+   * 金鱼消耗一键编排：招募 + 宝箱 + 钓鱼 + 邮件
    *
    * 2026-09-29：**招募与钓鱼并行**（独立限流），**宝箱独占串行**（背包乐观锁敏感 ——
    * 与活动任务并发时服务端会以「宝箱数量已发生变化」拒绝，见 `PARALLEL_CONSUME_STEPS` 注释）。
    * `config.serialConsume = true` 可全部回退串行。
-   * 2026-09-30：**邮件领取排最前**（串行段首位）—— 宝箱周返还宝箱走邮件，
-   * 先领进背包，随后的开箱循环直接消化（放在最后反而要等下一轮才开）。
+   * 2026-09-30：**邮件领取排最后**（串行段末位）—— 宝箱周每 8000 分 1 轮、最多 4 轮，
+   * 累积 ≥ 32000 才收（别收早了）；本轮消耗推过门槛后，新到轮次也能一并收进。
    */
   const goldenfishConsumeAll = (config) =>
     runGoldenfish(
-      ["claimMail", "consumeRecruit", "consumeBoxes", "consumeFish"],
+      ["consumeRecruit", "consumeBoxes", "consumeFish", "claimMail"],
       "金鱼消耗（招募/钓鱼并行，宝箱独占）",
       1,
       config,

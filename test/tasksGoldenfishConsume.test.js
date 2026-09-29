@@ -605,37 +605,48 @@ test("宝箱消耗：循环内领取后开普通道具，铂金箱回流进开�
 
 // -------------------------------------------- 邮件领取（2026-09-30 master 口径）
 
-test("金鱼消耗编排：邮件领取在开箱之前，返还宝箱直接进开箱循环", async () => {
+test("金鱼消耗编排：宝箱周未满 32000 不领邮件（每 8000 分 1 轮 × 最多 4 轮，别收早了）", async () => {
   const h = createHarness({
-    state: { boxScoreDone: 0, wooden: 220 }, // 保留 200 → 可开 20 = 2 批 = 20 分
+    state: { boxScoreDone: 31000, wooden: 220 }, // 本轮开 20 分 → 31020 仍 < 32000
   });
-  await h.tasks.goldenfishConsumeAll({ boxTarget: 30 });
+  await h.tasks.goldenfishConsumeAll({ boxTarget: 31010 });
 
-  const mailIdx = h.sent.findIndex((s) => s.cmd === "mail_claimallattachment");
-  const openIdx = h.sent.findIndex((s) => s.cmd === "item_openbox");
-  assert.ok(mailIdx >= 0, "编排里应有邮件领取帧");
-  assert.ok(openIdx > mailIdx, `邮件帧应在开箱帧之前（mail=${mailIdx}, openbox=${openIdx}）`);
-  assert.deepEqual(
-    h.sent[mailIdx].params,
-    { category: 0 },
-    "与每日任务同命令：mail_claimallattachment { category: 0 }",
+  assert.equal(
+    h.sent.filter((s) => s.cmd === "mail_claimallattachment").length,
+    0,
+    "累积未到 32000 不该领邮件",
   );
-  const opens = h.sent
-    .filter((s) => s.cmd === "item_openbox")
-    .map((s) => s.params);
-  assert.deepEqual(
-    opens,
-    [
-      { itemId: 2001, number: 10 },
-      { itemId: 2001, number: 10 },
-    ],
-    "木箱可开 20 个 = 2 整批",
+  const skip = h.logs.find((l) => l.message.includes("邮件领取跳过"));
+  assert.ok(skip, "应有跳过日志");
+  assert.ok(skip.message.includes("未满不领"), skip.message);
+  assert.ok(skip.message.includes("别收早了"), skip.message);
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("金鱼消耗编排：累积 ≥ 32000 → 编排末尾领取邮件（4 轮全出再收）", async () => {
+  const h = createHarness({
+    state: { boxScoreDone: 32000, wooden: 220 },
+  });
+  await h.tasks.goldenfishConsumeAll({ boxTarget: 32000 });
+
+  const mails = h.sent.filter((s) => s.cmd === "mail_claimallattachment");
+  assert.equal(mails.length, 1, "应且仅应发一帧邮件领取");
+  assert.deepEqual(mails[0].params, { category: 0 });
+  // 位置在编排最后：邮件帧之后不应再有任何消耗帧
+  const mailIdx = h.sent.findIndex((s) => s.cmd === "mail_claimallattachment");
+  const tail = h.sent.slice(mailIdx + 1).filter((s) =>
+    ["hero_recruit", "item_openbox", "artifact_lottery"].includes(s.cmd),
+  );
+  assert.equal(tail.length, 0, "邮件帧应是编排最后一步");
+  assert.ok(
+    h.logs.some((l) => l.message.includes("邮件奖励已领取")),
+    "应打领取日志",
   );
   assert.equal(h.errorLogs().length, 0);
 });
 
-test("独立领取邮件：goldenfishClaimMail 只发一帧 mail_claimallattachment", async () => {
-  const h = createHarness({});
+test("独立领取邮件：goldenfishClaimMail 只发一帧 mail_claimallattachment（需累积 ≥ 32000）", async () => {
+  const h = createHarness({ state: { boxScoreDone: 57590 } });
   await h.tasks.goldenfishClaimMail({});
 
   const mails = h.sent.filter((s) => s.cmd === "mail_claimallattachment");
@@ -683,14 +694,14 @@ test("进度不可读：三个消耗 step 全部跳过，不发任何消耗命�
   assert.ok(!sent.some((s) => s.cmd === "hero_recruit"));
   assert.ok(!sent.some((s) => s.cmd === "artifact_lottery"));
   assert.ok(!sent.some((s) => s.cmd === "item_openbox"));
-  // claimMail 不依赖活动进度 —— 进度不可读时也照常领邮件（与每日任务同命令、无条件安全）
+  // claimMail 依赖活动进度做「宝箱周 ≥ 32000」闸门 —— 进度不可读时宁可不领，不可收早
   assert.ok(
-    sent.some((s) => s.cmd === "mail_claimallattachment"),
-    "进度不可读也照常领取邮件",
+    !sent.some((s) => s.cmd === "mail_claimallattachment"),
+    "进度不可读时不应领邮件（无法核对收取时机）",
   );
-  // role_getroleinfo 只用于探测，允许发出；但每个消耗 step 必须有「进度不可读」日志
+  // 每个消耗 step（含邮件领取）都必须有「进度不可读」日志
   const unreadable = logs.filter((l) => l.message.includes("进度不可读"));
-  assert.equal(unreadable.length, 3);
+  assert.equal(unreadable.length, 4);
   assert.equal(logs.filter((l) => l.type === "error").length, 0);
 });
 
