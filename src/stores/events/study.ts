@@ -1,7 +1,17 @@
 import { isInCurrentWeek, sleep } from "@/utils/base";
 import { gameLogger } from "@/utils/logger";
 import { findAnswer } from "@/utils/studyQuestionsFromJSON";
+import { patchStudyStatus } from "../../utils/studyStatusStore.js";
 import type { EVM, XyzwSession } from ".";
+
+// 单角色 UI（StudyChallengeCard / GameStatus）仍在读 gameData.studyStatus，
+// 这里保持同步写入；批量判定一律走 studyStatusStore（按 tokenId 隔离）。
+const syncUiStatus = (data: XyzwSession, patch: Record<string, any>) => {
+  data.gameData.value.studyStatus = {
+    ...(data.gameData.value.studyStatus || {}),
+    ...patch,
+  };
+};
 
 export const StudyPlugin = ({
   onSome,
@@ -9,7 +19,7 @@ export const StudyPlugin = ({
 }: EVM) => {
   onSome(['study', 'studyresp', 'study_startgame', 'study_startgameresp'], async (data: XyzwSession) => {
     gameLogger.verbose(`收到学习答题事件: ${data.tokenId}`, data);
-    const { body, gameData, client } = data;
+    const { body, gameData, client, tokenId } = data;
     if (!body) {
       return;
     }
@@ -19,24 +29,45 @@ export const StudyPlugin = ({
     const questionList = body.questionList
     const studyId = body.role?.study?.id
 
+    // 🔴 拿不到题目就立即置 failed，避免批量侧干等 90 秒才报超时
     if (!questionList || !Array.isArray(questionList)) {
       gameLogger.error('未找到题目列表')
+      patchStudyStatus(tokenId, {
+        status: 'failed',
+        isAnswering: false,
+        error: '未找到题目列表（本周可能已完成或该功能未解锁）',
+      })
+      syncUiStatus(data, { status: 'failed', isAnswering: false })
       return
     }
 
     if (!studyId) {
       gameLogger.error('未找到学习ID')
+      patchStudyStatus(tokenId, {
+        status: 'failed',
+        isAnswering: false,
+        error: '未找到学习ID',
+      })
+      syncUiStatus(data, { status: 'failed', isAnswering: false })
       return
     }
     gameLogger.info(`找到 ${questionList.length} 道题目，学习ID: ${studyId}`)
-    // 更新答题状态
-    gameData.value.studyStatus = {
+    // 更新答题状态（按 tokenId 隔离）
+    patchStudyStatus(tokenId, {
       isAnswering: true,
       questionCount: questionList.length,
       answeredCount: 0,
       status: 'answering',
-      timestamp: Date.now()
-    }
+      timestamp: Date.now(),
+      error: null,
+    })
+    syncUiStatus(data, {
+      isAnswering: true,
+      questionCount: questionList.length,
+      answeredCount: 0,
+      status: 'answering',
+      timestamp: Date.now(),
+    })
     try {
       // 遍历题目并回答
       for (let i = 0; i < questionList.length; i++) {
@@ -44,7 +75,7 @@ export const StudyPlugin = ({
         const questionText = question.question
         const questionId = question.id
 
-        gameLogger.debug(`题目 ${i + 1}: ${questionText.substring(0, 20)}...`)
+        gameLogger.debug(`题目 ${i + 1}: ${questionText?.substring(0, 20)}...`)
 
         // 查找答案（异步）
         let answer = await findAnswer(questionText)
@@ -69,6 +100,7 @@ export const StudyPlugin = ({
         }
 
         // 更新已回答题目数量
+        patchStudyStatus(tokenId, { answeredCount: i + 1 })
         gameData.value.studyStatus.answeredCount = i + 1
 
         // 添加短暂延迟，避免请求过快
@@ -81,6 +113,13 @@ export const StudyPlugin = ({
       $emit.emit('I-study-week-forward', data)
     } catch (error) {
       gameLogger.error('处理学习答题响应失败:', error)
+      // 🔴 异常也要置终态，否则批量侧会一直等到超时
+      patchStudyStatus(tokenId, {
+        status: 'failed',
+        isAnswering: false,
+        error: `答题过程异常: ${error?.message || error}`,
+      })
+      syncUiStatus(data, { status: 'failed', isAnswering: false })
     }
   });
   //
@@ -103,9 +142,10 @@ export const StudyPlugin = ({
   // 
   onSome(['I-study-week-forward'], async (data: XyzwSession) => {
     gameLogger.info('开始领取答题奖励')
-    const { gameData, client } = data;
+    const { gameData, client, tokenId } = data;
     // 更新状态为正在领取奖励
-    gameData.value.studyStatus.status = 'claiming_rewards'
+    patchStudyStatus(tokenId, { status: 'claiming_rewards' })
+    syncUiStatus(data, { status: 'claiming_rewards' })
     // 领取所有等级的奖励 (1-10)
     for (let rewardId = 1; rewardId <= 10; rewardId++) {
       try {
@@ -121,10 +161,15 @@ export const StudyPlugin = ({
 
     gameLogger.info('一键答题完成！已尝试领取所有奖励')
 
-    // 更新状态为完成
-    gameData.value.studyStatus.status = 'completed'
+    // 更新状态为完成（按 tokenId 隔离，立即唤醒批量侧等待者）
+    patchStudyStatus(tokenId, {
+      status: 'completed',
+      isAnswering: false,
+      timestamp: Date.now(),
+    })
 
-    // 3秒后重置状态
+    // 1秒后重置 UI 状态（只动 UI，不清 studyStatusStore 的终态，
+    // 否则批量侧可能错过 completed 窗口）
     await new Promise(resolve => setTimeout(resolve, 1000))
     gameData.value.studyStatus = {
       isAnswering: false,

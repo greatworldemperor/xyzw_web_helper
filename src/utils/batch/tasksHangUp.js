@@ -10,6 +10,15 @@ import {
   RATE_LIMIT_RETRY_DELAY_MS,
   runWithRateLimitRetry,
 } from "../helperTaskRunner.js";
+import {
+  getStudyStatus,
+  resetStudyStatus,
+  waitStudyFinish,
+} from "../studyStatusStore.js";
+
+// 一轮答题的完整耗时上限：10 题 ×300ms + 1500ms + 10 个奖励 ×200ms ≈ 6.5s，
+// 留足余量到 60s；超过即判定失败，不再干等。
+const STUDY_FINISH_TIMEOUT_MS = 60000;
 
 function isHangUpRewardTimeoutError(error) {
   const message = getErrorMessage(error);
@@ -336,14 +345,9 @@ export function createTasksHangUp(deps) {
 
         await ensureConnection(tokenId);
 
-        // Reset local study status
-        tokenStore.gameData.studyStatus = {
-          isAnswering: false,
-          questionCount: 0,
-          answeredCount: 0,
-          status: "",
-          timestamp: null,
-        };
+        // 🔴 重置当前角色的答题状态（按 tokenId 隔离，不能用全局 gameData.studyStatus，
+        // 否则并发角色互相覆盖：A 误读 B 的 completed → 提前关连接 → 答案/奖励丢失）
+        resetStudyStatus(tokenId);
 
         // Send start command
         await tokenStore.sendMessageWithPromise(
@@ -353,73 +357,75 @@ export function createTasksHangUp(deps) {
           5000,
         );
 
-        // Wait for completion
-        let maxWait = 90;
-        let completed = false;
+        // 阶段日志：只做展示，判定交给 waitStudyFinish 的 Promise 握手
         let lastStatus = "";
+        const statusLogger = setInterval(() => {
+          const status = getStudyStatus(tokenId);
+          if (status.status === lastStatus) return;
+          lastStatus = status.status;
+          if (status.status === "answering") {
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${token.name} 开始答题...`,
+              type: "info",
+            });
+          } else if (status.status === "claiming_rewards") {
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${token.name} 领取奖励...`,
+              type: "info",
+            });
+          }
+        }, 500);
 
-        while (maxWait > 0 && !shouldStop.value) {
-          const status = tokenStore.gameData.studyStatus;
-
-          if (status.status !== lastStatus) {
-            lastStatus = status.status;
-            if (status.status === "answering") {
-              addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${token.name} 开始答题...`,
-                type: "info",
-              });
-            } else if (status.status === "claiming_rewards") {
-              addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${token.name} 领取奖励...`,
-                type: "info",
-              });
+        let stopTimer = null;
+        const stopWatcher = new Promise((_, reject) => {
+          stopTimer = setInterval(() => {
+            if (shouldStop.value) {
+              reject(new Error("已手动停止"));
             }
-          }
+          }, 500);
+        });
 
-          if (status.status === "completed") {
-            completed = true;
-            break;
-          }
-
-          await new Promise((r) => setTimeout(r, 1000));
-          maxWait--;
+        let completed = false;
+        try {
+          await Promise.race([
+            waitStudyFinish(tokenId, STUDY_FINISH_TIMEOUT_MS),
+            stopWatcher,
+          ]);
+          completed = true;
+        } finally {
+          clearInterval(statusLogger);
+          if (stopTimer) clearInterval(stopTimer);
         }
 
         if (completed) {
+          const status = getStudyStatus(tokenId);
           tokenStatus.value[tokenId] = "completed";
           addLog({
             time: new Date().toLocaleTimeString(),
-            message: `=== ${token.name} 答题完成 ===`,
+            message: `=== ${token.name} 答题完成（${status.answeredCount}/${status.questionCount} 题） ===`,
             type: "success",
           });
-        } else {
-          if (shouldStop.value) {
-            addLog({
-              time: new Date().toLocaleTimeString(),
-              message: `${token.name} 已停止`,
-              type: "warning",
-            });
-          } else {
-            tokenStatus.value[tokenId] = "failed";
-            addLog({
-              time: new Date().toLocaleTimeString(),
-              message: `${token.name} 答题超时或未开始`,
-              type: "error",
-            });
-          }
         }
       } catch (error) {
         console.error(error);
-        tokenStatus.value[tokenId] = "failed";
-        addLog({
-          time: new Date().toLocaleTimeString(),
-          message: `答题失败: ${error.message}`,
-          type: "error",
-        });
+        if (shouldStop.value) {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} 已停止`,
+            type: "warning",
+          });
+        } else {
+          tokenStatus.value[tokenId] = "failed";
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} 答题失败: ${error.message || "未知错误"}`,
+            type: "error",
+          });
+        }
       } finally {
-        tokenStore.closeWebSocketConnection(tokenId);
+        await tokenStore.closeWebSocketConnection(tokenId);
         releaseConnectionSlot();
         addLog({
           time: new Date().toLocaleTimeString(),
