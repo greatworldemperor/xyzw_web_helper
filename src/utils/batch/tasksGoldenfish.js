@@ -45,6 +45,7 @@ const nowText = () => new Date().toLocaleTimeString();
 import {
   BOX_POINT_STEP_COSTS,
   GOLDENFISH_CONSUME_DEFAULTS,
+  OPENBOX_BATCH_SIZE,
   WOODEN_RESERVE,
   chestScoreAvailable,
   chunkBatches,
@@ -1037,8 +1038,20 @@ export function createTasksGoldenfish(deps) {
     let total = 0;
     let lastItems = inventory ?? null;
     for (const step of steps) {
-      for (const n of chunkBatches(step.number, 10)) {
+      for (const n of chunkBatches(step.number, OPENBOX_BATCH_SIZE)) {
         if (shouldStop.value) return lastResp;
+        if (n < OPENBOX_BATCH_SIZE) {
+          // 🔴 服务端只接受整批（单帧 number 恰好 = 10）：余数批会被拒
+          //    「宝箱数量已发生变化，请重新操作」。规划层已按整批对齐
+          //    （goldenfishConsumePlan.alignDownToBatch），这里是最后一道兜底 ——
+          //    宁可少开这几个（与「差 3 次不做」同口径）也不要白发一帧被拒。
+          log(
+            token.name,
+            `⏭️ 开箱余数 ${fmtNum(n)} 个不足一批(${fmtNum(OPENBOX_BATCH_SIZE)})，跳过（服务端只认整批开箱）`,
+            "warning",
+          );
+          continue;
+        }
         if (progress) {
           // 先登记「待发帧」：若这条被服务端拒，progress 里留下的就是被拒帧的实参
           progress.pendingItemId = step.itemId;
@@ -1080,13 +1093,18 @@ export function createTasksGoldenfish(deps) {
    * 「宝箱数量已发生变化，请重新操作」→ 重新拉背包、重新规划、再发（最多 2 次）。
    * replan(role) → { steps, ...extra }；steps 为空 = 无箱可开（empty: true 返回）。
    *
-   * 🔴 2026-09-29 线上实测（17:05 / 17:23）：**重读 + 重规划 3 次全部被拒**，
-   *    说明原因不在「我们手里的快照过期」这一层。两个候选成因（见 runGoldenfish 注释）：
-   *    ① 同一个角色被两个运行同时开箱；② 服务端「开箱数」口径与 `role.items` 不一致。
-   *    最后一次尝试失败时打全诊断，其中**「并发判定」是硬证据**：
-   *      「本机这次一共发了几帧」 vs 「服务端 today:open:box 涨了几次」——
-   *      涨幅 > 本机帧数 ⇒ 多出来的调用不是本机发的 ⇒ 确有第三方在开同一个号（①）；
-   *      涨幅 ≤ 本机帧数 ⇒ 期间无人并发 ⇒ 属服务端自身判定口径问题（②）。
+   * ✅ 2026-09-29 定案（`local-data/goldenfish/batch_log1.txt` 18:14 那轮）：真凶是
+   *    **服务端只接受整批开箱（单帧 number 恰好 = 10），余数批被拒**。
+   *    排查路径（保留在此，供将来复用）：
+   *      17:05 / 17:23 首测「重读 + 重规划 3 次全被拒」⇒ 否掉「快照过期」这一层；
+   *      随后用「服务端绝对计数器」把两个候选成因机械判定干净：
+   *        · ① 同角色并发：本机帧数 vs `today:open:box` 涨幅。新日志里**全部失败号**都是
+   *          `涨 0 ≤ 本机 1 帧` + 计数器前后完全不变 + 两次读库存一致 ⇒ **① 被证伪**。
+   *      账号画像给出最后一击：失败号全是「木箱数 − 200 = 2~8」（可开 < 一批）；
+   *        而 `28c-2-625238513` 计划 885 → 切成 [10×88, 5] → **前 88 帧全成、第 89 帧(5)被拒**
+   *        （其 today:open:box 1,768→1,856 = +88，与本机成功帧数精确吻合）。
+   *      ⇒ 落点在 `OPENBOX_BATCH_SIZE` 注释里；规划层 `alignDownToBatch` 已消除余数批，
+   *        本函数最终诊断里的「并发判定」留作回归探针（正常情况下不会再出现）。
    */
   const sendOpenBoxStepsWithReread = async ({ tokenId, token, replan }) => {
     for (let attempt = 0; ; attempt += 1) {
@@ -1161,8 +1179,9 @@ export function createTasksGoldenfish(deps) {
               log(
                 token.name,
                 `ℹ️ 并发判定：服务端调用次数涨幅 ${fmtNum(deltaCalls)} ≤ 本机本次帧数 ${fmtNum(own)}` +
-                  `⇒ 这期间**没有第三方在开这个号**，拒绝来自服务端自身判定口径与 ` +
-                  `role_getroleinfo 返回的宝箱数量不一致（属客户端无法自愈的情况，请把本行发给排查人）`,
+                  `⇒ 这期间**没有第三方在开这个号**；拒绝不是并发导致。` +
+                  `若被拒帧 number < ${fmtNum(OPENBOX_BATCH_SIZE)}，就是服务端「只认整批开箱」的余数批规则` +
+                  `（已由发送层过滤，正常情况下不该再出现本行 —— 出现即回归，请把这行发给排查人）`,
                 "error",
               );
             }
@@ -1213,7 +1232,7 @@ export function createTasksGoldenfish(deps) {
     log(
       token.name,
       `宝箱库存：${chestInventoryText(role?.items)}（木箱保留 ${fmtNum(WOODEN_RESERVE)} 个不动）；` +
-        `可开积分约 ${fmtNum(chestScoreAvailable(role?.items))}；未兑换宝箱积分 ${fmtNum(role?.boxPoint)}（下一档 ${fmtNum(role?.boxPointLastReward)}）；` +
+        `可开积分约 ${fmtNum(chestScoreAvailable(role?.items))}（整批口径，单批 ${fmtNum(OPENBOX_BATCH_SIZE)} 个）；未兑换宝箱积分 ${fmtNum(role?.boxPoint)}（下一档 ${fmtNum(role?.boxPointLastReward)}）；` +
         `服务端计数器 ${openboxCounterText(role)}`,
       "info",
     );
@@ -1236,7 +1255,8 @@ export function createTasksGoldenfish(deps) {
       if (result.empty) {
         log(
           token.name,
-          `宝箱消耗暂停：积分不足且无箱可开（累积 ${fmtNum(accumulated)}/${fmtNum(target)}），等商店补货后再跑`,
+          `宝箱消耗暂停：积分不足且无箱可开（累积 ${fmtNum(accumulated)}/${fmtNum(target)}；` +
+            `可开积分按整批口径算，单批 ${fmtNum(OPENBOX_BATCH_SIZE)} 个，余数不足一批的开不动），等商店补货后再跑`,
           "warning",
         );
         return;

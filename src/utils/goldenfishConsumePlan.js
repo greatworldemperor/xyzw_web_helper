@@ -85,8 +85,32 @@ export const DIAMOND_BOX_ID = 2005;
 /** 木制宝箱保留数量（全程不动，master 2026-09-26 口径） */
 export const WOODEN_RESERVE = 200;
 
-/** 开箱命令单发上限（与 batchOpenBox 一致：10 个/发 + 余数一发） */
+/**
+ * 开箱命令单发数量。**服务端只接受整批（恰好 10）**，不是「上限」—— 2026-09-29 定案：
+ *
+ * 证据链（`local-data/goldenfish/batch_log1.txt` 18:14 那轮 + 抓包）：
+ *   1. 全部被拒帧的 number ∈ {2,3,4,5,6,7,8}，**无一 ≥ 10**；全部成功帧的 number = 10。
+ *   2. `28c-2-625238513` 计划 885 → `chunkBatches(885,10)` = `[10×88, 5]` →
+ *      日志「已发 89 帧/已开 880 个，被拒帧 2001 × 5」：**前 88 帧全成，只有最后那个剩 5 个的尾帧被拒**。
+ *      （该号服务端计数器 today:open:box 1,768→1,856 = +88，与本机成功帧数精确吻合，锁定不是并发。）
+ *   3. 真实客户端抓包 `consumption_tasks.jsonl`：item_openbox 的 body 恒为
+ *      `...6e756d626572 01 0a000000`（number = 0x0a = 10），2002/2003/2004/2001 一律 10，从不发余数。
+ *   4. 同类规则已在招募侧实证：`recruitNumber:3` 被服务端拒（见 planCountConsume 的 alignDown）。
+ *
+ * ⇒ 每档「真正可开数量」= `alignDownToBatch(可用数)`；余数（<10）**根本开不动**，
+ *    与「差 3 次不做就不做了」同一口径（master 2026-09-29）。
+ */
 export const OPENBOX_BATCH_SIZE = 10;
+
+/**
+ * 向下对齐到整批（服务端开箱/招募/钓鱼都只认整批）。
+ * 例：`alignDownToBatch(208-200=8)` → 0（开不动）；`alignDownToBatch(885)` → 880。
+ */
+export const alignDownToBatch = (count, size = OPENBOX_BATCH_SIZE) => {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  const s = Math.max(1, Math.floor(Number(size) || 1));
+  return Math.floor(n / s) * s;
+};
 /** 招募命令单发数量（hero_recruit recruitNumber，抓包口径 10） */
 export const RECRUIT_BATCH_SIZE = 10;
 /** 钓鱼命令单发数量（artifact_lottery lotteryNumber，抓包口径 10） */
@@ -197,15 +221,25 @@ export const readChestInventory = (items) => {
   return out;
 };
 
-/** 手里宝箱可开总分：不含钻石箱；木箱扣除保留量（Number(null)===0 陷阱，显式判） */
-export const chestScoreAvailable = (inventory, { woodenReserve = WOODEN_RESERVE } = {}) => {
+/**
+ * 手里宝箱**真正可开**的总分：不含钻石箱；木箱扣除保留量；每档再向下对齐到整批
+ * （服务端只认整批开箱，余数开不动 —— 见 OPENBOX_BATCH_SIZE）。
+ * `Number(null)===0` 陷阱：显式判。
+ */
+export const chestScoreAvailable = (
+  inventory,
+  { woodenReserve = WOODEN_RESERVE, batchSize = OPENBOX_BATCH_SIZE } = {},
+) => {
   if (!inventory) return 0;
   const inv = readChestInventory(inventory);
-  const wooden = Math.max(0, inv[WOODEN_BOX_ID] - Math.max(0, woodenReserve));
+  const wooden = alignDownToBatch(
+    Math.max(0, inv[WOODEN_BOX_ID] - Math.max(0, woodenReserve)),
+    batchSize,
+  );
   return (
-    inv[2004] * CHEST_POINTS[2004] +
-    inv[2003] * CHEST_POINTS[2003] +
-    inv[2002] * CHEST_POINTS[2002] +
+    alignDownToBatch(inv[2004], batchSize) * CHEST_POINTS[2004] +
+    alignDownToBatch(inv[2003], batchSize) * CHEST_POINTS[2003] +
+    alignDownToBatch(inv[2002], batchSize) * CHEST_POINTS[2002] +
     wooden * CHEST_POINTS[WOODEN_BOX_ID]
   );
 };
@@ -213,13 +247,17 @@ export const chestScoreAvailable = (inventory, { woodenReserve = WOODEN_RESERVE 
 /**
  * 推进期一轮「全开」清单（master 伪代码 open_all_boxes 的可用版）：
  * 铂金 → 黄金 → 青铜 → 木箱（超出保留量的部分）；钻石宝箱一律不开。
- * 返回 [{ itemId, number }]（number 为该箱型开箱总数，发送时按 10/发切片）。
+ * 每档数量**向下对齐到整批**，返回 [{ itemId, number }]（number 已是 10 的整数倍，
+ * 发送时按 10/发切片，绝不会产生 <10 的尾帧）。
  */
-export const planOpenAll = (inventory, { woodenReserve = WOODEN_RESERVE } = {}) => {
+export const planOpenAll = (
+  inventory,
+  { woodenReserve = WOODEN_RESERVE, batchSize = OPENBOX_BATCH_SIZE } = {},
+) => {
   const inv = readChestInventory(inventory);
   const steps = [];
   const push = (itemId, count) => {
-    const n = Math.max(0, Math.floor(Number(count) || 0));
+    const n = alignDownToBatch(count, batchSize);
     if (n > 0) steps.push({ itemId, number: n });
   };
   push(2004, inv[2004]);
@@ -232,13 +270,21 @@ export const planOpenAll = (inventory, { woodenReserve = WOODEN_RESERVE } = {}) 
 /**
  * 差值精确开箱（master 伪代码 open_boxes）：从铂金往下，每档
  *   planned_score = min(remaining, 该档可开总分)
- *   planned_boxes = ceil(planned_score / 单箱分)   ← ceil 保证目标达成，
+ *   planned_batches = ceil(planned_score / 单批分)   ← ceil 保证目标达成，
  *     超出部分留在未兑换积分里（不兑换即不损失，与利润最大化一致）
+ *   ⚠️ 只能整批开：每档可开数先向下对齐，需求量再**向上**取整到整批
+ *      （代价是超开 ≤ 一批；实践里推进循环已把铂金/黄金/青铜开光，这里基本只用木箱，
+ *        一批木箱 = 10 分，超开 ≤ 9 分，可忽略）
  * @returns {{ steps: [{itemId, number}], remainingScore: number }}
  *   remainingScore = 全部开完后仍差的积分（0 = 目标可达）
  */
-export const planPreciseOpen = (remainingScore, inventory, { woodenReserve = WOODEN_RESERVE } = {}) => {
+export const planPreciseOpen = (
+  remainingScore,
+  inventory,
+  { woodenReserve = WOODEN_RESERVE, batchSize = OPENBOX_BATCH_SIZE } = {},
+) => {
   const inv = readChestInventory(inventory);
+  const size = Math.max(1, Math.floor(Number(batchSize) || 1));
   const steps = [];
   let remaining = Math.max(0, Math.floor(Number(remainingScore) || 0));
   const tiers = [2004, 2003, 2002, WOODEN_BOX_ID];
@@ -249,10 +295,12 @@ export const planPreciseOpen = (remainingScore, inventory, { woodenReserve = WOO
     if (itemId === WOODEN_BOX_ID) {
       count = Math.max(0, count - Math.max(0, woodenReserve));
     }
+    count = alignDownToBatch(count, size);
     if (count <= 0) continue;
     const totalScore = count * pts;
     const plannedScore = Math.min(remaining, totalScore);
-    const plannedBoxes = Math.min(count, Math.ceil(plannedScore / pts));
+    const batches = Math.min(count / size, Math.ceil(plannedScore / (size * pts)));
+    const plannedBoxes = batches * size;
     steps.push({ itemId, number: plannedBoxes });
     remaining -= plannedBoxes * pts;
   }
@@ -472,6 +520,8 @@ export default {
   GOLDENFISH_TASK_NAMES,
   CHEST_POINTS,
   WOODEN_RESERVE,
+  OPENBOX_BATCH_SIZE,
+  alignDownToBatch,
   chunkBatches,
   planCountConsume,
   readChestInventory,

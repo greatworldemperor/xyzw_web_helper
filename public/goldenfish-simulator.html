@@ -375,6 +375,13 @@
   var PLATINUM_BOX_ID = 2004;
   var WOODEN_RESERVE = 200;
   var OPENBOX_BATCH_SIZE = 10;
+  // 服务端只接受整批开箱（单帧 number 恰好 = 10），余数批会被拒
+  // 「宝箱数量已发生变化」→ 可开数量一律向下对齐到整批（2026-09-29 定案）
+  var alignDownToBatch = (count, size = OPENBOX_BATCH_SIZE) => {
+    const n = Math.max(0, Math.floor(Number(count) || 0));
+    const s = Math.max(1, Math.floor(Number(size) || 1));
+    return Math.floor(n / s) * s;
+  };
   var BOX_POINT_STEP_COSTS = [10, 20, 30, 40, 80, 100, 70, 50, 100];
   var BOX_POINT_STEP_ITEMS = [2002, 2002, 2003, 2004, 2004, 2004, 2003, 2004, 2005];
   var chunkBatches = (count, size = OPENBOX_BATCH_SIZE) => {
@@ -431,17 +438,17 @@
     }
     return out;
   };
-  var chestScoreAvailable = (inventory, { woodenReserve = WOODEN_RESERVE } = {}) => {
+  var chestScoreAvailable = (inventory, { woodenReserve = WOODEN_RESERVE, batchSize = OPENBOX_BATCH_SIZE } = {}) => {
     if (!inventory) return 0;
     const inv = readChestInventory(inventory);
-    const wooden = Math.max(0, inv[WOODEN_BOX_ID] - Math.max(0, woodenReserve));
-    return inv[2004] * CHEST_POINTS[2004] + inv[2003] * CHEST_POINTS[2003] + inv[2002] * CHEST_POINTS[2002] + wooden * CHEST_POINTS[WOODEN_BOX_ID];
+    const wooden = alignDownToBatch(Math.max(0, inv[WOODEN_BOX_ID] - Math.max(0, woodenReserve)), batchSize);
+    return alignDownToBatch(inv[2004], batchSize) * CHEST_POINTS[2004] + alignDownToBatch(inv[2003], batchSize) * CHEST_POINTS[2003] + alignDownToBatch(inv[2002], batchSize) * CHEST_POINTS[2002] + wooden * CHEST_POINTS[WOODEN_BOX_ID];
   };
-  var planOpenAll = (inventory, { woodenReserve = WOODEN_RESERVE } = {}) => {
+  var planOpenAll = (inventory, { woodenReserve = WOODEN_RESERVE, batchSize = OPENBOX_BATCH_SIZE } = {}) => {
     const inv = readChestInventory(inventory);
     const steps = [];
     const push = (itemId, count) => {
-      const n = Math.max(0, Math.floor(Number(count) || 0));
+      const n = alignDownToBatch(count, batchSize);
       if (n > 0) steps.push({ itemId, number: n });
     };
     push(2004, inv[2004]);
@@ -450,8 +457,9 @@
     push(WOODEN_BOX_ID, Math.max(0, inv[WOODEN_BOX_ID] - Math.max(0, woodenReserve)));
     return steps;
   };
-  var planPreciseOpen = (remainingScore, inventory, { woodenReserve = WOODEN_RESERVE } = {}) => {
+  var planPreciseOpen = (remainingScore, inventory, { woodenReserve = WOODEN_RESERVE, batchSize = OPENBOX_BATCH_SIZE } = {}) => {
     const inv = readChestInventory(inventory);
+    const size = Math.max(1, Math.floor(Number(batchSize) || 1));
     const steps = [];
     let remaining = Math.max(0, Math.floor(Number(remainingScore) || 0));
     const tiers = [2004, 2003, 2002, WOODEN_BOX_ID];
@@ -462,10 +470,12 @@
       if (itemId === WOODEN_BOX_ID) {
         count = Math.max(0, count - Math.max(0, woodenReserve));
       }
+      count = alignDownToBatch(count, size);
       if (count <= 0) continue;
       const totalScore = count * pts;
       const plannedScore = Math.min(remaining, totalScore);
-      const plannedBoxes = Math.min(count, Math.ceil(plannedScore / pts));
+      const batches = Math.min(count / size, Math.ceil(plannedScore / (size * pts)));
+      const plannedBoxes = batches * size;
       steps.push({ itemId, number: plannedBoxes });
       remaining -= plannedBoxes * pts;
     }
@@ -1034,6 +1044,10 @@
         case "item_openbox": {
           const itemId = Number(params.itemId);
           const want = Math.max(0, Math.floor(Number(params.number) || 0));
+          // 服务端只认整批开箱：余数批（<10）被拒「宝箱数量已发生变化」
+          if (want < OPENBOX_BATCH_SIZE) {
+            return { code: 200020, error: "\u5B9D\u7BB1\u6570\u91CF\u5DF2\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u64CD\u4F5C" };
+          }
           const pts = CHEST_POINTS[itemId];
           if (!pts) return { role: { items: { ...items }, boxPoint, boxPointLastReward: boxPointPos } };
           const got = take(itemId, want);
@@ -1250,7 +1264,8 @@
           }
           let lastResp = null;
           for (const step of openPlan) {
-            for (const n of chunkBatches(step.number, 10)) {
+            for (const n of chunkBatches(step.number, OPENBOX_BATCH_SIZE)) {
+              if (n < OPENBOX_BATCH_SIZE) continue; // 服务端只认整批，余数批会被拒
               lastResp = send("item_openbox", { itemId: step.itemId, number: n });
               stats.boxFrames += 1;
             }
@@ -1294,7 +1309,8 @@
             `\u5B9D\u7BB1\u5DEE\u503C\u7CBE\u786E\u5F00\u7BB1\uFF1A\u5DEE ${fmt(remaining)} \u5206\uFF0C\u8BA1\u5212\u5F00 ${steps2.map((s) => `${s.itemId}\xD7${s.number}`).join("\u3001") || "\u65E0"}`
           );
           for (const step of steps2) {
-            for (const n of chunkBatches(step.number, 10)) {
+            for (const n of chunkBatches(step.number, OPENBOX_BATCH_SIZE)) {
+              if (n < OPENBOX_BATCH_SIZE) continue; // 服务端只认整批，余数批会被拒
               send("item_openbox", { itemId: step.itemId, number: n });
               stats.boxFrames += 1;
             }

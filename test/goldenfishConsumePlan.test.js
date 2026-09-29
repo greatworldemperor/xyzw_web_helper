@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 
 import {
   chunkBatches,
+  alignDownToBatch,
   planCountConsume,
   readChestInventory,
   chestScoreAvailable,
@@ -23,6 +24,7 @@ import {
   isGoldenfishTaskMap,
   isFullGoldenfishTaskMap,
   GOLDENFISH_CONSUME_DEFAULTS,
+  OPENBOX_BATCH_SIZE,
   CHEST_POINTS,
   BOX_POINT_ROUND_TOTAL,
 } from "../src/utils/goldenfishConsumePlan.js";
@@ -187,19 +189,49 @@ test("planOpenAll: 顺序铂金→黄金→青铜→木箱，钻石不开，木�
 });
 
 test("planOpenAll: 木箱不超保留量则不开木箱", () => {
-  const steps = planOpenAll({ 2001: 150, 2004: 2 });
-  assert.deepEqual(steps, [{ itemId: 2004, number: 2 }]);
+  const steps = planOpenAll({ 2001: 150, 2004: 12 });
+  assert.deepEqual(steps, [{ itemId: 2004, number: 10 }]);
+});
+
+test("planOpenAll: 每档向下对齐到整批（服务端只认整批开箱，余数开不动）", () => {
+  // 铂金 12→10、黄金 5→0、青铜 27→20、木箱 208−200=8→0
+  const steps = planOpenAll({ 2001: 208, 2002: 27, 2003: 5, 2004: 12 });
+  assert.deepEqual(steps, [
+    { itemId: 2004, number: 10 },
+    { itemId: 2002, number: 20 },
+  ]);
+  // 全部 number 必为整批倍数 → chunkBatches 切出来绝不会出现 <10 的尾帧
+  assert.ok(steps.every((s) => s.number % OPENBOX_BATCH_SIZE === 0));
+  // 只剩余数（<10）时：开不动 → 空清单（正是线上失败号的画像）
+  assert.deepEqual(planOpenAll({ 2001: 208, 2002: 7, 2003: 0, 2004: 0 }), []);
+});
+
+test("alignDownToBatch: 向下对齐到整批", () => {
+  assert.equal(alignDownToBatch(0), 0);
+  assert.equal(alignDownToBatch(7), 0);
+  assert.equal(alignDownToBatch(10), 10);
+  assert.equal(alignDownToBatch(885), 880);
+  assert.equal(alignDownToBatch(208), 200);
+  assert.equal(alignDownToBatch(null), 0);
 });
 
 // --------------------------------------------------- 差值精确开箱
 
 test("planPreciseOpen: ceil 保证达标，超出留在未兑换积分", () => {
-  // 差 990：铂金 10 个(500) 后剩 490 → 黄金 ceil(490/20)=25 个(500分，超 10 分)
+  // 差 990：铂金 10 个(500) 后剩 490 → 黄金需 25 个，但只能整批 → 取 30 个（600 分，超 110）
   const { steps, remainingScore } = planPreciseOpen(990, INV_A);
   assert.deepEqual(steps, [
     { itemId: 2004, number: 10 },
-    { itemId: 2003, number: 25 },
+    { itemId: 2003, number: 30 },
   ]);
+  assert.equal(remainingScore, 0);
+});
+
+test("planPreciseOpen: 每档 number 必为整批倍数（余数批会被服务端拒）", () => {
+  // 差 45：铂金 0（INV 里铂金 2 → 不足一批，开不动）→ 青铜需 5 个 → 补齐到 10 个
+  const { steps, remainingScore } = planPreciseOpen(45, { 2004: 2, 2002: 100 });
+  assert.deepEqual(steps, [{ itemId: 2002, number: 10 }]);
+  assert.ok(steps.every((s) => s.number % OPENBOX_BATCH_SIZE === 0));
   assert.equal(remainingScore, 0);
 });
 

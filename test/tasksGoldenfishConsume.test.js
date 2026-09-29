@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { createTasksGoldenfish } from "../src/utils/batch/tasksGoldenfish.js";
-import { CHEST_POINTS } from "../src/utils/goldenfishConsumePlan.js";
+import { CHEST_POINTS, OPENBOX_BATCH_SIZE } from "../src/utils/goldenfishConsumePlan.js";
 
 /**
  * 模拟服务端：维护活动进度与库存，按命令推进状态
@@ -99,6 +99,15 @@ function createHarness({ state } = {}) {
             throw new Error("服务器错误: 200020 - 宝箱数量已发生变化，请重新操作");
           }
           const n = params?.number ?? 0;
+          // 🔴 服务端**只接受整批开箱**（单帧 number 恰好 = 10）：余数批被拒
+          //    「宝箱数量已发生变化，请重新操作」。定案证据见
+          //    goldenfishConsumePlan.js 的 OPENBOX_BATCH_SIZE 注释
+          //    （28c 计划 885 → 前 88 帧×10 全成、第 89 帧(5)被拒；全部被拒帧 number < 10）。
+          //    被拒也计数，保证计数器判据与线上一致。
+          if (n < OPENBOX_BATCH_SIZE) {
+            openboxCallStat += 1 + phantomCallsPerOpenbox;
+            throw new Error("服务器错误: 200020 - 宝箱数量已发生变化，请重新操作");
+          }
           const pts = CHEST_POINTS[params?.itemId] ?? 0;
           st.items[params?.itemId] = Math.max(0, (st.items[params?.itemId] ?? 0) - n);
           st.boxScoreDone += n * pts;
@@ -268,10 +277,10 @@ test("招募消耗：余额逐帧正常扣减 → 校验通过不误杀", async 
 
 // ---------------------------------------------------------------- 宝箱
 
-test("宝箱消耗：差值精确开箱（98950 + 可开 550 ≥ 99000 → 只开 1 个铂金）", async () => {
+test("宝箱消耗：差值精确开箱（整批口径，余数补齐到一整批）", async () => {
   const h = createHarness({
     state: {
-      boxScoreDone: 98950,
+      boxScoreDone: 98900,
       wooden: 350,
       bronze: 20,
       gold: 5,
@@ -280,15 +289,31 @@ test("宝箱消耗：差值精确开箱（98950 + 可开 550 ≥ 99000 → 只�
   });
   await h.tasks.goldenfishBoxes({ boxTarget: 99000 });
 
-  // 98050? no: 98950 + 550 = 99500 ≥ 99000 → 不进推进循环
-  // 差 50：planPreciseOpen → 铂金 ceil(50/50)=1 个
+  // 可开（整批口径）：铂金 2→0、黄金 5→0、青铜 20、木箱 350−200=150 → 20×10 + 150×1 = 350
+  // 98900 + 350 = 99250 ≥ 99000 → 不进推进循环；差 100 → 青铜需 10 个 = 恰好一整批
   assert.deepEqual(
     h.sent.filter((s) => s.cmd === "item_openbox").map((s) => s.params),
-    [{ itemId: 2004, number: 1 }],
+    [{ itemId: 2002, number: 10 }],
   );
   assert.equal(h.state.boxScoreDone, 99000);
   assert.equal(h.errorLogs().length, 0);
   assert.ok(h.logs.some((l) => l.message.includes("宝箱消耗结束")));
+});
+
+test("宝箱消耗：只有余数（木箱 208−200=8，不足一批）→ 一帧不发、提示开不动（线上失败号画像）", async () => {
+  // batch_log1.txt 里 9 个失败号的真实画像：木箱 202~208、青铜/黄金/铂金全 0、钻石大量（一律不开）
+  const h = createHarness({
+    state: { boxScoreDone: 66950, wooden: 208, diamond: 234 },
+  });
+  await h.tasks.goldenfishBoxes({ boxTarget: 99000 });
+
+  // 可开积分按整批算 = 0 → 不进入开箱（旧版会发 2001×8 被服务端拒三次）
+  assert.equal(h.sent.filter((s) => s.cmd === "item_openbox").length, 0);
+  assert.ok(h.logs.some((l) => l.message.includes("无箱可开")));
+  assert.ok(h.logs.some((l) => l.message.includes("余数不足一批的开不动")));
+  // 正常暂停，不是失败
+  assert.equal(h.errorLogs().length, 0);
+  assert.ok(!h.logs.some((l) => l.message.includes("开箱被服务端拒绝")));
 });
 
 test("宝箱消耗：数量变化乐观锁 → 重新读库存重试成功（2026-09-29）", async () => {
@@ -311,7 +336,7 @@ test("宝箱消耗：数量变化乐观锁 → 重新读库存重试成功（202
   assert.equal(h.errorLogs().length, 0);
 });
 
-test("宝箱消耗：推进循环全开（钻石不开/木箱留200）→ 兑换 → 无箱可开暂停", async () => {
+test("宝箱消耗：推进循环全开（钻石不开/木箱留200/余数不整批不开）→ 兑换 → 无箱可开暂停", async () => {
   const h = createHarness({
     state: {
       boxScoreDone: 98000,
@@ -324,21 +349,25 @@ test("宝箱消耗：推进循环全开（钻石不开/木箱留200）→ 兑换
   });
   await h.tasks.goldenfishBoxes({ boxTarget: 99000 });
 
-  // 全开清单：铂金2 + 黄金5 + 青铜10+10 + 木箱10×15（350-200），共 19 发
+  // 全开清单（整批对齐）：铂金 2→0、黄金 5→0、青铜 20→10+10、木箱 150→10×15，共 17 发
   const opens = h.sent.filter((s) => s.cmd === "item_openbox").map((s) => s.params);
-  assert.equal(opens.length, 19);
+  assert.equal(opens.length, 17);
+  assert.deepEqual(opens.filter((o) => o.itemId === 2004), []); // 铂金 2 个不足一批 → 不开
+  assert.deepEqual(opens.filter((o) => o.itemId === 2003), []); // 黄金 5 个不足一批 → 不开
   assert.deepEqual(
-    opens.filter((o) => o.itemId === 2004),
-    [{ itemId: 2004, number: 2 }],
+    opens.filter((o) => o.itemId === 2002),
+    Array.from({ length: 2 }, () => ({ itemId: 2002, number: 10 })),
   );
   assert.deepEqual(
     opens.filter((o) => o.itemId === 2001),
     Array.from({ length: 15 }, () => ({ itemId: 2001, number: 10 })),
   );
+  // 每帧都必须是整批（服务端只认整批，余数批会被拒）
+  assert.ok(opens.every((o) => o.number % OPENBOX_BATCH_SIZE === 0));
   // 钻石宝箱一律不开
   assert.ok(!opens.some((o) => o.itemId === 2005));
-  // 积分推进 550 → 98550，第二轮无箱可开 → 暂停
-  assert.equal(h.state.boxScoreDone, 98550);
+  // 积分推进 350 → 98350，第二轮无箱可开 → 暂停
+  assert.equal(h.state.boxScoreDone, 98350);
   assert.ok(h.logs.some((l) => l.message.includes("无箱可开")));
   assert.equal(h.errorLogs().length, 0);
 });
@@ -579,12 +608,13 @@ test("限流 400340：多账号限流互不影响，各自跳过本步骤", asyn
 
 // ---------------------------------------------------------------- 并行（2026-09-29 master：三者独立限流，不必串行）
 
-/** 三路都有活干的状态：招募差 100 / 宝箱差 100 分 / 钓鱼差 100 次（库存均够） */
+/** 三路都有活干的状态：招募差 100 / 宝箱差 100 分 / 钓鱼差 100 次（库存均够）
+ *  宝箱给「青铜 20」而不是「铂金 2」：整批口径下铂金 2 个开不动，青铜 20 恰好够两批 */
 const PARALLEL_STATE = {
   recruitDone: 3800,
   recruitTickets: 120,
   boxScoreDone: 98900,
-  platinum: 2,
+  bronze: 20,
   fishDone: 1000,
   goldRods: 120,
 };
@@ -692,8 +722,8 @@ test("宝箱消耗：三次重试全被拒 → 诊断一次给全（计划/已�
     `最终诊断应含第几次与计划：${finalLog.message}`,
   );
   assert.ok(
-    finalLog.message.includes("被拒帧 itemId 2004 × 2"),
-    `最终诊断应含被拒帧实参（铂金只剩 2 个 → 首帧为 2004×2）：${finalLog.message}`,
+    finalLog.message.includes("被拒帧 itemId 2002 × 10"),
+    `最终诊断应含被拒帧实参（整批口径下首帧为青铜 2002×10）：${finalLog.message}`,
   );
   assert.ok(
     h.logs.some((l) => l.message.includes("诊断：开箱前读到的库存")),
