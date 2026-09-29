@@ -48,12 +48,15 @@ function createHarness({ state } = {}) {
       2003: state?.gold ?? 0,
       2004: state?.platinum ?? 0,
       2005: state?.diamond ?? 0,
+      5287: state?.packs ?? 0, // 普通道具（金鱼活动，item_openpack 开包）
     },
   };
   let rateLimitOnce = state?.rateLimitOnce ?? false; // 下一次命令抛 400340
   let openboxFailOnce = state?.openboxFailOnce ?? false; // 下一次 item_openbox 抛乐观锁
   const openboxAlwaysFail = state?.openboxAlwaysFail ?? false; // 每次 item_openbox 都抛乐观锁
   let recruitDeductHack = state?.recruitDeductHack ?? 0; // 第一帧招募多扣（触发扣减校验）
+  // 普通道具开包的铂金箱期望（默认 0.205/个，与 GOLDENFISH_PACK_RETURNS 一致；测试可覆盖）
+  const packPlatinumYield = state?.packPlatinumYield ?? 0.205;
   // 服务端绝对计数器（today:open:box = 开箱调用次数；activity:open:box = 开箱积分）
   // phantomCallsPerOpenbox = 每次调用开箱时「别处」额外产生的调用次数（模拟第三方并发开同一个号）
   const phantomCallsPerOpenbox = state?.phantomCallsPerOpenbox ?? 0;
@@ -123,6 +126,24 @@ function createHarness({ state } = {}) {
           openboxCallStat += 1 + phantomCallsPerOpenbox;
           openboxScoreStat += n * pts;
           return { role: { ...rolePayload().role, items: st.items } };
+        }
+        case "item_openpack": {
+          // 开包（item_openpack { itemId, number, index }，单次 ≤999）：
+          // 普通道具 5287 按期望口径返还 —— 铂金箱 = round(n × 0.205)、招募令 = round(n × 0.5)。
+          // 数量不足按服务端行为拒绝（200020 系）。
+          const n = params?.number ?? 0;
+          const held = st.items[params?.itemId] ?? 0;
+          if (n > held) {
+            throw new Error("服务器错误: 200020 - 道具数量不足，请重新操作");
+          }
+          st.items[params?.itemId] = held - n;
+          if (params?.itemId === 5287 && n > 0) {
+            const plat = Math.round(n * packPlatinumYield);
+            if (plat > 0) st.items[2004] = (st.items[2004] ?? 0) + plat;
+            const recruit = Math.round(n * 0.5);
+            if (recruit > 0) st.items[1001] = (st.items[1001] ?? 0) + recruit;
+          }
+          return { role: rolePayload().role };
         }
         case "item_claimboxpointreward": {
           // 逐档兑换。**金鱼消耗路径已不再调用它**（改成 ≥1000 一键兑光了），
@@ -461,6 +482,124 @@ test("宝箱消耗：积分 < 1000（999）→ 完全不兑换，一帧不发，
     h.logs.some((l) => l.message.includes("未到一键兑换门槛")),
     "应说明为何本次不兑换",
   );
+  assert.equal(h.errorLogs().length, 0);
+});
+
+// -------------------------------------------- 无箱可开救援循环（2026-09-29 深夜口径）
+
+test("宝箱消耗：无箱可开 → 一键领取 + 开普通道具救援，铂金箱回流完成目标（39b 案例）", async () => {
+  // 线上 39b 画像：木箱 204（保留 200 → 可开 4 < 一批）、未兑换 57,960、普通道具没开 ⇒ 旧版直接暂停
+  const h = createHarness({
+    state: {
+      boxScoreDone: 0,
+      boxPoint: 57960,
+      boxPointLastReward: 0,
+      wooden: 204,
+      packs: 1000,
+    },
+  });
+  await h.tasks.goldenfishBoxes({ boxTarget: 1000 });
+
+  // 救援链路日志：领取 → 开包 → 救援成功
+  assert.ok(
+    h.logs.some((l) => l.message.includes("一键领取换宝箱")),
+    "应有「一键领取换宝箱」救援日志",
+  );
+  assert.ok(
+    h.logs.some((l) => l.message.includes("开普通道具(5287)")),
+    "应开普通道具",
+  );
+  assert.ok(
+    h.logs.some((l) => l.message.includes("领取/开包救援成功")),
+    "应打救援成功日志",
+  );
+  // 开包帧：1000 个 = 999 + 1 两批
+  const packs = h.sent
+    .filter((s) => s.cmd === "item_openpack")
+    .map((s) => s.params);
+  assert.deepEqual(
+    packs.map((p) => p.number),
+    [999, 1],
+    `开包应按 999 上限分批（实际 ${JSON.stringify(packs)}）`,
+  );
+  assert.ok(
+    packs.every((p) => p.itemId === 5287 && p.index === 0),
+    "开包命令字段应对齐抓包（itemId 5287 / index 0）",
+  );
+  // 一键领取发生（≥ 门槛）
+  assert.ok(
+    h.sent.some((s) => s.cmd === "item_batchclaimboxpointreward"),
+    "未兑换 ≥ 1000 应一键领取",
+  );
+  // 1000 包 × 0.205 = 205 铂金回流 → 目标 1000 达成 → 成功结束而非暂停
+  assert.ok(
+    h.logs.some((l) => l.message.includes("宝箱消耗结束")),
+    "救援后应完成目标",
+  );
+  assert.ok(!h.logs.some((l) => l.message.includes("宝箱消耗暂停")));
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("宝箱消耗：救援后仍无可开积分 → 暂停（未达门槛不兑 + 普通道具已开尽）", async () => {
+  const h = createHarness({
+    state: {
+      boxScoreDone: 0,
+      boxPoint: 999, // < 1000 → 不兑
+      wooden: 204, // 保留 200 → 可开 4 < 一批
+      packs: 10, // 开出 round(10×0.205)=2 铂金 → 凑不满一批
+    },
+  });
+  await h.tasks.goldenfishBoxes({ boxTarget: 99000 });
+
+  assert.equal(
+    h.sent.filter((s) => s.cmd === "item_openpack").length,
+    1,
+    "普通道具应被开掉（10 个一批）",
+  );
+  assert.equal(
+    h.sent.filter((s) => s.cmd === "item_batchclaimboxpointreward").length,
+    0,
+    "未达门槛不发一键兑换",
+  );
+  const pause = h.logs.find((l) => l.message.includes("宝箱消耗暂停"));
+  assert.ok(pause, "应有暂停日志");
+  assert.ok(pause.message.includes("未达门槛不兑"), pause.message);
+  assert.ok(pause.message.includes("已开尽"), pause.message);
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("宝箱消耗：循环内领取后开普通道具，铂金箱回流进开箱/精确开箱", async () => {
+  const h = createHarness({
+    state: {
+      boxScoreDone: 0,
+      boxPoint: 1200,
+      boxPointLastReward: 0,
+      platinum: 20, // round1 开 2 批 = +1000 分
+      packs: 100, // 领取后开包 → round(100×0.205)=21 铂金回流
+    },
+  });
+  await h.tasks.goldenfishBoxes({ boxTarget: 1500 });
+
+  assert.equal(
+    h.sent.filter((s) => s.cmd === "item_openpack").length,
+    1,
+    "循环内应开一次普通道具（100 个 ≤ 999 一批）",
+  );
+  assert.ok(
+    h.sent.some((s) => s.cmd === "item_batchclaimboxpointreward"),
+    "1200 ≥ 1000 应一键领取",
+  );
+  // 开箱帧全为整批铂金：round1 2 批 + 精确开箱 1 批 = 3 批
+  const opens = h.sent
+    .filter((s) => s.cmd === "item_openbox")
+    .map((s) => s.params);
+  assert.ok(
+    opens.every((o) => o.itemId === 2004 && o.number === OPENBOX_BATCH_SIZE),
+    `开箱帧应全是整批铂金（实际 ${JSON.stringify(opens)}）`,
+  );
+  assert.equal(opens.length, 3, `应共开 3 批（实际 ${opens.length}）`);
+  assert.equal(h.state.boxScoreDone, 1500, "累积应到 1500");
+  assert.ok(h.logs.some((l) => l.message.includes("宝箱消耗结束")));
   assert.equal(h.errorLogs().length, 0);
 });
 

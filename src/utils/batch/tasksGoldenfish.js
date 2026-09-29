@@ -64,7 +64,10 @@ import { runWithConnectionRetry } from "../helperTaskRunner.js";
 // 收尾模块的鱼竿/次数折算（纯逻辑，无网络依赖）。
 // 用它而不是内联写死 0.9：返还率口径只有一处定义（GOLDENFISH_ROD_RETURN_RATE），
 // 将来 master 调整返还率时日志数字自动同步，不会漂移。
-import { fishesToRods } from "../goldenfishFinishPlan.js";
+import {
+  fishesToRods,
+  GOLDENFISH_PACK_RETURNS,
+} from "../goldenfishFinishPlan.js";
 
 /**
  * 金鱼消耗目标默认值（页面可调）
@@ -1155,6 +1158,50 @@ export function createTasksGoldenfish(deps) {
     return { batched };
   };
 
+  /** 普通道具 itemId（本期金鱼活动）—— 轮次/积分奖励产出，`item_openpack` 开包 */
+  const GOLDENFISH_PACK_ITEM_ID = 5287;
+  /** item_openpack 单次 number 上限（抓包实证 3005 开 6207 = 6×999 + 213，与 tasksItem 口径一致） */
+  const ITEM_OPENPACK_MAX_PER_CALL = 999;
+
+  /**
+   * 开普通道具（5287）—— master 2026-09-29 深夜口径（39b 案例）：
+   *   「开金鱼活动的普通道具，平均每个能得到 0.205 个铂金宝箱，虽然不多但是也能增加一些的」。
+   *
+   * 每个普通道具的期望返还（GOLDENFISH_PACK_RETURNS，单一口径来源）：
+   *   0.5 招募令 / 0.205 铂金宝箱 / 0.25 特殊道具(5286) / 107.304 金砖。
+   * 铂金箱开掉 = 50 积分/批，回流给开箱循环；特殊道具照常进背包
+   * （收尾兑换金鱼的硬通货 —— 先开后开总量不变，早开还能把铂金箱吃进本活动积分）。
+   *
+   * `item_openpack` 单次上限 999，自动分批；发完由调用方重读 role。
+   */
+  const openOrdinaryPacks = async ({ tokenId, token, role }) => {
+    const raw = readItemCountStrict(role?.items, GOLDENFISH_PACK_ITEM_ID);
+    const count = Math.max(0, Math.floor(Number(raw ?? 0) || 0));
+    if (count <= 0) return { opened: 0 };
+    let left = count;
+    let calls = 0;
+    while (left > 0 && !shouldStop.value) {
+      const batch = Math.min(ITEM_OPENPACK_MAX_PER_CALL, left);
+      await sendWithRateLimit(
+        tokenId,
+        "item_openpack",
+        { itemId: GOLDENFISH_PACK_ITEM_ID, number: batch, index: 0 },
+        token,
+        8000,
+      );
+      left -= batch;
+      calls += 1;
+    }
+    const expectPlatinum = count * GOLDENFISH_PACK_RETURNS.platinumBox;
+    log(
+      token.name,
+      `开普通道具(5287)：${fmtNum(count)} 个（${calls} 批）→ 期望返还铂金宝箱 ${expectPlatinum.toFixed(1)} 个` +
+        `（≈${fmtNum(Math.round(expectPlatinum * 50))} 积分）、招募令 ${(count * GOLDENFISH_PACK_RETURNS.recruitToken).toFixed(1)} 个`,
+      "info",
+    );
+    return { opened: count };
+  };
+
   /** 开箱计划逐批发送（10/发+余数），返回最后一份带 role 的响应。
    * inventory = 发送前已知的库存快照（可选）：逐帧校验该箱型扣减 = 本帧数量，
    * 不符抛错防盲做（2026-09-29 master 口径；Item_OpenBoxResp.role.items 实证携带余额）
@@ -1379,9 +1426,49 @@ export function createTasksGoldenfish(deps) {
         replan: (freshRole) => ({ steps: planOpenAll(freshRole?.items) }),
       });
       if (result.empty) {
+        // 🔴 无箱可开 ≠ 只能干等（master 2026-09-29 深夜口径，39b 实例：
+        //    未兑换 57,960 + 普通道具没开 ⇒ 明明有循环却「暂停等商店补货」卡死）：
+        //    ① 未兑换积分 ≥ 门槛 → 一键领取（奖励含宝箱/普通道具回流）
+        //    ② 开普通道具(5287) → 期望 0.205 铂金宝箱/个 → 凑满整批又能开
+        //    领取 + 开包之后仍无可开积分，才真正暂停。
+        role = result.role ?? role;
+        const boxPointNow = Math.max(
+          0,
+          Math.floor(Number(role?.boxPoint) || 0),
+        );
+        if (boxPointNow >= BOX_POINT_BATCH_MIN) {
+          log(
+            token.name,
+            `无箱可开，但未兑换积分 ${fmtNum(boxPointNow)} ≥ 门槛 ${fmtNum(BOX_POINT_BATCH_MIN)}：一键领取换宝箱，继续循环`,
+            "info",
+          );
+          await exchangeAllScore({ tokenId, token, role });
+          role = await fetchRoleWithLimit(tokenId, token);
+        }
+        if (!config?.skipPackOpen) {
+          const packResult = await openOrdinaryPacks({ tokenId, token, role });
+          if (packResult.opened > 0) {
+            role = await fetchRoleWithLimit(tokenId, token);
+          }
+        }
+        const rescuedScore = chestScoreAvailable(role?.items);
+        if (rescuedScore > 0) {
+          log(
+            token.name,
+            `领取/开包救援成功：新得可开积分 ${fmtNum(rescuedScore)}，继续开箱循环`,
+            "info",
+          );
+          continue;
+        }
+        const boxPointLeft = Math.max(
+          0,
+          Math.floor(Number(role?.boxPoint) || 0),
+        );
         log(
           token.name,
           `宝箱消耗暂停：积分不足且无箱可开（累积 ${fmtNum(accumulated)}/${fmtNum(target)}；` +
+            `未兑换 ${fmtNum(boxPointLeft)}${boxPointNow >= BOX_POINT_BATCH_MIN ? " 已一键领取" : " 未达门槛不兑（攒着）"}` +
+            `、普通道具${config?.skipPackOpen ? " 按配置跳过未开" : " 已开尽"}；` +
             `可开积分按整批口径算，单批 ${fmtNum(OPENBOX_BATCH_SIZE)} 个，余数不足一批的开不动），等商店补货后再跑`,
           "warning",
         );
@@ -1390,6 +1477,12 @@ export function createTasksGoldenfish(deps) {
       role = result.role;
       const lastResp = result.lastResp;
       await exchangeAllScore({ tokenId, token, role: lastResp?.role ?? role });
+      // 🔴 开普通道具（master 2026-09-29 深夜口径）：积分奖励里含普通道具(5287)，
+      //    期望每个返还 0.205 铂金宝箱 —— 开掉回流给下一轮开箱，不要攒着不循环。
+      //    `config.skipPackOpen = true` 可关（回到只开宝箱的旧行为）。
+      if (!config?.skipPackOpen) {
+        await openOrdinaryPacks({ tokenId, token, role: lastResp?.role ?? role });
+      }
 
       role = await fetchRoleWithLimit(tokenId, token);
       // 推进循环里进度也会变（item_openbox 抬高 task.2）→ 每轮都重新拉活动数据
