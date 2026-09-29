@@ -202,6 +202,10 @@ const errorText = (error) =>
 const isInactiveError = (error) =>
   /未开启|未开始|已结束|活动不存在|无效的/.test(errorText(error));
 
+/** 宝箱乐观锁：请求的开箱数量与服务端当前库存不一致（2026-09-29 线上实测） */
+const isChestCountChangedError = (error) =>
+  errorText(error).includes("数量已发生变化");
+
 /** 服务端限流（沿用项目通用码） */
 const isRateLimitError = (error) => Number(error?.code) === 400340;
 
@@ -735,6 +739,35 @@ export function createTasksGoldenfish(deps) {
   };
 
   /**
+   * 带库存重读的开箱发送（2026-09-29 master 口径：「宝箱数量已发生变化就需要重新获取」）。
+   * 服务端对 item_openbox 做数量校验（乐观锁）：计划基于过期库存时会拒
+   * 「宝箱数量已发生变化，请重新操作」→ 重新拉背包、重新规划、再发（最多 2 次）。
+   * replan(role) → { steps, ...extra }；steps 为空 = 无箱可开（empty: true 返回）。
+   */
+  const sendOpenBoxStepsWithReread = async ({ tokenId, token, replan }) => {
+    for (let attempt = 0; ; attempt += 1) {
+      const freshRole = await fetchRoleWithLimit(tokenId, token);
+      const plan = replan(freshRole) ?? {};
+      const steps = plan.steps ?? [];
+      if (steps.length === 0) {
+        return { empty: true, role: freshRole, plan };
+      }
+      try {
+        const lastResp = await sendOpenBoxSteps({ tokenId, token, steps });
+        return { empty: false, lastResp, role: freshRole, plan };
+      } catch (error) {
+        if (attempt >= 2 || !isChestCountChangedError(error)) throw error;
+        log(
+          token.name,
+          `⏳ 宝箱数量已变化（服务端库存与计划不一致），2 秒后重新读库存重试（第 ${attempt + 1}/2 次）`,
+          "warning",
+        );
+        await sleep(2000);
+      }
+    }
+  };
+
+  /**
    * 消耗 step：宝箱（master 伪代码完整实现）
    * while(累积 + 可开分 < 目标) { 全开(钻石不开/木箱留200) → 积分全兑 → 重查 }
    * 退出后差值精确开（铂金→黄金→青铜→木箱），剩余积分不兑换（利润最大化）
@@ -770,8 +803,13 @@ export function createTasksGoldenfish(deps) {
         log(token.name, `宝箱推进循环超 200 轮，中止（请检查进度字段口径，当前累积 ${fmtNum(accumulated)}）`, "warning");
         return;
       }
-      const openPlan = planOpenAll(role?.items);
-      if (openPlan.length === 0) {
+      // 全开计划基于重读后的新鲜库存（数量变化乐观锁自愈，2026-09-29）
+      const result = await sendOpenBoxStepsWithReread({
+        tokenId,
+        token,
+        replan: (freshRole) => ({ steps: planOpenAll(freshRole?.items) }),
+      });
+      if (result.empty) {
         log(
           token.name,
           `宝箱消耗暂停：积分不足且无箱可开（累积 ${fmtNum(accumulated)}/${fmtNum(target)}），等商店补货后再跑`,
@@ -779,7 +817,8 @@ export function createTasksGoldenfish(deps) {
         );
         return;
       }
-      const lastResp = await sendOpenBoxSteps({ tokenId, token, steps: openPlan });
+      role = result.role;
+      const lastResp = result.lastResp;
       await exchangeAllScore({ tokenId, token, role: lastResp?.role ?? role });
 
       role = await fetchRoleWithLimit(tokenId, token);
@@ -807,13 +846,23 @@ export function createTasksGoldenfish(deps) {
     // 差值精确开箱（不兑换，剩余积分留活动结束）
     if (accumulated < target && !shouldStop.value) {
       const remaining = target - accumulated;
-      const { steps, remainingScore } = planPreciseOpen(remaining, role?.items);
-      log(token.name, `宝箱差值精确开箱：差 ${fmtNum(remaining)} 分，计划开 ${steps.map((s) => `${s.itemId}×${s.number}`).join("、") || "无"}`, "info");
-      if (steps.length > 0) {
-        await sendOpenBoxSteps({ tokenId, token, steps });
-      }
-      if (remainingScore > 0) {
-        log(token.name, `宝箱消耗暂停：库存不足，还差 ${fmtNum(remainingScore)} 分，等商店补货后再跑`, "warning");
+      // 精确开箱同样基于重读后的新鲜库存（数量变化乐观锁自愈，2026-09-29）
+      const result = await sendOpenBoxStepsWithReread({
+        tokenId,
+        token,
+        replan: (freshRole) => planPreciseOpen(remaining, freshRole?.items),
+      });
+      log(
+        token.name,
+        `宝箱差值精确开箱：差 ${fmtNum(remaining)} 分，计划开 ${result.plan.steps.map((s) => `${s.itemId}×${s.number}`).join("、") || "无"}`,
+        "info",
+      );
+      if (result.empty || result.plan.remainingScore > 0) {
+        log(
+          token.name,
+          `宝箱消耗暂停：库存不足，还差 ${fmtNum(result.plan.remainingScore)} 分，等商店补货后再跑`,
+          "warning",
+        );
         return;
       }
     }

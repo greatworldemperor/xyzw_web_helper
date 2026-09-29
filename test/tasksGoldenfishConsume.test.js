@@ -42,6 +42,7 @@ function createHarness({ state } = {}) {
     },
   };
   let rateLimitOnce = state?.rateLimitOnce ?? false; // 下一次命令抛 400340
+  let openboxFailOnce = state?.openboxFailOnce ?? false; // 下一次 item_openbox 抛乐观锁
 
   const rolePayload = () => ({
     role: {
@@ -76,6 +77,10 @@ function createHarness({ state } = {}) {
           return {};
         }
         case "item_openbox": {
+          if (openboxFailOnce) {
+            openboxFailOnce = false;
+            throw new Error("服务器错误: 200020 - 宝箱数量已发生变化，请重新操作");
+          }
           const n = params?.number ?? 0;
           const pts = CHEST_POINTS[params?.itemId] ?? 0;
           st.items[params?.itemId] = Math.max(0, (st.items[params?.itemId] ?? 0) - n);
@@ -209,6 +214,26 @@ test("宝箱消耗：差值精确开箱（98950 + 可开 550 ≥ 99000 → 只�
   assert.equal(h.state.boxScoreDone, 99000);
   assert.equal(h.errorLogs().length, 0);
   assert.ok(h.logs.some((l) => l.message.includes("宝箱消耗结束")));
+});
+
+test("宝箱消耗：数量变化乐观锁 → 重新读库存重试成功（2026-09-29）", async () => {
+  const h = createHarness({
+    state: {
+      boxScoreDone: 98000,
+      wooden: 350,
+      bronze: 20,
+      gold: 5,
+      platinum: 2,
+      openboxFailOnce: true,
+    },
+  });
+  await h.tasks.goldenfishBoxes({ boxTarget: 99000 });
+
+  // 首帧被服务端乐观锁拒绝 → 重新拉库存重发 → 完成而不是跳过
+  assert.ok(h.sent.some((s) => s.cmd === "item_openbox"));
+  assert.ok(h.logs.some((l) => l.message.includes("宝箱数量已变化") && l.message.includes("重新读库存")));
+  assert.ok(h.logs.some((l) => l.message.includes("宝箱消耗结束")));
+  assert.equal(h.errorLogs().length, 0);
 });
 
 test("宝箱消耗：推进循环全开（钻石不开/木箱留200）→ 兑换 → 无箱可开暂停", async () => {
