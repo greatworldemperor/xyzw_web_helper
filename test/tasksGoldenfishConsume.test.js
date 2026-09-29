@@ -43,6 +43,7 @@ function createHarness({ state } = {}) {
   };
   let rateLimitOnce = state?.rateLimitOnce ?? false; // 下一次命令抛 400340
   let openboxFailOnce = state?.openboxFailOnce ?? false; // 下一次 item_openbox 抛乐观锁
+  let recruitDeductHack = state?.recruitDeductHack ?? 0; // 第一帧招募多扣（触发扣减校验）
 
   const rolePayload = () => ({
     role: {
@@ -66,15 +67,18 @@ function createHarness({ state } = {}) {
           return rolePayload();
         case "hero_recruit": {
           const n = params?.recruitNumber ?? 0;
-          st.items[1001] = Math.max(0, st.items[1001] - n);
+          st.items[1001] = Math.max(0, st.items[1001] - n - recruitDeductHack);
+          const hacked = recruitDeductHack > 0;
+          recruitDeductHack = 0;
           st.recruitDone += n;
-          return {};
+          // 带实时余额（抓包实证 Hero_RecruitResp.body.role.items）→ 激活扣减校验
+          return { role: rolePayload().role, hacked };
         }
         case "artifact_lottery": {
           const n = params?.lotteryNumber ?? 0;
           st.items[1012] = Math.max(0, st.items[1012] - n);
           st.fishDone += n;
-          return {};
+          return { role: rolePayload().role };
         }
         case "item_openbox": {
           if (openboxFailOnce) {
@@ -189,6 +193,35 @@ test("钓鱼消耗：只用黄金鱼竿，库存不足正常停（整批发 20�
     h.logs.some((l) => l.message.includes("不足一批(10)") && l.message.includes("留待最后补满")),
   );
   assert.equal(h.errorLogs().length, 0);
+});
+
+// ---------------------------------------------------------------- 扣减校验（2026-09-29 master 口径：必须得到反馈再继续，避免盲做）
+
+test("招募消耗：余额扣减不符 → 中止步骤防止盲做", async () => {
+  const h = createHarness({
+    state: { recruitDone: 0, recruitTickets: 100, recruitDeductHack: 20 },
+  });
+  await h.tasks.goldenfishRecruit({ recruitTarget: 50 });
+
+  // 第一帧多扣 20（服务端口径不符）→ 校验发现 100→70 扣了 30 ≠ 10 → 中止
+  assert.ok(h.logs.some((l) => l.message.includes("招募令扣减异常")));
+  const recruits = h.sent.filter((s) => s.cmd === "hero_recruit").length;
+  assert.equal(recruits, 1); // 只发了 1 帧，没有继续盲做
+  assert.ok(h.errorLogs().length > 0);
+});
+
+test("招募消耗：余额逐帧正常扣减 → 校验通过不误杀", async () => {
+  const h = createHarness({
+    state: { recruitDone: 0, recruitTickets: 100 },
+  });
+  await h.tasks.goldenfishRecruit({ recruitTarget: 50 });
+
+  const recruits = h.sent.filter((s) => s.cmd === "hero_recruit").length;
+  assert.equal(recruits, 5);
+  assert.equal(h.state.recruitDone, 50);
+  assert.equal(h.state.items[1001], 50);
+  assert.equal(h.errorLogs().length, 0);
+  assert.ok(h.logs.some((l) => l.message.includes("招募消耗结束")));
 });
 
 // ---------------------------------------------------------------- 宝箱

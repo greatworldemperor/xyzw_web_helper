@@ -123,6 +123,20 @@ const normalizeServerId = (value) => {
 
 const fmtNum = (value) => (Number(value) || 0).toLocaleString("zh-CN");
 
+/**
+ * 严格版：键不存在/结构缺失返回 null（区别于「数量为 0」）。
+ * 用于消耗响应的扣减校验 —— 快照缺键时跳过校验而不是误判成扣光。
+ */
+const readItemCountStrict = (items, itemId) => {
+  if (!items || typeof items !== "object") return null;
+  const node = items[String(itemId)] ?? items[itemId];
+  if (node == null) return null;
+  const value = Number(
+    typeof node === "number" ? node : (node.num ?? node.count ?? node.quantity),
+  );
+  return Number.isFinite(value) ? value : null;
+};
+
 /** 从 role.items 里取道具数量：兼容数组 / { itemId: { quantity } } / { itemId: num } */
 const readItemCount = (items, itemId) => {
   if (!items) return 0;
@@ -586,14 +600,25 @@ export function createTasksGoldenfish(deps) {
 
     let done = progress.recruitDone;
     let sent = 0;
+    let lastStock = stock; // 上一次已知的招募令余额（响应逐帧更新，扣减校验基准）
     for (const n of plan.batches) {
       if (shouldStop.value) return;
-      await sendWithRateLimit(
+      const resp = await sendWithRateLimit(
         tokenId,
         "hero_recruit",
         { recruitType: 1, recruitNumber: n },
         token,
       );
+      // 扣减校验（2026-09-29 master 口径「必须得到反馈再继续，避免盲做」，
+      // 抓包实证 Hero_RecruitResp.body.role.items 携带实时余额）：
+      // 每帧校验招募令余额扣减 = 本帧数量，不符立即中止防止盲做。
+      const nowStock = readItemCountStrict(resp?.role?.items, ITEM_RECRUIT);
+      if (nowStock != null && lastStock != null && lastStock - nowStock !== n) {
+        throw new Error(
+          `招募令扣减异常：预期 -${n}，实际 ${lastStock - nowStock}（${lastStock}→${nowStock}），中止防止盲做`,
+        );
+      }
+      if (nowStock != null) lastStock = nowStock;
       done += n;
       sent += 1;
       if (sent % 50 === 0) {
@@ -657,14 +682,23 @@ export function createTasksGoldenfish(deps) {
 
     let done = progress.fishDone;
     let sent = 0;
+    let lastStock = stock; // 上一次已知的黄金鱼竿余额（扣减校验基准）
     for (const n of plan.batches) {
       if (shouldStop.value) return;
-      await sendWithRateLimit(
+      const resp = await sendWithRateLimit(
         tokenId,
         "artifact_lottery",
         { type: 2, lotteryNumber: n, newFree: true },
         token,
       );
+      // 扣减校验（抓包实证 SyncRewardResp.body.role.items 携带实时余额，resp 序号对齐请求）
+      const nowStock = readItemCountStrict(resp?.role?.items, ITEM_GOLD_ROD);
+      if (nowStock != null && lastStock != null && lastStock - nowStock !== n) {
+        throw new Error(
+          `黄金鱼竿扣减异常：预期 -${n}，实际 ${lastStock - nowStock}（${lastStock}→${nowStock}），中止防止盲做`,
+        );
+      }
+      if (nowStock != null) lastStock = nowStock;
       done += n;
       sent += 1;
       if (sent % 20 === 0) {
@@ -714,10 +748,13 @@ export function createTasksGoldenfish(deps) {
     return claimed;
   };
 
-  /** 开箱计划逐批发送（10/发+余数），返回最后一份带 role 的响应 */
-  const sendOpenBoxSteps = async ({ tokenId, token, steps }) => {
+  /** 开箱计划逐批发送（10/发+余数），返回最后一份带 role 的响应。
+   * inventory = 发送前已知的库存快照（可选）：逐帧校验该箱型扣减 = 本帧数量，
+   * 不符抛错防盲做（2026-09-29 master 口径；Item_OpenBoxResp.role.items 实证携带余额） */
+  const sendOpenBoxSteps = async ({ tokenId, token, steps, inventory }) => {
     let lastResp = null;
     let total = 0;
+    let lastItems = inventory ?? null;
     for (const step of steps) {
       for (const n of chunkBatches(step.number, 10)) {
         if (shouldStop.value) return lastResp;
@@ -728,6 +765,16 @@ export function createTasksGoldenfish(deps) {
           token,
           8000,
         );
+        if (lastItems) {
+          const before = readItemCountStrict(lastItems, step.itemId);
+          const now = readItemCountStrict(lastResp?.role?.items, step.itemId);
+          if (before != null && now != null && before - now !== n) {
+            throw new Error(
+              `宝箱扣减异常：itemId ${step.itemId} 预期 -${n}，实际 ${before - now}（${before}→${now}），中止防止盲做`,
+            );
+          }
+          if (now != null) lastItems = { ...lastItems, [step.itemId]: now };
+        }
         total += n;
         await sleep();
       }
@@ -753,7 +800,12 @@ export function createTasksGoldenfish(deps) {
         return { empty: true, role: freshRole, plan };
       }
       try {
-        const lastResp = await sendOpenBoxSteps({ tokenId, token, steps });
+        const lastResp = await sendOpenBoxSteps({
+          tokenId,
+          token,
+          steps,
+          inventory: freshRole?.items,
+        });
         return { empty: false, lastResp, role: freshRole, plan };
       } catch (error) {
         if (attempt >= 2 || !isChestCountChangedError(error)) throw error;
