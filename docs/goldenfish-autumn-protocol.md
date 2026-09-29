@@ -105,9 +105,12 @@ RESP Store_SetPurchaseResp  回显设置后的列表（按 itemId 升序，与�
 **钻石宝箱一律不开；木箱全程保留 200 个**（2026-09-26 master 拍板）。
 
 - 实现：`tasksGoldenfish.js` 三个 step + `goldenfishConsumeAll` 一键；
-  ⚡ **三个 step 并行执行**（2026-09-29 master：三者独立限流、不必串行 —— 协议层响应按
-  `resp`（= 请求 seq）精确匹配，且这三条命令不在 `CmdDebounceMap` 防抖表内，并发安全；
-  `config.serialConsume = true` 可回退串行）。
+  ⚡ **招募/钓鱼并行 + 宝箱独占**（2026-09-29 两轮线上实测修正）：招募与钓鱼独立限流，协议层并发安全
+  （`sendWithPromise` 按请求 seq 登记 pending、`_handlePromiseResponse` 按 `resp` 精确匹配，
+  两条命令都不在 `CmdDebounceMap` 防抖表内）；**宝箱必须独占** —— 开箱走服务端**背包乐观锁**
+  （提交数量须与服务端当前持有一致），与活动任务并发时实测「宝箱数量已发生变化」连片失败
+  （3 个号同秒全部失败，而招募/钓鱼均成功）。
+  `config.serialConsume = true` 全部回退串行；`config.parallelBoxes = true` 可复测三者并行。
   每账号先发 `activity_get` 查活动进度再补差值（断点续跑，分多天跑自动吸收每日任务的自然推进）。
 - 库存不足：招募令/宝箱 = 正常暂停，等商店购物列表自动补货后再跑；
   **黄金鱼竿 = 有多少做多少**（2026-09-29 master 拍板），缺口记日志（含 10% 返还折算竿数），

@@ -1026,7 +1026,7 @@
                     @click="runGoldenfishConsumeAll"
                     :disabled="isRunning || selectedTokens.length === 0"
                   >
-                    一键消耗（招募/宝箱/钓鱼 并行）
+                    一键消耗（招募/钓鱼并行，宝箱独占）
                   </n-button>
                   <n-button
                     size="small"
@@ -1051,12 +1051,13 @@
                   </n-button>
                 </n-space>
                 <span class="xiaoyaojin-hint">
-                  金鱼消耗（每账号先查活动进度再补差值，可分多天断点续跑）：三个任务
-                  <b>独立限流、并行执行</b>（招募 hero_recruit 消耗招募令 1001；宝箱
+                  金鱼消耗（每账号先查活动进度再补差值，可分多天断点续跑）：<b>招募与钓鱼独立限流、并行执行</b>；
+                  <b>宝箱独占串行</b>（开箱走服务端背包乐观锁校验，与活动任务并发会被拒「宝箱数量已发生变化」，
+                  2026-09-29 实测）。招募 hero_recruit 消耗招募令 1001；宝箱
                   item_openbox + 积分兑换 item_claimboxpointreward
                   迭代推进到目标，钻石宝箱一律不开、木箱保留 200
                   个，退出后差值精确开箱、剩余积分不兑换留活动结束；钓鱼
-                  artifact_lottery 只用黄金鱼竿 1012，<b>有多少做多少</b>，缺口记日志留待收尾阶段金砖买竿补全）。
+                  artifact_lottery 只用黄金鱼竿 1012，<b>有多少做多少</b>，缺口记日志留待收尾阶段金砖买竿补全。
                   触发限流(400340)会弹框：更换 IP
                   后点「立即重试」立刻重试，也会每 5 秒自动重试、成功即自动关窗。
                 </span>

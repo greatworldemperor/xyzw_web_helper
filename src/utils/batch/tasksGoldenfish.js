@@ -376,22 +376,26 @@ export function createTasksGoldenfish(deps) {
   };
 
   /**
-   * 可并行的消耗步骤（master 2026-09-29：「宝箱、招募、钓鱼可以并行而不是必须串行，
+   * 可并行的消耗步骤（master 2026-09-29：「招募、钓鱼可以并行而不是必须串行，
    * 因为这几个任务是独立限流的」）。
    *
    * 并行安全的依据（逐条核实过，不是想当然）：
-   *   1. **限流独立**：游戏对每个活动任务独立计数，三者不互相挤占配额（master 口径）；
-   *   2. **道具不交叉**：招募令 1001 / 各档宝箱 2001-2004 / 黄金鱼竿 1012 —— 逐帧扣减校验
-   *      各查各的 itemId，不会互相误判；
+   *   1. **限流独立**：游戏对每个活动任务独立计数，互不挤占配额（master 口径）；
+   *   2. **道具不交叉**：招募令 1001 / 黄金鱼竿 1012 各用各的，逐帧扣减校验互不误判；
    *   3. **协议支持并发**：`sendWithPromise` 以请求 seq 登记 pending promise，
    *      响应 `_handlePromiseResponse` 按 `packet.resp`（= 请求 seq）**精确匹配**，
-   *      并发不会串味；且这三条命令都不在 `CmdDebounceMap`（防抖表）里，无节流/互斥。
+   *      并发不会串味；且这两条命令都不在 `CmdDebounceMap`（防抖表）里，无节流/互斥。
    *
-   * ⚠️ `role_getroleinfo` 有 1000ms 防抖缓存：三个 step 并行拉背包时会**共享同一份快照**
-   *    （只读库存，安全且省一次请求）。
-   * ⚠️ 串行回退：`config.serialConsume === true` 时恢复原串行语义（排查问题用）。
+   * 🔴 **宝箱不在此列**（2026-09-29 线上两轮实测修正）：`consumeBoxes` 内部是
+   *   「开箱 ↔ 积分兑换 ↔ 重查进度」的强一致性循环，开箱走服务端**背包乐观锁**校验
+   *   （提交数量与服务端当前持有必须一致）。与活动任务并发时实测「宝箱数量已发生变化」
+   *   连片失败（3 个号同秒全部失败，而招募/钓鱼都成功）—— 宝箱对背包状态敏感，
+   *   必须独占执行。招募/钓鱼是单纯「发帧扣道具」，互不影响，可以并行。
+   *
+   * ⚠️ 串行回退：`config.serialConsume === true` 时三者全部串行（排查问题用）。
+   * ⚠️ 实验入口：`config.parallelBoxes === true` 让宝箱也参与并行（复测用，默认关）。
    */
-  const PARALLEL_CONSUME_STEPS = ["consumeRecruit", "consumeBoxes", "consumeFish"];
+  const PARALLEL_CONSUME_STEPS = ["consumeRecruit", "consumeFish"];
 
   // ------------------------------------------------------------------ 批量框架
 
@@ -475,29 +479,35 @@ export function createTasksGoldenfish(deps) {
           }
         };
 
-        // 🔴 2026-09-29 master：招募/宝箱/钓鱼**独立限流**，不必串行 —— 三 step 齐活时并行跑，
-        // 整体耗时约等于最慢的那一个（而非三者相加）。其余组合（单步按钮、含购物/投道具）保持串行。
-        const runInParallel =
-          config?.serialConsume !== true &&
-          stepIds.length >= 2 &&
-          stepIds.every((id) => PARALLEL_CONSUME_STEPS.includes(id));
+        // 🔴 2026-09-29 master：招募/钓鱼**独立限流**可并行；**宝箱独占**（背包乐观锁敏感）。
+        // 分组执行：并行段（默认 招募 + 钓鱼）先跑，其余步骤随后串行 —— 单步按钮/购物/投道具
+        // 天然只有 1 个可并行项，会整体走原串行路径，语义不变。
+        const isParallelizable = (id) =>
+          PARALLEL_CONSUME_STEPS.includes(id) ||
+          (config?.parallelBoxes === true && id === "consumeBoxes");
+        const parallelIds =
+          config?.serialConsume === true ? [] : stepIds.filter(isParallelizable);
+        const useParallel = parallelIds.length >= 2;
+        const serialIds = useParallel
+          ? stepIds.filter((id) => !parallelIds.includes(id))
+          : stepIds;
 
-        if (runInParallel) {
+        if (useParallel) {
           log(
             tokenName,
-            `⚡ ${stepIds.length} 个消耗任务并行执行（招募/宝箱/钓鱼 独立限流、互不挤占）`,
+            `⚡ 并行执行 ${parallelIds.length} 个消耗任务（独立限流、互不挤占）：${parallelIds.join(" + ")}` +
+              (serialIds.length > 0 ? `；其余串行：${serialIds.join(" + ")}` : ""),
             "info",
           );
           // ⚠️ 并行时单个 step 遇限流无法收回已在跑的其他 step：它们各自也会收到 400340
           //    并由 tokenStore 自愈重试，最终各自收敛（不会互相拖挂）。
-          await Promise.all(stepIds.map((stepId) => runStep(stepId)));
-        } else {
-          for (const stepId of stepIds) {
-            if (shouldStop.value || consumeAbortAll) break;
-            const outcome = await runStep(stepId);
-            if (outcome === "abort") break;
-            await sleep();
-          }
+          await Promise.all(parallelIds.map((stepId) => runStep(stepId)));
+        }
+        for (const stepId of serialIds) {
+          if (shouldStop.value || consumeAbortAll) break;
+          const outcome = await runStep(stepId);
+          if (outcome === "abort") break;
+          await sleep();
         }
 
         if (failedSteps.length > 0) {
@@ -979,13 +989,14 @@ export function createTasksGoldenfish(deps) {
   /**
    * 金鱼消耗一键编排：招募 + 宝箱 + 钓鱼
    *
-   * 2026-09-29 master：三者**独立限流**，由 runGoldenfish 自动并行执行
-   * （整体耗时 ≈ 最慢的单个任务；传入 `config.serialConsume = true` 可回退串行）。
+   * 2026-09-29：**招募与钓鱼并行**（独立限流），**宝箱独占串行**（背包乐观锁敏感 ——
+   * 与活动任务并发时服务端会以「宝箱数量已发生变化」拒绝，见 `PARALLEL_CONSUME_STEPS` 注释）。
+   * `config.serialConsume = true` 可全部回退串行。
    */
   const goldenfishConsumeAll = (config) =>
     runGoldenfish(
       ["consumeRecruit", "consumeBoxes", "consumeFish"],
-      "金鱼消耗（招募/宝箱/钓鱼 并行）",
+      "金鱼消耗（招募/钓鱼并行，宝箱独占）",
       1,
       config,
     );

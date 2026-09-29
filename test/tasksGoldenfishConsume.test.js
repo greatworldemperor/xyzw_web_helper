@@ -568,26 +568,52 @@ const PARALLEL_STATE = {
 };
 const PARALLEL_CONFIG = { recruitTarget: 3900, boxTarget: 99000, fishTarget: 1100 };
 
-test("并行：三消耗任务齐活 → 并行执行，三路命令齐全且互不阻塞", async () => {
+test("并行：招募+钓鱼并行、宝箱独占串行（宝箱背包乐观锁敏感）", async () => {
   const h = createHarness({ state: PARALLEL_STATE });
   await h.tasks.goldenfishConsumeAll({ ...PARALLEL_CONFIG });
 
+  const parallelLog = h.logs.find((l) => l.message.includes("并行执行"));
+  assert.ok(parallelLog, "应有并行执行日志");
+  // 日志要点名：并行的是招募+钓鱼，宝箱走串行
+  assert.ok(parallelLog.message.includes("consumeRecruit"), `并行段应含招募：${parallelLog.message}`);
+  assert.ok(parallelLog.message.includes("consumeFish"), `并行段应含钓鱼：${parallelLog.message}`);
   assert.ok(
-    h.logs.some((l) => l.message.includes("并行执行")),
-    "应有并行执行日志",
+    parallelLog.message.includes("其余串行") && parallelLog.message.includes("consumeBoxes"),
+    `日志应说明宝箱串行：${parallelLog.message}`,
   );
-  // 三路各自把命令发出（并行不是「只跑第一个」）
+
+  // 三路命令都发出且都推进到位
   assert.ok(h.sent.some((s) => s.cmd === "hero_recruit"), "招募应有帧");
   assert.ok(h.sent.some((s) => s.cmd === "item_openbox"), "宝箱应有帧");
   assert.ok(h.sent.some((s) => s.cmd === "artifact_lottery"), "钓鱼应有帧");
-  // 三路都推进到位
   assert.equal(h.state.recruitDone, 3900);
   assert.equal(h.state.fishDone, 1100);
   assert.equal(h.state.boxScoreDone, 99000);
   assert.equal(h.errorLogs().length, 0);
+
+  // 🔴 宝箱必须**独占**：它的开箱帧全部出现在招募/钓鱼之后
+  const cmds = h.cmds();
+  const firstRecruit = cmds.indexOf("hero_recruit");
+  const firstFish = cmds.indexOf("artifact_lottery");
+  const firstBox = cmds.indexOf("item_openbox");
+  assert.ok(firstRecruit >= 0 && firstFish >= 0 && firstBox >= 0, `三路都要有帧：${cmds.join(",")}`);
+  assert.ok(
+    firstBox > firstRecruit && firstBox > firstFish,
+    `宝箱应独占在并行段之后（避免与活动任务并发触发乐观锁）：${cmds.join(",")}`,
+  );
 });
 
-test("并行：config.serialConsume=true → 回退串行（无并行日志，段内顺序保持）", async () => {
+test("并行：config.parallelBoxes=true → 宝箱也参与并行（实验开关）", async () => {
+  const h = createHarness({ state: PARALLEL_STATE });
+  await h.tasks.goldenfishConsumeAll({ ...PARALLEL_CONFIG, parallelBoxes: true });
+
+  const parallelLog = h.logs.find((l) => l.message.includes("并行执行"));
+  assert.ok(parallelLog?.message.includes("3 个消耗任务"), `应为 3 个并行：${parallelLog?.message}`);
+  assert.ok(parallelLog.message.includes("consumeBoxes"), `宝箱应在并行段：${parallelLog.message}`);
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("并行：config.serialConsume=true → 全部串行（无并行日志，段内顺序保持）", async () => {
   const h = createHarness({ state: PARALLEL_STATE });
   await h.tasks.goldenfishConsumeAll({ ...PARALLEL_CONFIG, serialConsume: true });
 
