@@ -46,12 +46,21 @@ function createHarness({ state } = {}) {
   let openboxFailOnce = state?.openboxFailOnce ?? false; // 下一次 item_openbox 抛乐观锁
   const openboxAlwaysFail = state?.openboxAlwaysFail ?? false; // 每次 item_openbox 都抛乐观锁
   let recruitDeductHack = state?.recruitDeductHack ?? 0; // 第一帧招募多扣（触发扣减校验）
+  // 服务端绝对计数器（today:open:box = 开箱调用次数；activity:open:box = 开箱积分）
+  // phantomCallsPerOpenbox = 每次调用开箱时「别处」额外产生的调用次数（模拟第三方并发开同一个号）
+  const phantomCallsPerOpenbox = state?.phantomCallsPerOpenbox ?? 0;
+  let openboxCallStat = state?.todayOpenBox ?? 0;
+  let openboxScoreStat = state?.activityOpenBox ?? 0;
 
   const rolePayload = () => ({
     role: {
       items: JSON.parse(JSON.stringify(st.items)),
       boxPoint: st.boxPoint,
       boxPointLastReward: st.boxPointLastReward,
+      statistics: {
+        "today:open:box": openboxCallStat,
+        "activity:open:box": openboxScoreStat,
+      },
     },
   });
 
@@ -85,12 +94,17 @@ function createHarness({ state } = {}) {
         case "item_openbox": {
           if (openboxAlwaysFail || openboxFailOnce) {
             openboxFailOnce = false;
+            // 服务端只要收到调用就计数（被拒也算）→ 本机这 1 帧 + 别处的 phantom 次
+            openboxCallStat += 1 + phantomCallsPerOpenbox;
             throw new Error("服务器错误: 200020 - 宝箱数量已发生变化，请重新操作");
           }
           const n = params?.number ?? 0;
           const pts = CHEST_POINTS[params?.itemId] ?? 0;
           st.items[params?.itemId] = Math.max(0, (st.items[params?.itemId] ?? 0) - n);
           st.boxScoreDone += n * pts;
+          // 实证（consumption_tasks.jsonl）：每次 item_openbox 调用 today:+1、activity:+本帧积分
+          openboxCallStat += 1 + phantomCallsPerOpenbox;
+          openboxScoreStat += n * pts;
           return { role: { ...rolePayload().role, items: st.items } };
         }
         case "item_claimboxpointreward": {
@@ -687,11 +701,61 @@ test("宝箱消耗：三次重试全被拒 → 诊断一次给全（计划/已�
   );
   assert.ok(
     h.logs.some((l) => l.message.includes("两次读到的宝箱数量一致")),
-    "未成功开箱时两次读应一致 → 走「服务端账本与快照不一致」分支",
+    "未成功开箱时两次读应一致",
   );
   assert.ok(
     h.logs.some((l) => l.message.includes("consumeBoxes 失败")),
     "应把该步骤标记为失败并继续后续",
+  );
+  // 服务端绝对计数器：库存行打基线、失败时打前后对比、并给出并发判定
+  assert.ok(
+    h.logs.some((l) => l.message.includes("服务端计数器 today:open:box=")),
+    "宝箱库存行应带服务端计数器基线",
+  );
+  assert.ok(
+    h.logs.some((l) => l.message.includes("🔎 开箱计数器（服务端累计，非本机口径）")),
+    "最终诊断应打印计数器前后对比",
+  );
+  assert.ok(
+    h.logs.some((l) => l.message.includes("ℹ️ 并发判定")),
+    "计数器涨幅 ≤ 本机帧数 → 应判定「无第三方并发」",
+  );
+  assert.ok(
+    h.logs.some((l) => l.message.includes("没有第三方在开这个号")),
+    "应明确指出不是并发，而是服务端判定口径与 role.items 不一致",
+  );
+});
+
+test("宝箱消耗：服务端计数器涨幅 > 本机帧数 → 判定确有第三方在开同一个号", async () => {
+  const h = createHarness({
+    state: {
+      boxScoreDone: 98000,
+      platinum: 2,
+      bronze: 20,
+      openboxAlwaysFail: true,
+      // 本机每帧 +1，别处再加 4 次 → 涨幅 5、本机帧数 1、多出 4（= 别处的调用次数）
+      phantomCallsPerOpenbox: 4,
+    },
+  });
+  await h.tasks.goldenfishBoxes({ boxTarget: 99000 });
+
+  const verdict = h.logs.find((l) => l.message.includes("🚨 并发判定"));
+  assert.ok(verdict, "应有并发判定告警");
+  assert.ok(
+    verdict.message.includes("只发了 1 帧"),
+    `应报出本机实际帧数：${verdict.message}`,
+  );
+  assert.ok(
+    verdict.message.includes("确有另一个客户端/运行在开同一个角色"),
+    `应给出「确有第三方并发」的结论：${verdict.message}`,
+  );
+  assert.ok(
+    verdict.message.includes("多出 4 次不是本机发的"),
+    `应给出多出的调用次数：${verdict.message}`,
+  );
+  assert.ok(
+    !h.logs.some((l) => l.message.includes("ℹ️ 并发判定")),
+    "不应同时给出「无第三方并发」的相反结论",
   );
 });
 

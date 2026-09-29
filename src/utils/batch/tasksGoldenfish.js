@@ -798,6 +798,41 @@ export function createTasksGoldenfish(deps) {
   };
 
   /**
+   * 服务端**绝对**开箱计数器（判定「是不是有人在并发开同一个号」的硬证据）
+   *
+   * `Role_GetRoleInfoResp.role.statistics` 里有两个与我们无关、纯服务端累计的量：
+   *   - `today:open:box`    = 今天调用 item_openbox 的**次数**（每发一帧 +1，与开几个箱无关）
+   *   - `activity:open:box` = 本活动累计开箱**积分**（口径 = 活动 task.2）
+   *
+   * 实证（local-data/goldenfish/consumption_tasks.jsonl，真实客户端连发 6 帧）：
+   *   today:open:box   649→650→651→652→653→654→655   （每帧恰好 +1）
+   *   activity:open:box  50→550→750→850→1350→1550→1650（10 铂金=500 / 10 黄金=200 / 10 青铜=100 分）
+   *
+   * ⇒ 判据：**本机只发 N 帧，而服务端调用次数涨幅 > N** ⇒ 多出来的调用不是本机发的
+   *   ⇒ 确有另一个客户端/运行在开同一个角色（假设 ① 成立，且能给出「多几次」）。
+   *   反之涨幅 ≤ N ⇒ 期间无人并发 ⇒ 拒绝来自服务端自身判定口径与 role.items 不一致（假设 ②）。
+   */
+  const OPENBOX_CALL_STAT = "today:open:box";
+  const OPENBOX_SCORE_STAT = "activity:open:box";
+  const readStatNumber = (role, key) => {
+    const raw = role?.statistics?.[key];
+    if (raw == null) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  };
+  /** 计数器可读文案；读不到时打 `-`（不要把「读不到」显示成 0，会误导） */
+  const openboxCounterText = (role) =>
+    `${OPENBOX_CALL_STAT}=${
+      readStatNumber(role, OPENBOX_CALL_STAT) == null
+        ? "-"
+        : fmtNum(readStatNumber(role, OPENBOX_CALL_STAT))
+    }、${OPENBOX_SCORE_STAT}=${
+      readStatNumber(role, OPENBOX_SCORE_STAT) == null
+        ? "-"
+        : fmtNum(readStatNumber(role, OPENBOX_SCORE_STAT))
+    }`;
+
+  /**
    * 消耗 step：招募（hero_recruit recruitType:1，10/发+余数，消耗招募令 1001）
    * 库存不足 = 正常暂停（黑市购物列表 10 折自动补货后再跑）
    */
@@ -1008,6 +1043,8 @@ export function createTasksGoldenfish(deps) {
           // 先登记「待发帧」：若这条被服务端拒，progress 里留下的就是被拒帧的实参
           progress.pendingItemId = step.itemId;
           progress.pendingNumber = n;
+          // 计数「本机一共发了几帧」——与「服务端调用次数涨幅」比对即可判定是否有人并发（见 openboxCounterText）
+          progress.framesAttempted += 1;
         }
         lastResp = await sendWithRateLimit(
           tokenId,
@@ -1046,8 +1083,10 @@ export function createTasksGoldenfish(deps) {
    * 🔴 2026-09-29 线上实测（17:05 / 17:23）：**重读 + 重规划 3 次全部被拒**，
    *    说明原因不在「我们手里的快照过期」这一层。两个候选成因（见 runGoldenfish 注释）：
    *    ① 同一个角色被两个运行同时开箱；② 服务端「开箱数」口径与 `role.items` 不一致。
-   *    所以最后一次尝试失败时必须把「我们以为的库存 / 我们发的计划 / 被拒的帧 /
-   *    服务端拒绝后的重读」全部落到日志里 —— 一次运行就能把①和②分开，不用再猜。
+   *    最后一次尝试失败时打全诊断，其中**「并发判定」是硬证据**：
+   *      「本机这次一共发了几帧」 vs 「服务端 today:open:box 涨了几次」——
+   *      涨幅 > 本机帧数 ⇒ 多出来的调用不是本机发的 ⇒ 确有第三方在开同一个号（①）；
+   *      涨幅 ≤ 本机帧数 ⇒ 期间无人并发 ⇒ 属服务端自身判定口径问题（②）。
    */
   const sendOpenBoxStepsWithReread = async ({ tokenId, token, replan }) => {
     for (let attempt = 0; ; attempt += 1) {
@@ -1057,7 +1096,7 @@ export function createTasksGoldenfish(deps) {
       if (steps.length === 0) {
         return { empty: true, role: freshRole, plan };
       }
-      const progress = { opened: 0, pendingItemId: null, pendingNumber: null };
+      const progress = { opened: 0, framesAttempted: 0, pendingItemId: null, pendingNumber: null };
       try {
         const lastResp = await sendOpenBoxSteps({
           tokenId,
@@ -1071,7 +1110,7 @@ export function createTasksGoldenfish(deps) {
         if (!isChestCountChangedError(error)) throw error;
         const planText = steps.map((s) => `${s.itemId}×${s.number}`).join("、");
         if (attempt >= 2) {
-          // 最后一次：把关键诊断一次打全（计划 / 已开 / 被拒帧 / 拒绝后重读 / 连续两次读是否一致）
+          // 最后一次：把关键诊断一次打全（计划 / 已开 / 被拒帧 / 拒绝后重读 / 计数器涨幅）
           const afterRole = await fetchRoleWithLimit(tokenId, token).catch(() => null);
           log(
             token.name,
@@ -1093,19 +1132,49 @@ export function createTasksGoldenfish(deps) {
             log(
               token.name,
               changed.length > 0
-                ? `⚠️ 两次读到的宝箱数量不一致（${changed.map((id) => `${id}: ${before[id]}→${after[id]}`).join("，")}）——` +
-                  `极可能有另一个运行/设备正在操作同一个角色（同一账号并发开箱会被服务端以「数量已发生变化」拒绝）`
-                : `两次读到的宝箱数量一致（${chestInventoryText(freshRole?.items)}），` +
-                  `即服务端账本与背包快照不一致 —— 请把本行诊断发给排查人（重点：该号是否在别处跑过消耗）`,
+                ? `⚠️ 两次读到的宝箱数量不一致（${changed.map((id) => `${id}: ${before[id]}→${after[id]}`).join("，")}）`
+                : `两次读到的宝箱数量一致（${chestInventoryText(freshRole?.items)}）`,
               "warning",
             );
+          }
+          // 🔎 并发判定：服务端绝对计数器（唯一能「证明有人并发」的证据）
+          const f0 = readStatNumber(freshRole, OPENBOX_CALL_STAT);
+          const f1 = readStatNumber(afterRole, OPENBOX_CALL_STAT);
+          log(
+            token.name,
+            `🔎 开箱计数器（服务端累计，非本机口径）：开箱前 ${openboxCounterText(freshRole)}；` +
+              `被拒后 ${afterRole ? openboxCounterText(afterRole) : "重读失败"}`,
+            "error",
+          );
+          if (f0 != null && f1 != null) {
+            const deltaCalls = f1 - f0;
+            const own = progress.framesAttempted;
+            if (deltaCalls > own) {
+              log(
+                token.name,
+                `🚨 并发判定：本机这次只发了 ${fmtNum(own)} 帧，但服务端「今日开箱调用次数」涨了 ${fmtNum(deltaCalls)} 次` +
+                  `（多出 ${fmtNum(deltaCalls - own)} 次不是本机发的）⇒ **确有另一个客户端/运行在开同一个角色**，` +
+                  `「宝箱数量已发生变化」由此而来 —— 请先停掉其它窗口/设备/定时任务再跑`,
+                "error",
+              );
+            } else {
+              log(
+                token.name,
+                `ℹ️ 并发判定：服务端调用次数涨幅 ${fmtNum(deltaCalls)} ≤ 本机本次帧数 ${fmtNum(own)}` +
+                  `⇒ 这期间**没有第三方在开这个号**，拒绝来自服务端自身判定口径与 ` +
+                  `role_getroleinfo 返回的宝箱数量不一致（属客户端无法自愈的情况，请把本行发给排查人）`,
+                "error",
+              );
+            }
           }
           throw error;
         }
         log(
           token.name,
           `⏳ 宝箱数量已变化（服务端库存与计划不一致），2 秒后重新读库存重试（第 ${attempt + 1}/2 次）：` +
-            `本次计划 ${planText}，已开 ${fmtNum(progress.opened)} 个，被拒帧 ${progress.pendingItemId} × ${progress.pendingNumber}`,
+            `本次计划 ${planText}，已发 ${fmtNum(progress.framesAttempted)} 帧/已开 ${fmtNum(progress.opened)} 个，` +
+            `被拒帧 ${progress.pendingItemId} × ${progress.pendingNumber}；` +
+            `开箱前计数器 ${openboxCounterText(freshRole)}`,
           "warning",
         );
         await sleep(2000);
@@ -1144,7 +1213,8 @@ export function createTasksGoldenfish(deps) {
     log(
       token.name,
       `宝箱库存：${chestInventoryText(role?.items)}（木箱保留 ${fmtNum(WOODEN_RESERVE)} 个不动）；` +
-        `可开积分约 ${fmtNum(chestScoreAvailable(role?.items))}；未兑换宝箱积分 ${fmtNum(role?.boxPoint)}（下一档 ${fmtNum(role?.boxPointLastReward)}）`,
+        `可开积分约 ${fmtNum(chestScoreAvailable(role?.items))}；未兑换宝箱积分 ${fmtNum(role?.boxPoint)}（下一档 ${fmtNum(role?.boxPointLastReward)}）；` +
+        `服务端计数器 ${openboxCounterText(role)}`,
       "info",
     );
 
