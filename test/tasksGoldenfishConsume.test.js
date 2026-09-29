@@ -25,6 +25,7 @@ import { CHEST_POINTS } from "../src/utils/goldenfishConsumePlan.js";
 function createHarness({ state } = {}) {
   const sent = [];
   const logs = [];
+  const warnings = []; // message.warning 文案（并发闸门 / 租约跳过的断言用）
   const st = {
     recruitDone: state?.recruitDone ?? 0,
     boxScoreDone: state?.boxScoreDone ?? 0,
@@ -43,6 +44,7 @@ function createHarness({ state } = {}) {
   };
   let rateLimitOnce = state?.rateLimitOnce ?? false; // 下一次命令抛 400340
   let openboxFailOnce = state?.openboxFailOnce ?? false; // 下一次 item_openbox 抛乐观锁
+  const openboxAlwaysFail = state?.openboxAlwaysFail ?? false; // 每次 item_openbox 都抛乐观锁
   let recruitDeductHack = state?.recruitDeductHack ?? 0; // 第一帧招募多扣（触发扣减校验）
 
   const rolePayload = () => ({
@@ -81,7 +83,7 @@ function createHarness({ state } = {}) {
           return { role: rolePayload().role };
         }
         case "item_openbox": {
-          if (openboxFailOnce) {
+          if (openboxAlwaysFail || openboxFailOnce) {
             openboxFailOnce = false;
             throw new Error("服务器错误: 200020 - 宝箱数量已发生变化，请重新操作");
           }
@@ -108,7 +110,8 @@ function createHarness({ state } = {}) {
   const ref = (value) => ({ value });
   const deps = {
     selectedTokens: ref(["t1"]),
-    tokens: ref([{ id: "t1", name: "测试号" }]),
+    // serverId/roleId 决定跨标签页租约键（角色维度）→ 租约用例据此构造外部持有者
+    tokens: ref([{ id: "t1", name: "测试号", serverId: 9701, roleId: 100001 }]),
     tokenStatus: ref({}),
     isRunning: ref(false),
     shouldStop: ref(false),
@@ -118,7 +121,11 @@ function createHarness({ state } = {}) {
     batchSettings: { maxActive: 2 },
     tokenStore,
     addLog: (entry) => logs.push(entry),
-    message: { success: () => {}, warning: () => {}, error: () => {} },
+    message: {
+      success: () => {},
+      warning: (text) => warnings.push(String(text)),
+      error: () => {},
+    },
     currentRunningTokenId: ref(null),
     delayConfig: { action: 1, command: 0 },
     // 活动进度注入（阶段 B 前测试用；线上默认占位返回 null）
@@ -133,6 +140,7 @@ function createHarness({ state } = {}) {
   return {
     sent,
     logs,
+    warnings,
     tasks,
     state: st,
     shouldStop: deps.shouldStop,
@@ -629,4 +637,147 @@ test("并行：config.serialConsume=true → 全部串行（无并行日志，�
   assert.ok(firstBox > firstRecruit, `宝箱应在招募之后（串行）: ${cmds.join(",")}`);
   assert.ok(firstFish > firstBox, `钓鱼应在宝箱之后（串行）: ${cmds.join(",")}`);
   assert.equal(h.errorLogs().length, 0);
+});
+
+// -------------------------------- 宝箱库存日志 / 拒绝诊断 / 并发闸门 / 租约
+
+test("宝箱消耗：日志打真实宝箱库存（不能再是占位符 0）", async () => {
+  const h = createHarness({
+    state: { boxScoreDone: 0, platinum: 25, bronze: 7 },
+  });
+  await h.tasks.goldenfishBoxes({ boxTarget: 200 });
+
+  const inv = h.logs.find((l) => l.message.includes("宝箱库存："));
+  assert.ok(inv, "应有宝箱库存日志");
+  assert.ok(
+    inv.message.includes("木箱0 青铜7 黄金0 铂金25 钻石0"),
+    `库存应逐箱型打印真实数量：${inv.message}`,
+  );
+  assert.ok(inv.message.includes("可开积分约"), `应给出可开积分：${inv.message}`);
+  assert.ok(
+    !h.logs.some((l) => l.message.includes("宝箱库存 0")),
+    "不应再出现「宝箱库存 0」占位符",
+  );
+});
+
+test("宝箱消耗：三次重试全被拒 → 诊断一次给全（计划/已开/被拒帧/重读），并标记步骤失败", async () => {
+  const h = createHarness({
+    state: { boxScoreDone: 98000, platinum: 2, bronze: 20, openboxAlwaysFail: true },
+  });
+  await h.tasks.goldenfishBoxes({ boxTarget: 99000 });
+
+  assert.equal(
+    h.logs.filter((l) => l.message.includes("宝箱数量已变化")).length,
+    2,
+    "应有 2 条重试日志（首次 + 2 次重试 = 3 次尝试）",
+  );
+  const finalLog = h.logs.find((l) => l.message.includes("开箱被服务端拒绝"));
+  assert.ok(finalLog, "应有「开箱被服务端拒绝」的最终诊断");
+  assert.ok(
+    finalLog.message.includes("第 3 次") && finalLog.message.includes("计划 "),
+    `最终诊断应含第几次与计划：${finalLog.message}`,
+  );
+  assert.ok(
+    finalLog.message.includes("被拒帧 itemId 2004 × 2"),
+    `最终诊断应含被拒帧实参（铂金只剩 2 个 → 首帧为 2004×2）：${finalLog.message}`,
+  );
+  assert.ok(
+    h.logs.some((l) => l.message.includes("诊断：开箱前读到的库存")),
+    "应打印开箱前库存快照",
+  );
+  assert.ok(
+    h.logs.some((l) => l.message.includes("两次读到的宝箱数量一致")),
+    "未成功开箱时两次读应一致 → 走「服务端账本与快照不一致」分支",
+  );
+  assert.ok(
+    h.logs.some((l) => l.message.includes("consumeBoxes 失败")),
+    "应把该步骤标记为失败并继续后续",
+  );
+});
+
+test("并发闸门：已有消耗在跑时第二次启动被拒绝（同一页面不叠加运行）", async () => {
+  const h = createHarness({ state: PARALLEL_STATE });
+  const first = h.tasks.goldenfishConsumeAll(PARALLEL_CONFIG);
+  const framesAfterFirst = h.sent.length;
+  // 第一轮尚未结束 → 第二次必须直接拒绝，不能并发开同一个号的箱子
+  await h.tasks.goldenfishConsumeAll(PARALLEL_CONFIG);
+  assert.ok(
+    h.warnings.some((w) => w.includes("已有金鱼任务正在运行")),
+    "第二次启动应被拒绝",
+  );
+  await first;
+  assert.ok(h.sent.length >= framesAfterFirst);
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("并发租约：另一个标签页持有该角色租约 → 跳过该角色且不发任何帧", async () => {
+  // 裸 node 无 localStorage → 注入假的，模拟「另一个标签页正在跑同一个角色」。
+  // 键是**角色维度**（serverId-roleId），不是 token 条目 id。
+  const store = new Map([
+    ["xyzw:goldenfish:consumeLease:9701-100001", JSON.stringify({ tab: "other-tab", at: Date.now() })],
+  ]);
+  const origin = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
+  try {
+    const h = createHarness({ state: { recruitDone: 3800, recruitTickets: 500 } });
+    await h.tasks.goldenfishRecruit({ recruitTarget: 3900 });
+
+    assert.equal(h.sent.length, 0, "抢不到租约时不应发任何帧");
+    assert.ok(
+      h.logs.some((l) => l.message.includes("另一个标签页正在操作该角色")),
+      "应给出租约跳过日志",
+    );
+  } finally {
+    if (origin === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = origin;
+  }
+});
+
+test("同批重复导入：两条 token 指向同一角色 → 只跑第一条，另一条跳过", async () => {
+  // 无 localStorage（裸 node）→ 跨页租约降级放行，但**同轮角色去重**必须仍然生效
+  const logs = [];
+  const sent = [];
+  const ref = (v) => ({ value: v });
+  const tokenStore = {
+    sendMessageWithPromise: async (tokenId, cmd, params) => {
+      sent.push({ tokenId, cmd, params });
+      if (cmd === "role_getroleinfo") return { role: { items: { 1001: { quantity: 500 } } } };
+      return {};
+    },
+    closeWebSocketConnection: () => {},
+  };
+  const tasks = createTasksGoldenfish({
+    selectedTokens: ref(["a", "b"]),
+    // 两条 token，id/name 不同，但 serverId-roleId 完全相同
+    tokens: ref([
+      { id: "a", name: "大号", serverId: 9724, roleId: 625228095 },
+      { id: "b", name: "大号(副本)", serverId: 9724, roleId: 625228095 },
+    ]),
+    tokenStatus: ref({}),
+    isRunning: ref(false),
+    shouldStop: ref(false),
+    ensureConnection: async () => {},
+    releaseConnectionSlot: () => {},
+    connectionQueue: { active: 0 },
+    batchSettings: { maxActive: 4 },
+    tokenStore,
+    addLog: (entry) => logs.push(entry),
+    message: { success: () => {}, warning: () => {}, error: () => {} },
+    currentRunningTokenId: ref(null),
+    delayConfig: { action: 1, command: 0 },
+    readActivityProgress: () => ({ recruitDone: 3850, boxScoreDone: 0, fishDone: 0 }),
+  });
+  await tasks.goldenfishRecruit({ recruitTarget: 3900 });
+
+  // 只有一条 token 真的发了帧；另一条在租约闸门就被拦下
+  assert.deepEqual([...new Set(sent.map((s) => s.tokenId))], ["a"], "只应有第一条 token 发帧");
+  assert.ok(
+    logs.some((l) => l.message.includes("本批里有另一条 token 指向同一个角色")),
+    "应给出重复导入跳过日志",
+  );
+  assert.equal(logs.filter((l) => l.type === "error").length, 0);
 });

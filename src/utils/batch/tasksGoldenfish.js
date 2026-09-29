@@ -45,12 +45,15 @@ const nowText = () => new Date().toLocaleTimeString();
 import {
   BOX_POINT_STEP_COSTS,
   GOLDENFISH_CONSUME_DEFAULTS,
+  WOODEN_RESERVE,
+  chestScoreAvailable,
   chunkBatches,
   extractCommonActivityInfo,
   planCountConsume,
   planOpenAll,
   planPreciseOpen,
   readActivityProgress,
+  readChestInventory,
   resolveGoldenfishActivity,
   shouldKeepLooping,
 } from "../goldenfishConsumePlan.js";
@@ -234,6 +237,17 @@ const rewardText = (response) => {
   return list.map((item) => `itemId ${item.itemId} ×${item.value}`).join("、");
 };
 
+/**
+ * 页面级「金鱼消耗」运行标志（**跨 createTasksGoldenfish 实例共享**）
+ *
+ * 为什么不能只靠注入的 `isRunning`：页面会给「自由模板」的每个任务各建一份 deps
+ * （各自一个 `isRunning: ref(false)`），所以「定时任务 + 手动点击」这种叠加运行
+ * 注入的 ref 根本挡不住 —— 而**同一个角色被两个运行同时开箱**是服务端
+ * 「宝箱数量已发生变化，请重新操作」的**候选成因之一**（尚未证实，见 runGoldenfish 注释）。
+ * 本闸门是廉价的保险：拿不准就先不并发，宁可少跑一个号。
+ */
+let goldenfishRunActive = false;
+
 export function createTasksGoldenfish(deps) {
   const {
     selectedTokens,
@@ -402,13 +416,135 @@ export function createTasksGoldenfish(deps) {
   /** 限流中止信号（跨账号共享；runGoldenfish 收尾会重置 shouldStop，故用独立标志） */
   let consumeAbortAll = false;
 
+  /**
+   * 同角色并发闸门（2026-09-29 线上实测后新增）
+   *
+   * 现象：部分账号的 consumeBoxes 被服务端拒「宝箱数量已发生变化，请重新操作」，
+   *   而同期招募/钓鱼正常；「重读库存 + 重新规划」重试 3 次仍然被拒。
+   *
+   * ⚠️ 成因**尚未定论**，日志已排除若干假设、留下两个候选：
+   *   ① 同一个角色被两个运行同时开箱（重复点「一键消耗」/ 定时任务与手动运行重叠 /
+   *      另一个标签页在跑同批号）—— 本文件的三道闸门就是针对它；
+   *   ② 服务端判定「开箱数」的口径与我们读的 `role.items` 快照不一致（读到的库存 ≠
+   *      服务端账本），重读重规划自然无效。
+   *   已排除：不是「并行」引起（17:23 那轮招募「不足一批」、钓鱼「缺 task.3」一帧都没发，
+   *   宝箱照样被拒）；不是帧格式（与真实客户端抓包逐字段一致）；不是全号失败
+   *   （17:23 日志里 21a / 29c 全程在跑没报错 → 是**按账号分裂**，不是全局故障）。
+   *
+   * 派生的关键证据：**`宝箱消耗开始` 行原先打的是占位符 `"-"`，被 `fmtNum` 折成 0**，
+   *   所以「宝箱库存 0」是假象，真实库存与真实计划此前完全没进日志 —— 现已补齐，
+   *   下一次运行即可用「宝箱库存 / 首次计划 / 被拒帧 / 被拒后重读」四行定因。
+   *
+   * 三道闸门（都以**角色**为单位，不是 token 条目）：
+   *   1. 本页内：`isRunning` 已是 true 时拒绝再次启动（原来直接置 true，等于允许叠加运行）；
+   *   2. 本页本轮内：同一批里两条 token 指向同一角色 → 只跑第一条（重复导入去重）；
+   *   3. 跨标签页：localStorage 里给每个**角色**抢一份带 TTL 的租约，抢不到就跳过该号
+   *      （宁可少跑一个号，也不要把同一个号开成拉锯战）。
+   * 非浏览器环境（裸 node 测试）自动降级为无锁，不影响既有用例。
+   */
+  const RUN_LEASE_PREFIX = "xyzw:goldenfish:consumeLease:";
+  const RUN_LEASE_TTL_MS = 15 * 60 * 1000; // 租约有效期；运行中每 60 秒续一次
+  const RUN_TAB_ID = `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+
+  /**
+   * 同一轮运行内已占用的角色键（`serverId-roleId`）。
+   * 为什么需要它：跨标签页租约判定里「持有者就是本标签页」时是放行的（续租语义），
+   * 所以**同一批里两条 token 指向同一个角色**（重复导入 / 同名不同实例）会双双通过，
+   * 等于我们自己给自己制造并发开箱。这个集合在 runGoldenfish 起止各清一次。
+   */
+  let goldenfishActiveRoleKeys = new Set();
+
+  /**
+   * 租约键 = 角色维度（`serverId-roleId`），**不是** token 条目维度。
+   * 同一个角色可能被导入成两条 token（不同名称/不同 BIN 来源），按 tokenId 发租约对它们无效，
+   * 而真正会被服务端拒绝的是「同一个角色的箱子被两个运行同时开」。
+   */
+  const runLeaseKeyOf = (tokenId) => {
+    const item = tokens.value.find((t) => t.id === tokenId);
+    if (item?.roleId) return `${item.serverId ?? ""}-${item.roleId}`;
+    return String(item?.name ?? tokenId);
+  };
+
+  const leaseStore = () => {
+    try {
+      return typeof localStorage === "undefined" ? null : localStorage;
+    } catch {
+      return null;
+    }
+  };
+
+  /** 实际写进 localStorage 的键：前缀 + 角色维度键（同一角色跨 token 条目互斥） */
+  const runLeaseStoreKey = (tokenId) => RUN_LEASE_PREFIX + runLeaseKeyOf(tokenId);
+
+  const readRunLease = (tokenId) => {
+    const store = leaseStore();
+    if (!store) return null;
+    try {
+      const raw = store.getItem(runLeaseStoreKey(tokenId));
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const writeRunLease = (tokenId) => {
+    const store = leaseStore();
+    if (!store) return false;
+    try {
+      store.setItem(
+        runLeaseStoreKey(tokenId),
+        JSON.stringify({ tab: RUN_TAB_ID, at: Date.now() }),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const releaseRunLease = (tokenId) => {
+    const store = leaseStore();
+    if (!store) return;
+    try {
+      if (readRunLease(tokenId)?.tab === RUN_TAB_ID) {
+        store.removeItem(runLeaseStoreKey(tokenId));
+      }
+    } catch {
+      /* 忽略：租约清理失败不影响任务 */
+    }
+  };
+
+  /**
+   * @returns {{ok: boolean, reason?: "duplicate-in-run" | "other-tab" | "lease-write-failed"}}
+   * - 同一轮里已有另一条 token 指向同一角色 → `duplicate-in-run`（重复导入去重）
+   * - 另一个标签页持有该角色租约 → `other-tab`（跨页互斥）
+   * - 无 localStorage 的裸 node 环境降级为无锁，直接放行（但同轮去重仍生效）
+   */
+  const acquireRunLease = (tokenId) => {
+    const roleKey = runLeaseKeyOf(tokenId);
+    if (goldenfishActiveRoleKeys.has(roleKey)) return { ok: false, reason: "duplicate-in-run" };
+    goldenfishActiveRoleKeys.add(roleKey);
+    if (!leaseStore()) return { ok: true };
+    const held = readRunLease(tokenId);
+    if (held && held.tab !== RUN_TAB_ID && Date.now() - Number(held.at || 0) < RUN_LEASE_TTL_MS) {
+      return { ok: false, reason: "other-tab" };
+    }
+    return writeRunLease(tokenId) ? { ok: true } : { ok: false, reason: "lease-write-failed" };
+  };
+
   const runGoldenfish = async (stepIds, title, count = 1, config = null) => {
     if (selectedTokens.value.length === 0) {
       message.warning("请先选择账号");
       return;
     }
+    // 闸门 1：同一页面里不允许两轮消耗叠加（定时任务与手动点击撞车 = 同一账号被并发开箱）
+    if (isRunning.value || goldenfishRunActive) {
+      message.warning("已有金鱼任务正在运行，请等本轮结束后再跑（同一账号并发消耗会被服务端拒绝）");
+      return;
+    }
 
     consumeAbortAll = false;
+    goldenfishActiveRoleKeys = new Set(); // 本轮角色占位表清空（同批重复导入去重）
+    goldenfishRunActive = true;
     isRunning.value = true;
     shouldStop.value = false;
     selectedTokens.value.forEach((id) => {
@@ -421,6 +557,26 @@ export function createTasksGoldenfish(deps) {
       tokenStatus.value[tokenId] = "running";
       const token = tokens.value.find((item) => item.id === tokenId);
       const tokenName = token?.name || tokenId;
+
+      // 闸门 2：角色维度互斥 —— 同批重复导入 / 另一个标签页在跑同一个角色，都跳过
+      const lease = acquireRunLease(tokenId);
+      if (!lease.ok) {
+        tokenStatus.value[tokenId] = "failed";
+        const why =
+          lease.reason === "duplicate-in-run"
+            ? "本批里有另一条 token 指向同一个角色（重复导入）"
+            : lease.reason === "other-tab"
+              ? "另一个标签页正在操作该角色（同浏览器租约）"
+              : "本页写不进角色租约（localStorage 不可写）";
+        addLog({
+          time: nowText(),
+          message: `⏭️ ${tokenName} 跳过：${why} —— 同一角色被并发消耗会被服务端拒「宝箱数量已发生变化」`,
+          type: "warning",
+        });
+        // 这里还没进连接队列（ensureConnection 未调用）→ 不能减槽位
+        return;
+      }
+      const leaseTimer = leaseStore() ? setInterval(() => writeRunLease(tokenId), 60 * 1000) : null;
 
       try {
         addLog({
@@ -533,6 +689,8 @@ export function createTasksGoldenfish(deps) {
           type: "error",
         });
       } finally {
+        if (leaseTimer) clearInterval(leaseTimer);
+        releaseRunLease(tokenId); // 角色级租约：本轮结束就还回去（异常路径也走这里）
         tokenStore.closeWebSocketConnection(tokenId);
         releaseConnectionSlot();
         addLog({
@@ -543,11 +701,16 @@ export function createTasksGoldenfish(deps) {
       }
     });
 
-    await Promise.all(taskPromises);
-
-    currentRunningTokenId.value = null;
-    isRunning.value = false;
-    shouldStop.value = false;
+    try {
+      await Promise.all(taskPromises);
+    } finally {
+      // 无论成功/异常都要放闸，否则后续所有金鱼任务都会被自己的标志挡住
+      goldenfishRunActive = false;
+      goldenfishActiveRoleKeys = new Set(); // 角色占位清空（下一轮重新抢）
+      currentRunningTokenId.value = null;
+      isRunning.value = false;
+      shouldStop.value = false;
+    }
     message.success(`${title}结束`);
   };
 
@@ -609,9 +772,30 @@ export function createTasksGoldenfish(deps) {
     return progress;
   };
 
-  /** 进度日志三元组（skill 规范：目标/当前/差值/库存 + 错误原文） */
+  /** 进度日志三元组（skill 规范：目标/当前/差值/库存 + 错误原文）
+   *  stock 为 null 时打「-」而不是 0 —— fmtNum(null) 会折成 0，
+   *  宝箱 step 传占位符时线上日志永远是「宝箱库存 0」，把最有用的排查信息丢掉（2026-09-29） */
   const progressText = (target, done, stock, stockName) =>
-    `目标 ${fmtNum(target)} / 已做 ${fmtNum(done)} / 差值 ${fmtNum(Math.max(0, target - done))} / ${stockName}库存 ${fmtNum(stock)}`;
+    `目标 ${fmtNum(target)} / 已做 ${fmtNum(done)} / 差值 ${fmtNum(Math.max(0, target - done))} / ${stockName}库存 ${stock == null ? "-" : fmtNum(stock)}`;
+
+  /** 宝箱名称（与 CHEST_POINTS 的键一一对应，只用于日志可读性） */
+  const CHEST_NAMES = Object.freeze({
+    2001: "木箱",
+    2002: "青铜",
+    2003: "黄金",
+    2004: "铂金",
+    2005: "钻石",
+  });
+
+  /** 宝箱库存可读文案：`木箱8,637 青铜2,216 黄金474 铂金329 钻石241`
+   *  🔴 宝箱 step 必须打真实库存：这个数字是判断「服务端为什么拒开箱」的第一手证据
+   *  （2026-09-29 线上连片「宝箱数量已发生变化」时，日志里全是占位符 0，没法定位） */
+  const chestInventoryText = (items) => {
+    const inv = readChestInventory(items);
+    return Object.keys(inv)
+      .map((id) => `${CHEST_NAMES[id] || `道具${id}`}${fmtNum(inv[id])}`)
+      .join(" ");
+  };
 
   /**
    * 消耗 step：招募（hero_recruit recruitType:1，10/发+余数，消耗招募令 1001）
@@ -811,14 +995,20 @@ export function createTasksGoldenfish(deps) {
 
   /** 开箱计划逐批发送（10/发+余数），返回最后一份带 role 的响应。
    * inventory = 发送前已知的库存快照（可选）：逐帧校验该箱型扣减 = 本帧数量，
-   * 不符抛错防盲做（2026-09-29 master 口径；Item_OpenBoxResp.role.items 实证携带余额） */
-  const sendOpenBoxSteps = async ({ tokenId, token, steps, inventory }) => {
+   * 不符抛错防盲做（2026-09-29 master 口径；Item_OpenBoxResp.role.items 实证携带余额）
+   * progress = 可选的进度记账对象（诊断用）：记录「本次已成功开多少 / 被拒的是哪一帧」 */
+  const sendOpenBoxSteps = async ({ tokenId, token, steps, inventory, progress }) => {
     let lastResp = null;
     let total = 0;
     let lastItems = inventory ?? null;
     for (const step of steps) {
       for (const n of chunkBatches(step.number, 10)) {
         if (shouldStop.value) return lastResp;
+        if (progress) {
+          // 先登记「待发帧」：若这条被服务端拒，progress 里留下的就是被拒帧的实参
+          progress.pendingItemId = step.itemId;
+          progress.pendingNumber = n;
+        }
         lastResp = await sendWithRateLimit(
           tokenId,
           "item_openbox",
@@ -837,6 +1027,7 @@ export function createTasksGoldenfish(deps) {
           if (now != null) lastItems = { ...lastItems, [step.itemId]: now };
         }
         total += n;
+        if (progress) progress.opened = total;
         await sleep();
       }
     }
@@ -851,6 +1042,12 @@ export function createTasksGoldenfish(deps) {
    * 服务端对 item_openbox 做数量校验（乐观锁）：计划基于过期库存时会拒
    * 「宝箱数量已发生变化，请重新操作」→ 重新拉背包、重新规划、再发（最多 2 次）。
    * replan(role) → { steps, ...extra }；steps 为空 = 无箱可开（empty: true 返回）。
+   *
+   * 🔴 2026-09-29 线上实测（17:05 / 17:23）：**重读 + 重规划 3 次全部被拒**，
+   *    说明原因不在「我们手里的快照过期」这一层。两个候选成因（见 runGoldenfish 注释）：
+   *    ① 同一个角色被两个运行同时开箱；② 服务端「开箱数」口径与 `role.items` 不一致。
+   *    所以最后一次尝试失败时必须把「我们以为的库存 / 我们发的计划 / 被拒的帧 /
+   *    服务端拒绝后的重读」全部落到日志里 —— 一次运行就能把①和②分开，不用再猜。
    */
   const sendOpenBoxStepsWithReread = async ({ tokenId, token, replan }) => {
     for (let attempt = 0; ; attempt += 1) {
@@ -860,19 +1057,55 @@ export function createTasksGoldenfish(deps) {
       if (steps.length === 0) {
         return { empty: true, role: freshRole, plan };
       }
+      const progress = { opened: 0, pendingItemId: null, pendingNumber: null };
       try {
         const lastResp = await sendOpenBoxSteps({
           tokenId,
           token,
           steps,
           inventory: freshRole?.items,
+          progress,
         });
         return { empty: false, lastResp, role: freshRole, plan };
       } catch (error) {
-        if (attempt >= 2 || !isChestCountChangedError(error)) throw error;
+        if (!isChestCountChangedError(error)) throw error;
+        const planText = steps.map((s) => `${s.itemId}×${s.number}`).join("、");
+        if (attempt >= 2) {
+          // 最后一次：把关键诊断一次打全（计划 / 已开 / 被拒帧 / 拒绝后重读 / 连续两次读是否一致）
+          const afterRole = await fetchRoleWithLimit(tokenId, token).catch(() => null);
+          log(
+            token.name,
+            `❌ 开箱被服务端拒绝（第 ${attempt + 1} 次，不再重试）：计划 ${planText}；` +
+              `本次已成功开 ${fmtNum(progress.opened)} 个；被拒帧 itemId ${progress.pendingItemId} × ${progress.pendingNumber}`,
+            "error",
+          );
+          log(
+            token.name,
+            `诊断：开箱前读到的库存 ${chestInventoryText(freshRole?.items)}；` +
+              `被拒后重读 ${afterRole ? chestInventoryText(afterRole.items) : "失败"}；` +
+              `服务端返回 ${errorText(error)}`,
+            "error",
+          );
+          if (afterRole) {
+            const before = readChestInventory(freshRole?.items);
+            const after = readChestInventory(afterRole.items);
+            const changed = Object.keys(before).filter((id) => before[id] !== after[id]);
+            log(
+              token.name,
+              changed.length > 0
+                ? `⚠️ 两次读到的宝箱数量不一致（${changed.map((id) => `${id}: ${before[id]}→${after[id]}`).join("，")}）——` +
+                  `极可能有另一个运行/设备正在操作同一个角色（同一账号并发开箱会被服务端以「数量已发生变化」拒绝）`
+                : `两次读到的宝箱数量一致（${chestInventoryText(freshRole?.items)}），` +
+                  `即服务端账本与背包快照不一致 —— 请把本行诊断发给排查人（重点：该号是否在别处跑过消耗）`,
+              "warning",
+            );
+          }
+          throw error;
+        }
         log(
           token.name,
-          `⏳ 宝箱数量已变化（服务端库存与计划不一致），2 秒后重新读库存重试（第 ${attempt + 1}/2 次）`,
+          `⏳ 宝箱数量已变化（服务端库存与计划不一致），2 秒后重新读库存重试（第 ${attempt + 1}/2 次）：` +
+            `本次计划 ${planText}，已开 ${fmtNum(progress.opened)} 个，被拒帧 ${progress.pendingItemId} × ${progress.pendingNumber}`,
           "warning",
         );
         await sleep(2000);
@@ -903,7 +1136,15 @@ export function createTasksGoldenfish(deps) {
     let accumulated = Math.max(0, Math.floor(Number(progressFirst.boxScoreDone) || 0));
     log(
       token.name,
-      `宝箱消耗开始（活动 ${progressFirst.activityId}）：${progressText(target, accumulated, "-", "宝箱")}`,
+      `宝箱消耗开始（活动 ${progressFirst.activityId}）：${progressText(target, accumulated, null, "宝箱")}`,
+      "info",
+    );
+    // 🔴 真实宝箱库存必须进日志（2026-09-29 教训：这里原先是 "-" 占位符，被 fmtNum 折成 0，
+    //    线上排查「宝箱数量已发生变化」时看不出手里到底有多少箱）
+    log(
+      token.name,
+      `宝箱库存：${chestInventoryText(role?.items)}（木箱保留 ${fmtNum(WOODEN_RESERVE)} 个不动）；` +
+        `可开积分约 ${fmtNum(chestScoreAvailable(role?.items))}；未兑换宝箱积分 ${fmtNum(role?.boxPoint)}（下一档 ${fmtNum(role?.boxPointLastReward)}）`,
       "info",
     );
 
