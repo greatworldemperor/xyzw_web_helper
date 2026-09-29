@@ -1,6 +1,10 @@
 import { isInCurrentWeek, sleep } from "@/utils/base";
 import { gameLogger } from "@/utils/logger";
 import { findAnswer } from "@/utils/studyQuestionsFromJSON";
+import {
+  claimAllStudyRewards,
+  STUDY_REWARD_IDS,
+} from "../../utils/studyRewardClaim.js";
 import { patchStudyStatus } from "../../utils/studyStatusStore.js";
 import type { EVM, XyzwSession } from ".";
 
@@ -146,25 +150,25 @@ export const StudyPlugin = ({
     // 更新状态为正在领取奖励
     patchStudyStatus(tokenId, { status: 'claiming_rewards' })
     syncUiStatus(data, { status: 'claiming_rewards' })
-    // 领取所有等级的奖励 (1-10)
-    for (let rewardId = 1; rewardId <= 10; rewardId++) {
-      try {
-        client?.send('study_claimreward', {
-          rewardId: rewardId
-        })
-        await new Promise(resolve => setTimeout(resolve, 200))
-        gameLogger.verbose(`已发送奖励领取请求: rewardId=${rewardId}`)
-      } catch (error) {
-        gameLogger.error(`发送奖励领取请求失败 (rewardId=${rewardId}):`, error)
-      }
-    }
+    // 领取所有等级的奖励 (1-10)：带 ack + 重试 + 失败补领
+    const rewardResult = await claimAllStudyRewards(client, {
+      logVerbose: (msg: string) => gameLogger.verbose(msg),
+      logWarn: (msg: string) => gameLogger.warn(msg),
+    })
 
-    gameLogger.info('一键答题完成！已尝试领取所有奖励')
+    gameLogger.info(
+      `一键答题完成！奖励领取 ${rewardResult.claimed.length}/${STUDY_REWARD_IDS.length}` +
+        (rewardResult.failed.length
+          ? `，失败档位: ${rewardResult.failed.join(",")}`
+          : ""),
+    )
 
     // 更新状态为完成（按 tokenId 隔离，立即唤醒批量侧等待者）
     patchStudyStatus(tokenId, {
       status: 'completed',
       isAnswering: false,
+      claimedRewardIds: rewardResult.claimed,
+      failedRewardIds: rewardResult.failed,
       timestamp: Date.now(),
     })
 

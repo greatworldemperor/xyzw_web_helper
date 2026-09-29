@@ -401,12 +401,21 @@ export function createTasksHangUp(deps) {
 
         if (completed) {
           const status = getStudyStatus(tokenId);
+          const claimed = status.claimedRewardIds?.length || 0;
+          const missed = status.failedRewardIds?.length || 0;
           tokenStatus.value[tokenId] = "completed";
           addLog({
             time: new Date().toLocaleTimeString(),
-            message: `=== ${token.name} 答题完成（${status.answeredCount}/${status.questionCount} 题） ===`,
-            type: "success",
+            message: `=== ${token.name} 答题完成（${status.answeredCount}/${status.questionCount} 题，奖励 ${claimed}/${claimed + missed}） ===`,
+            type: missed > 0 ? "warning" : "success",
           });
+          if (missed > 0) {
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `${token.name} 有 ${missed} 档奖励未确认领取（档位 ${status.failedRewardIds.join("、")}），建议手动补领`,
+              type: "warning",
+            });
+          }
         }
       } catch (error) {
         console.error(error);
