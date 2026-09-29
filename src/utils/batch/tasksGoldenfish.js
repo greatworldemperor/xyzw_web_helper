@@ -239,15 +239,20 @@ const rewardText = (response) => {
 };
 
 /**
- * 页面级「金鱼消耗」运行标志（**跨 createTasksGoldenfish 实例共享**）
+ * 页面级「金鱼任务」运行标志（**跨 createTasksGoldenfish 实例共享**）
  *
  * 为什么不能只靠注入的 `isRunning`：页面会给「自由模板」的每个任务各建一份 deps
  * （各自一个 `isRunning: ref(false)`），所以「定时任务 + 手动点击」这种叠加运行
- * 注入的 ref 根本挡不住 —— 而**同一个角色被两个运行同时开箱**是服务端
- * 「宝箱数量已发生变化，请重新操作」的**候选成因之一**（尚未证实，见 runGoldenfish 注释）。
- * 本闸门是廉价的保险：拿不准就先不并发，宁可少跑一个号。
+ * 注入的 ref 根本挡不住。本闸门是廉价的保险：拿不准就先不并发，宁可少跑一个号。
+ *
+ * 📌 2026-09-29 定案后口径修正：当初加它是为了防「宝箱数量已发生变化」，
+ *    而那个报错的真凶是**服务端只认整批开箱**（与本闸门无关）。闸门保留的理由改成
+ *    通用的一条：**同一个角色的背包同一时间只允许一个运行去写**。
  */
 let goldenfishRunActive = false;
+
+/** `pagehide` 卸载释放租约的监听器只装一次（模块级，跨实例共享） */
+let leaseUnloadHookInstalled = false;
 
 export function createTasksGoldenfish(deps) {
   const {
@@ -418,34 +423,65 @@ export function createTasksGoldenfish(deps) {
   let consumeAbortAll = false;
 
   /**
-   * 同角色并发闸门（2026-09-29 线上实测后新增）
+   * 同角色并发闸门（2026-09-29 线上实测后新增；成因同日定案）
    *
-   * 现象：部分账号的 consumeBoxes 被服务端拒「宝箱数量已发生变化，请重新操作」，
-   *   而同期招募/钓鱼正常；「重读库存 + 重新规划」重试 3 次仍然被拒。
+   * 历史：部分账号的 consumeBoxes 被服务端拒「宝箱数量已发生变化，请重新操作」。
+   * ✅ **已定案：真凶是服务端只接受整批开箱（单帧 number 恰好 = 10），余数批被拒**
+   *    ——**与同角色并发无关**（证据链见本文件 `sendOpenBoxStepsWithReread` 注释、
+   *    `goldenfishConsumePlan.OPENBOX_BATCH_SIZE` 注释、`local-data/goldenfish/batch_log1.txt`）。
    *
-   * ⚠️ 成因**尚未定论**，日志已排除若干假设、留下两个候选：
-   *   ① 同一个角色被两个运行同时开箱（重复点「一键消耗」/ 定时任务与手动运行重叠 /
-   *      另一个标签页在跑同批号）—— 本文件的三道闸门就是针对它；
-   *   ② 服务端判定「开箱数」的口径与我们读的 `role.items` 快照不一致（读到的库存 ≠
-   *      服务端账本），重读重规划自然无效。
-   *   已排除：不是「并行」引起（17:23 那轮招募「不足一批」、钓鱼「缺 task.3」一帧都没发，
-   *   宝箱照样被拒）；不是帧格式（与真实客户端抓包逐字段一致）；不是全号失败
-   *   （17:23 日志里 21a / 29c 全程在跑没报错 → 是**按账号分裂**，不是全局故障）。
-   *
-   * 派生的关键证据：**`宝箱消耗开始` 行原先打的是占位符 `"-"`，被 `fmtNum` 折成 0**，
-   *   所以「宝箱库存 0」是假象，真实库存与真实计划此前完全没进日志 —— 现已补齐，
-   *   下一次运行即可用「宝箱库存 / 首次计划 / 被拒帧 / 被拒后重读」四行定因。
+   * ⇒ 这三道闸门原本的「防『宝箱数量已发生变化』」理由**已失效**，但**保留**仍有价值：
+   *   两个运行同时写同一个角色的背包本身就不该发生（多客户端竞争会丢道具 / 互相打断）。
+   *   语义因此修正为「同一角色同一时间只允许一个运行写背包」。
    *
    * 三道闸门（都以**角色**为单位，不是 token 条目）：
-   *   1. 本页内：`isRunning` 已是 true 时拒绝再次启动（原来直接置 true，等于允许叠加运行）；
+   *   1. 本页内：`isRunning` / `goldenfishRunActive` 已是 true 时拒绝再次启动；
    *   2. 本页本轮内：同一批里两条 token 指向同一角色 → 只跑第一条（重复导入去重）；
-   *   3. 跨标签页：localStorage 里给每个**角色**抢一份带 TTL 的租约，抢不到就跳过该号
-   *      （宁可少跑一个号，也不要把同一个号开成拉锯战）。
+   *   3. 跨标签页 / 跨窗口：localStorage 里给每个**角色**抢一份带 TTL 的租约，抢不到就跳过该号。
    * 非浏览器环境（裸 node 测试）自动降级为无锁，不影响既有用例。
+   *
+   * 🔴 2026-09-29 19:08 实战暴露两个缺陷（`local-data/goldenfish/role_conflict.txt`：
+   *    一个 164 号的运行里 14 个跑成、**150 个被租约挡掉**，且理由写的是早已证伪的并发说）：
+   *    a. **`RUN_TAB_ID` 原本是「每个 createTasksGoldenfish 实例」一个**，而自由模板每执行一次
+   *       就新建一份 deps/实例（见 BatchDailyTasks.vue `runFlexibleBatchTask`）⇒
+   *       **同一个页面里先后两次运行会互相认成「另一个标签页」**；页面重载后新实例同样
+   *       认不出自己刚留下的租约。→ 改用 **sessionStorage 里的「每标签页」id**：
+   *       同页跨实例一致、重载后仍是同一个 id（既治同页误判，也让重载后的会话能接管自己的旧租约）；
+   *       而 iframe / 另一个窗口各有独立 sessionStorage ⇒ 跨上下文互斥依旧有效。
+   *    b. **租约只在每个 token 的 `finally` 里释放**，页面重载/关闭根本不走它 ⇒
+   *       没跑完的号会**白占租约**（原 TTL 15 分钟），下一次运行成片跳过。→ 补 `pagehide`
+   *       全量归还，并把 TTL 收紧到 5 分钟（运行中每 60 秒续租，仍留 4 次容错）。
+   *    c. 跳过日志现在打出**持有者 tab + 最后续租时间**，一眼分清「真·另一个标签页」与
+   *      「自己上次留下的僵尸租约」。
    */
+
+  /** 租约键前缀（键 = 前缀 + 角色维度 `serverId-roleId`） */
   const RUN_LEASE_PREFIX = "xyzw:goldenfish:consumeLease:";
-  const RUN_LEASE_TTL_MS = 15 * 60 * 1000; // 租约有效期；运行中每 60 秒续一次
-  const RUN_TAB_ID = `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  /** 租约有效期；运行中每 60 秒续一次（5 分钟 ≈ 容忍 4 次续租丢失，同时把崩溃残留窗口压到最短） */
+  const RUN_LEASE_TTL_MS = 5 * 60 * 1000;
+  /** 运行中续租间隔 */
+  const RUN_LEASE_RENEW_MS = 60 * 1000;
+  /** 本标签页 id 的 sessionStorage 键 */
+  const RUN_TAB_ID_STORAGE_KEY = "xyzw:goldenfish:tabId";
+
+  /**
+   * 本**标签页**的身份（不是实例身份）。
+   * sessionStorage 的特性正好合用：同一个标签页内跨重载保持、关闭标签页即消失。
+   * 没有 sessionStorage（裸 node 测试）时退化为实例级随机 id。
+   */
+  const RUN_TAB_ID = (() => {
+    const fresh = `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    try {
+      const s = typeof sessionStorage === "undefined" ? null : sessionStorage;
+      if (!s) return fresh;
+      const kept = s.getItem(RUN_TAB_ID_STORAGE_KEY);
+      if (kept) return kept;
+      s.setItem(RUN_TAB_ID_STORAGE_KEY, fresh);
+      return fresh;
+    } catch {
+      return fresh;
+    }
+  })();
 
   /**
    * 同一轮运行内已占用的角色键（`serverId-roleId`）。
@@ -515,9 +551,57 @@ export function createTasksGoldenfish(deps) {
   };
 
   /**
-   * @returns {{ok: boolean, reason?: "duplicate-in-run" | "other-tab" | "lease-write-failed"}}
+   * 归还**本标签页持有的全部租约**（按前缀扫 localStorage，只删 `tab === 本页` 的条目）。
+   *
+   * 为什么必须有：常规释放点在每个 token 的 `finally`，而**页面重载 / 关闭标签页 /
+   * 跳走都不会走到它** ⇒ 没跑完的号会白占租约直到 TTL 过期，下一次运行成片跳过
+   * （2026-09-29 19:08 `role_conflict.txt` 实测：150 个号就是这么被挡掉的）。
+   * 用 `pagehide`（关闭/刷新/跳转都触发）而不是 `beforeunload`（关标签页时不可靠）。
+   * 跨实例只需装一次：`RUN_TAB_ID` 来自 sessionStorage，同页所有实例取值相同。
+   */
+  const releaseAllOwnLeases = () => {
+    const store = leaseStore();
+    if (!store) return;
+    try {
+      const keys = [];
+      for (let i = 0; i < store.length; i += 1) {
+        const key = store.key(i);
+        if (key && key.startsWith(RUN_LEASE_PREFIX)) keys.push(key);
+      }
+      for (const key of keys) {
+        try {
+          const raw = store.getItem(key);
+          if (raw && JSON.parse(raw)?.tab === RUN_TAB_ID) store.removeItem(key);
+        } catch {
+          /* 单条坏了不影响其它 */
+        }
+      }
+    } catch {
+      /* 卸载路径尽力而为，失败就让 TTL 兜底 */
+    }
+  };
+
+  if (typeof window !== "undefined" && !leaseUnloadHookInstalled) {
+    leaseUnloadHookInstalled = true;
+    window.addEventListener("pagehide", releaseAllOwnLeases);
+  }
+
+  /**
+   * 被别的运行占着时，把「谁占的、多久前续的」打进日志 ——
+   * 一眼分清「真·另一个标签页/窗口在跑」与「自己上次留下的僵尸租约」。
+   */
+  const leaseHolderText = (held) => {
+    if (!held) return "";
+    const at = Number(held.at) || 0;
+    const agoText =
+      at > 0 ? `，最后续租 ${new Date(at).toLocaleTimeString()}（${Math.max(0, Math.round((Date.now() - at) / 1000))} 秒前）` : "";
+    return `（持有者 ${held.tab ?? "未知"}${agoText}）`;
+  };
+
+  /**
+   * @returns {{ok: boolean, reason?: "duplicate-in-run" | "other-tab" | "lease-write-failed", held?: object}}
    * - 同一轮里已有另一条 token 指向同一角色 → `duplicate-in-run`（重复导入去重）
-   * - 另一个标签页持有该角色租约 → `other-tab`（跨页互斥）
+   * - 另一个标签页/窗口持有该角色租约 → `other-tab`（跨上下文互斥；`held` 是持有者信息）
    * - 无 localStorage 的裸 node 环境降级为无锁，直接放行（但同轮去重仍生效）
    */
   const acquireRunLease = (tokenId) => {
@@ -527,7 +611,7 @@ export function createTasksGoldenfish(deps) {
     if (!leaseStore()) return { ok: true };
     const held = readRunLease(tokenId);
     if (held && held.tab !== RUN_TAB_ID && Date.now() - Number(held.at || 0) < RUN_LEASE_TTL_MS) {
-      return { ok: false, reason: "other-tab" };
+      return { ok: false, reason: "other-tab", held };
     }
     return writeRunLease(tokenId) ? { ok: true } : { ok: false, reason: "lease-write-failed" };
   };
@@ -567,17 +651,21 @@ export function createTasksGoldenfish(deps) {
           lease.reason === "duplicate-in-run"
             ? "本批里有另一条 token 指向同一个角色（重复导入）"
             : lease.reason === "other-tab"
-              ? "另一个标签页正在操作该角色（同浏览器租约）"
+              ? "另一个标签页/窗口正在操作该角色（同浏览器租约）"
               : "本页写不进角色租约（localStorage 不可写）";
         addLog({
           time: nowText(),
-          message: `⏭️ ${tokenName} 跳过：${why} —— 同一角色被并发消耗会被服务端拒「宝箱数量已发生变化」`,
+          message:
+            `⏭️ ${tokenName} 跳过：${why}${leaseHolderText(lease.held)}` +
+            `（同一角色的背包同一时间只允许一个运行写；被僵尸租约挡住的话，最长 ${fmtNum(RUN_LEASE_TTL_MS / 60000)} 分钟后自动过期）`,
           type: "warning",
         });
         // 这里还没进连接队列（ensureConnection 未调用）→ 不能减槽位
         return;
       }
-      const leaseTimer = leaseStore() ? setInterval(() => writeRunLease(tokenId), 60 * 1000) : null;
+      const leaseTimer = leaseStore()
+        ? setInterval(() => writeRunLease(tokenId), RUN_LEASE_RENEW_MS)
+        : null;
 
       try {
         addLog({

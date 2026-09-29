@@ -804,31 +804,111 @@ test("并发闸门：已有消耗在跑时第二次启动被拒绝（同一页�
   assert.equal(h.errorLogs().length, 0);
 });
 
-test("并发租约：另一个标签页持有该角色租约 → 跳过该角色且不发任何帧", async () => {
-  // 裸 node 无 localStorage → 注入假的，模拟「另一个标签页正在跑同一个角色」。
-  // 键是**角色维度**（serverId-roleId），不是 token 条目 id。
-  const store = new Map([
-    ["xyzw:goldenfish:consumeLease:9701-100001", JSON.stringify({ tab: "other-tab", at: Date.now() })],
-  ]);
-  const origin = globalThis.localStorage;
-  globalThis.localStorage = {
+// ------------------------------------------------- 角色租约（跨标签页互斥）
+
+/** 假 localStorage（Map 版；补齐 length/key —— 卸载释放会按前缀扫描） */
+function fakeLocalStorage(entries = []) {
+  const store = new Map(entries);
+  return {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+    key: (i) => [...store.keys()][i] ?? null,
+    get length() {
+      return store.size;
+    },
+  };
+}
+
+/** 假 sessionStorage（标签页身份：同一个 id 代表「同一个标签页」） */
+function fakeSessionStorage(tabId) {
+  const store = new Map(tabId ? [["xyzw:goldenfish:tabId", tabId]] : []);
+  return {
     getItem: (k) => (store.has(k) ? store.get(k) : null),
     setItem: (k, v) => store.set(k, String(v)),
     removeItem: (k) => store.delete(k),
   };
+}
+
+/** 在指定 storage/window 环境下跑一段代码，结束后还原全局（裸 node 默认三者都 undefined） */
+async function withStorageEnv(env, fn) {
+  const keys = ["localStorage", "sessionStorage", "window"];
+  const origin = Object.fromEntries(keys.map((k) => [k, globalThis[k]]));
+  for (const k of keys) {
+    if (k in env) globalThis[k] = env[k];
+  }
   try {
+    return await fn();
+  } finally {
+    for (const k of keys) {
+      if (origin[k] === undefined) delete globalThis[k];
+      else globalThis[k] = origin[k];
+    }
+  }
+}
+
+const LEASE_KEY = "xyzw:goldenfish:consumeLease:9701-100001";
+
+test("并发租约：另一个标签页持有该角色租约 → 跳过该角色且不发任何帧（并打出持有者/续租时间）", async () => {
+  // 裸 node 无 localStorage → 注入假的，模拟「另一个标签页正在跑同一个角色」。
+  // 键是**角色维度**（serverId-roleId），不是 token 条目 id。
+  const ls = fakeLocalStorage([[LEASE_KEY, JSON.stringify({ tab: "other-tab", at: Date.now() - 3000 })]]);
+  await withStorageEnv({ localStorage: ls, sessionStorage: fakeSessionStorage("tab-mine") }, async () => {
     const h = createHarness({ state: { recruitDone: 3800, recruitTickets: 500 } });
     await h.tasks.goldenfishRecruit({ recruitTarget: 3900 });
 
     assert.equal(h.sent.length, 0, "抢不到租约时不应发任何帧");
+    const skip = h.logs.find((l) => l.message.includes("跳过"));
+    assert.ok(skip, "应给出租约跳过日志");
     assert.ok(
-      h.logs.some((l) => l.message.includes("另一个标签页正在操作该角色")),
-      "应给出租约跳过日志",
+      skip.message.includes("另一个标签页/窗口正在操作该角色"),
+      `应说明是跨标签页占用：${skip.message}`,
     );
-  } finally {
-    if (origin === undefined) delete globalThis.localStorage;
-    else globalThis.localStorage = origin;
-  }
+    assert.ok(skip.message.includes("持有者 other-tab"), `应打出持有者：${skip.message}`);
+    assert.ok(skip.message.includes("秒前"), `应打出最后续租距今多久：${skip.message}`);
+    assert.ok(
+      !skip.message.includes("宝箱数量已发生变化"),
+      `跳过理由不该再引已证伪的并发→报错因果：${skip.message}`,
+    );
+  });
+});
+
+test("并发租约：sessionStorage 同 id（同一个标签页）留下的旧租约不算「另一个标签页」→ 正常接管", async () => {
+  // 旧实现按「createTasksGoldenfish 实例」生成 tab id ⇒ 同页先后两次运行会互认成别的标签页，
+  // 页面重载后的新实例也认不出自己刚写的租约；改成「标签页」维度后必须能接管。
+  const ls = fakeLocalStorage([[LEASE_KEY, JSON.stringify({ tab: "tab-same", at: Date.now() })]]);
+  await withStorageEnv({ localStorage: ls, sessionStorage: fakeSessionStorage("tab-same") }, async () => {
+    const h = createHarness({ state: { recruitDone: 3850, recruitTickets: 500 } });
+    await h.tasks.goldenfishRecruit({ recruitTarget: 3900 });
+
+    assert.equal(h.sent.filter((s) => s.cmd === "hero_recruit").length, 5, "自己的旧租约应被接管并正常发帧");
+    assert.ok(!h.logs.some((l) => l.message.includes("跳过")), "不该出现跳过日志");
+  });
+});
+
+test("并发租约：pagehide（关标签页/刷新）归还本标签页的租约，不留僵尸（且不误删别人的）", async () => {
+  const OTHER_KEY = "xyzw:goldenfish:consumeLease:9701-999999";
+  const ls = fakeLocalStorage([[OTHER_KEY, JSON.stringify({ tab: "other-tab", at: Date.now() })]]);
+  const listeners = [];
+  const fakeWindow = { addEventListener: (type, fn) => listeners.push({ type, fn }) };
+
+  await withStorageEnv(
+    { localStorage: ls, sessionStorage: fakeSessionStorage("tab-mine"), window: fakeWindow },
+    async () => {
+      const h = createHarness({ state: { recruitDone: 3850, recruitTickets: 500 } });
+      await h.tasks.goldenfishRecruit({ recruitTarget: 3900 });
+
+      // 跑完后租约本来就释放了 → 手工放一份自己的，模拟「跑到一半被刷新/关页」
+      ls.setItem(LEASE_KEY, JSON.stringify({ tab: "tab-mine", at: Date.now() }));
+
+      const hook = listeners.find((x) => x.type === "pagehide");
+      assert.ok(hook, "应注册 pagehide 卸载钩子");
+      hook.fn();
+
+      assert.equal(ls.getItem(LEASE_KEY), null, "自己的租约应在卸载时归还");
+      assert.ok(ls.getItem(OTHER_KEY) != null, "别人的租约不能被误删");
+    },
+  );
 });
 
 test("同批重复导入：两条 token 指向同一角色 → 只跑第一条，另一条跳过", async () => {
