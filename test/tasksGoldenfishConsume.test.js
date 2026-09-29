@@ -603,6 +603,51 @@ test("宝箱消耗：循环内领取后开普通道具，铂金箱回流进开�
   assert.equal(h.errorLogs().length, 0);
 });
 
+// -------------------------------------------- 邮件领取（2026-09-30 master 口径）
+
+test("金鱼消耗编排：邮件领取在开箱之前，返还宝箱直接进开箱循环", async () => {
+  const h = createHarness({
+    state: { boxScoreDone: 0, wooden: 220 }, // 保留 200 → 可开 20 = 2 批 = 20 分
+  });
+  await h.tasks.goldenfishConsumeAll({ boxTarget: 30 });
+
+  const mailIdx = h.sent.findIndex((s) => s.cmd === "mail_claimallattachment");
+  const openIdx = h.sent.findIndex((s) => s.cmd === "item_openbox");
+  assert.ok(mailIdx >= 0, "编排里应有邮件领取帧");
+  assert.ok(openIdx > mailIdx, `邮件帧应在开箱帧之前（mail=${mailIdx}, openbox=${openIdx}）`);
+  assert.deepEqual(
+    h.sent[mailIdx].params,
+    { category: 0 },
+    "与每日任务同命令：mail_claimallattachment { category: 0 }",
+  );
+  const opens = h.sent
+    .filter((s) => s.cmd === "item_openbox")
+    .map((s) => s.params);
+  assert.deepEqual(
+    opens,
+    [
+      { itemId: 2001, number: 10 },
+      { itemId: 2001, number: 10 },
+    ],
+    "木箱可开 20 个 = 2 整批",
+  );
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("独立领取邮件：goldenfishClaimMail 只发一帧 mail_claimallattachment", async () => {
+  const h = createHarness({});
+  await h.tasks.goldenfishClaimMail({});
+
+  const mails = h.sent.filter((s) => s.cmd === "mail_claimallattachment");
+  assert.equal(mails.length, 1, "应且仅应发一帧邮件领取");
+  assert.deepEqual(mails[0].params, { category: 0 });
+  assert.ok(
+    h.logs.some((l) => l.message.includes("邮件奖励已领取")),
+    "应打领取日志",
+  );
+  assert.equal(h.errorLogs().length, 0);
+});
+
 // ---------------------------------------------------------------- 进度不可读
 
 test("进度不可读：三个消耗 step 全部跳过，不发任何消耗命令", async () => {
@@ -638,7 +683,12 @@ test("进度不可读：三个消耗 step 全部跳过，不发任何消耗命�
   assert.ok(!sent.some((s) => s.cmd === "hero_recruit"));
   assert.ok(!sent.some((s) => s.cmd === "artifact_lottery"));
   assert.ok(!sent.some((s) => s.cmd === "item_openbox"));
-  // role_getroleinfo 只用于探测，允许发出；但每个 step 必须有「进度不可读」日志
+  // claimMail 不依赖活动进度 —— 进度不可读时也照常领邮件（与每日任务同命令、无条件安全）
+  assert.ok(
+    sent.some((s) => s.cmd === "mail_claimallattachment"),
+    "进度不可读也照常领取邮件",
+  );
+  // role_getroleinfo 只用于探测，允许发出；但每个消耗 step 必须有「进度不可读」日志
   const unreadable = logs.filter((l) => l.message.includes("进度不可读"));
   assert.equal(unreadable.length, 3);
   assert.equal(logs.filter((l) => l.type === "error").length, 0);

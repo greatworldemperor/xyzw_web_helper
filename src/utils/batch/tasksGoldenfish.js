@@ -1537,15 +1537,39 @@ export function createTasksGoldenfish(deps) {
   STEPS.consumeFish = consumeFishStep;
 
   /**
-   * 金鱼消耗一键编排：招募 + 宝箱 + 钓鱼
+   * 领取邮件奖励 —— master 2026-09-30 口径：「开了很多宝箱，会得到宝箱周的
+   * 返还宝箱奖励的，虽然不多，聊胜于无」。
+   *
+   * 与每日任务的「领取邮件奖励」同一命令：`mail_claimallattachment { category: 0 }`
+   * （普通分类全部附件一键领取，无附件时是空操作）。放在编排里**开箱之前**跑 ——
+   * 返还宝箱先落背包，直接被开箱循环吃掉换积分，而不是等下一轮。
+   */
+  const claimMailStep = async ({ tokenId, token }) => {
+    await sendWithRateLimit(
+      tokenId,
+      "mail_claimallattachment",
+      { category: 0 },
+      token,
+      8000,
+    );
+    log(token.name, "邮件奖励已领取（宝箱周返还宝箱等附件，随开箱循环消化）", "info");
+    return {};
+  };
+
+  STEPS.claimMail = claimMailStep;
+
+  /**
+   * 金鱼消耗一键编排：邮件 + 招募 + 宝箱 + 钓鱼
    *
    * 2026-09-29：**招募与钓鱼并行**（独立限流），**宝箱独占串行**（背包乐观锁敏感 ——
    * 与活动任务并发时服务端会以「宝箱数量已发生变化」拒绝，见 `PARALLEL_CONSUME_STEPS` 注释）。
    * `config.serialConsume = true` 可全部回退串行。
+   * 2026-09-30：**邮件领取排最前**（串行段首位）—— 宝箱周返还宝箱走邮件，
+   * 先领进背包，随后的开箱循环直接消化（放在最后反而要等下一轮才开）。
    */
   const goldenfishConsumeAll = (config) =>
     runGoldenfish(
-      ["consumeRecruit", "consumeBoxes", "consumeFish"],
+      ["claimMail", "consumeRecruit", "consumeBoxes", "consumeFish"],
       "金鱼消耗（招募/钓鱼并行，宝箱独占）",
       1,
       config,
@@ -1554,6 +1578,8 @@ export function createTasksGoldenfish(deps) {
     runGoldenfish(["consumeRecruit"], "金鱼招募消耗", 1, config);
   const goldenfishBoxes = (config) =>
     runGoldenfish(["consumeBoxes"], "金鱼宝箱消耗", 1, config);
+  const goldenfishClaimMail = (config) =>
+    runGoldenfish(["claimMail"], "金鱼领取邮件奖励", 1, config);
   const goldenfishFish = (config) =>
     runGoldenfish(["consumeFish"], "金鱼钓鱼消耗", 1, config);
 
@@ -1800,6 +1826,7 @@ export function createTasksGoldenfish(deps) {
     goldenfishConsumeAll,
     goldenfishRecruit,
     goldenfishBoxes,
+    goldenfishClaimMail,
     goldenfishFish,
   };
 }
