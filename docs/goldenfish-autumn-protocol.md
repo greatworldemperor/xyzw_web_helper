@@ -104,12 +104,17 @@ RESP Store_SetPurchaseResp  回显设置后的列表（按 itemId 升序，与�
 （铂金→黄金→青铜→木质，ceil 保证达标，超出留在未兑换积分不兑换）。
 **钻石宝箱一律不开；木箱全程保留 200 个**（2026-09-26 master 拍板）。
 
-- 实现：`tasksGoldenfish.js` 三个 step + `goldenfishConsumeAll` 一键（招募→宝箱→钓鱼）；
+- 实现：`tasksGoldenfish.js` 三个 step + `goldenfishConsumeAll` 一键；
+  ⚡ **三个 step 并行执行**（2026-09-29 master：三者独立限流、不必串行 —— 协议层响应按
+  `resp`（= 请求 seq）精确匹配，且这三条命令不在 `CmdDebounceMap` 防抖表内，并发安全；
+  `config.serialConsume = true` 可回退串行）。
   每账号先发 `activity_get` 查活动进度再补差值（断点续跑，分多天跑自动吸收每日任务的自然推进）。
-- 库存不足（招募令/黄金鱼竿/宝箱）= 正常暂停，等商店购物列表自动补货后再跑。
+- 库存不足：招募令/宝箱 = 正常暂停，等商店购物列表自动补货后再跑；
+  **黄金鱼竿 = 有多少做多少**（2026-09-29 master 拍板），缺口记日志（含 10% 返还折算竿数），
+  留待收尾阶段金砖买竿补全。
 - 限流 400340 → 交给 `tokenStore` 统一弹窗（每 5 秒自动重试、成功自关），任务侧跳过该步骤。
-- 回归：`test/goldenfishConsumePlan.test.js`（纯逻辑 30 条）+
-  `test/tasksGoldenfishConsume.test.js`（端到端 12 条，含真实抓包夹具）。
+- 回归：`test/goldenfishConsumePlan.test.js`（纯逻辑 35 条）+
+  `test/tasksGoldenfishConsume.test.js`（端到端 18 条，含真实抓包夹具）。
 
 ### 活动累积进度字段（阶段 B，2026-09-28 查明 ✅）
 

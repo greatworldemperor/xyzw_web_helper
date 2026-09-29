@@ -554,3 +554,53 @@ test("限流 400340：多账号限流互不影响，各自跳过本步骤", asyn
     true,
   );
 });
+
+// ---------------------------------------------------------------- 并行（2026-09-29 master：三者独立限流，不必串行）
+
+/** 三路都有活干的状态：招募差 100 / 宝箱差 100 分 / 钓鱼差 100 次（库存均够） */
+const PARALLEL_STATE = {
+  recruitDone: 3800,
+  recruitTickets: 120,
+  boxScoreDone: 98900,
+  platinum: 2,
+  fishDone: 1000,
+  goldRods: 120,
+};
+const PARALLEL_CONFIG = { recruitTarget: 3900, boxTarget: 99000, fishTarget: 1100 };
+
+test("并行：三消耗任务齐活 → 并行执行，三路命令齐全且互不阻塞", async () => {
+  const h = createHarness({ state: PARALLEL_STATE });
+  await h.tasks.goldenfishConsumeAll({ ...PARALLEL_CONFIG });
+
+  assert.ok(
+    h.logs.some((l) => l.message.includes("并行执行")),
+    "应有并行执行日志",
+  );
+  // 三路各自把命令发出（并行不是「只跑第一个」）
+  assert.ok(h.sent.some((s) => s.cmd === "hero_recruit"), "招募应有帧");
+  assert.ok(h.sent.some((s) => s.cmd === "item_openbox"), "宝箱应有帧");
+  assert.ok(h.sent.some((s) => s.cmd === "artifact_lottery"), "钓鱼应有帧");
+  // 三路都推进到位
+  assert.equal(h.state.recruitDone, 3900);
+  assert.equal(h.state.fishDone, 1100);
+  assert.equal(h.state.boxScoreDone, 99000);
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("并行：config.serialConsume=true → 回退串行（无并行日志，段内顺序保持）", async () => {
+  const h = createHarness({ state: PARALLEL_STATE });
+  await h.tasks.goldenfishConsumeAll({ ...PARALLEL_CONFIG, serialConsume: true });
+
+  assert.ok(
+    !h.logs.some((l) => l.message.includes("并行执行")),
+    "串行模式不应出现并行日志",
+  );
+  const cmds = h.cmds();
+  const firstRecruit = cmds.indexOf("hero_recruit");
+  const firstBox = cmds.indexOf("item_openbox");
+  const firstFish = cmds.indexOf("artifact_lottery");
+  assert.ok(firstRecruit >= 0, "招募应有帧");
+  assert.ok(firstBox > firstRecruit, `宝箱应在招募之后（串行）: ${cmds.join(",")}`);
+  assert.ok(firstFish > firstBox, `钓鱼应在宝箱之后（串行）: ${cmds.join(",")}`);
+  assert.equal(h.errorLogs().length, 0);
+});

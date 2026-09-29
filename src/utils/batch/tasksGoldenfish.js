@@ -375,6 +375,24 @@ export function createTasksGoldenfish(deps) {
     consumeFish: null,
   };
 
+  /**
+   * 可并行的消耗步骤（master 2026-09-29：「宝箱、招募、钓鱼可以并行而不是必须串行，
+   * 因为这几个任务是独立限流的」）。
+   *
+   * 并行安全的依据（逐条核实过，不是想当然）：
+   *   1. **限流独立**：游戏对每个活动任务独立计数，三者不互相挤占配额（master 口径）；
+   *   2. **道具不交叉**：招募令 1001 / 各档宝箱 2001-2004 / 黄金鱼竿 1012 —— 逐帧扣减校验
+   *      各查各的 itemId，不会互相误判；
+   *   3. **协议支持并发**：`sendWithPromise` 以请求 seq 登记 pending promise，
+   *      响应 `_handlePromiseResponse` 按 `packet.resp`（= 请求 seq）**精确匹配**，
+   *      并发不会串味；且这三条命令都不在 `CmdDebounceMap`（防抖表）里，无节流/互斥。
+   *
+   * ⚠️ `role_getroleinfo` 有 1000ms 防抖缓存：三个 step 并行拉背包时会**共享同一份快照**
+   *    （只读库存，安全且省一次请求）。
+   * ⚠️ 串行回退：`config.serialConsume === true` 时恢复原串行语义（排查问题用）。
+   */
+  const PARALLEL_CONSUME_STEPS = ["consumeRecruit", "consumeBoxes", "consumeFish"];
+
   // ------------------------------------------------------------------ 批量框架
 
   /** 限流中止信号（跨账号共享；runGoldenfish 收尾会重置 shouldStop，故用独立标志） */
@@ -410,10 +428,10 @@ export function createTasksGoldenfish(deps) {
         await ensureConnection(tokenId);
 
         const failedSteps = [];
-        for (const stepId of stepIds) {
-          if (shouldStop.value || consumeAbortAll) break;
+        /** 跑单个 step；返回 "ok" | "abort"（限流/活动未开，应中断后续）| "failed" */
+        const runStep = async (stepId) => {
           const step = STEPS[stepId];
-          if (!step) continue;
+          if (!step) return "skip";
           try {
             // 2026-09-29 master 口径：连接失败类（超时/断连/断网）应重试而非跳过。
             // 帧层已有自动重发+重连（wrapTokenStoreWithConnectionRetry）；
@@ -433,6 +451,7 @@ export function createTasksGoldenfish(deps) {
                 await ensureConnection(tokenId);
               },
             });
+            return "ok";
           } catch (error) {
             // 限流(400340)已由 tokenStore 自愈重试 15 分钟才到这 / 活动未开：
             // 整个号没有继续的意义，中断后续步骤。
@@ -442,7 +461,7 @@ export function createTasksGoldenfish(deps) {
                 `触发限流或活动未开（${errorText(error)}），中断后续步骤`,
                 "warning",
               );
-              break;
+              return "abort";
             }
             // 其余错误（如 200020 参数拒绝）：跳过本步骤，继续后续步骤。
             // （2026-09-29 master：招募差 3 触发 200020，不该拦住宝箱/钓鱼）
@@ -452,9 +471,33 @@ export function createTasksGoldenfish(deps) {
               `⏭️ ${stepId} 失败（${errorText(error)}），跳过本步骤继续后续`,
               "error",
             );
-            continue;
+            return "failed";
           }
-          await sleep();
+        };
+
+        // 🔴 2026-09-29 master：招募/宝箱/钓鱼**独立限流**，不必串行 —— 三 step 齐活时并行跑，
+        // 整体耗时约等于最慢的那一个（而非三者相加）。其余组合（单步按钮、含购物/投道具）保持串行。
+        const runInParallel =
+          config?.serialConsume !== true &&
+          stepIds.length >= 2 &&
+          stepIds.every((id) => PARALLEL_CONSUME_STEPS.includes(id));
+
+        if (runInParallel) {
+          log(
+            tokenName,
+            `⚡ ${stepIds.length} 个消耗任务并行执行（招募/宝箱/钓鱼 独立限流、互不挤占）`,
+            "info",
+          );
+          // ⚠️ 并行时单个 step 遇限流无法收回已在跑的其他 step：它们各自也会收到 400340
+          //    并由 tokenStore 自愈重试，最终各自收敛（不会互相拖挂）。
+          await Promise.all(stepIds.map((stepId) => runStep(stepId)));
+        } else {
+          for (const stepId of stepIds) {
+            if (shouldStop.value || consumeAbortAll) break;
+            const outcome = await runStep(stepId);
+            if (outcome === "abort") break;
+            await sleep();
+          }
         }
 
         if (failedSteps.length > 0) {
@@ -933,11 +976,16 @@ export function createTasksGoldenfish(deps) {
   STEPS.consumeBoxes = consumeBoxesStep;
   STEPS.consumeFish = consumeFishStep;
 
-  /** 金鱼消耗一键编排：招募 → 宝箱 → 钓鱼（与介绍文档叙述顺序一致） */
+  /**
+   * 金鱼消耗一键编排：招募 + 宝箱 + 钓鱼
+   *
+   * 2026-09-29 master：三者**独立限流**，由 runGoldenfish 自动并行执行
+   * （整体耗时 ≈ 最慢的单个任务；传入 `config.serialConsume = true` 可回退串行）。
+   */
   const goldenfishConsumeAll = (config) =>
     runGoldenfish(
       ["consumeRecruit", "consumeBoxes", "consumeFish"],
-      "金鱼消耗（招募→宝箱→钓鱼）",
+      "金鱼消耗（招募/宝箱/钓鱼 并行）",
       1,
       config,
     );
