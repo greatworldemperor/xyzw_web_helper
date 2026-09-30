@@ -930,7 +930,7 @@ test("第一阶段第5~7步：英雄升星→图鉴升星→领图鉴奖励（�
   assert.equal(h.errorLogs().length, 0);
 });
 
-test("第一阶段全流程：消耗 → 领奖 → 开包 → 清空 → 升星 → 邮件（顺序断言）", async () => {
+test("第一阶段全流程：消耗 → 开包 → 清空 → 升星 → 邮件（顺序断言，无领奖）", async () => {
   const h = createHarness({
     state: {
       recruitDone: 3900, // 已达标 → 不跑
@@ -950,7 +950,6 @@ test("第一阶段全流程：消耗 → 领奖 → 开包 → 清空 → 升星
 
   const cmds = h.cmds();
   const firstOpenbox = cmds.indexOf("item_openbox");
-  const firstClaimReward = cmds.indexOf("activity_claimtaskreward");
   const packIdx = h.sent.findIndex(
     (s) => s.cmd === "item_openpack" && s.params.itemId === 5287,
   );
@@ -961,11 +960,15 @@ test("第一阶段全流程：消耗 → 领奖 → 开包 → 清空 → 升星
   const mailIdx = cmds.indexOf("mail_claimallattachment");
 
   assert.ok(firstOpenbox >= 0, "应有开箱帧");
-  assert.ok(firstClaimReward > firstOpenbox, "领奖应在消耗之后");
-  assert.ok(packIdx > firstClaimReward, "开金鱼普通道具应在领奖之后");
-  assert.ok(clearIdx > packIdx, "清空道具应在开包之后");
+  assert.ok(packIdx > firstOpenbox, "清空道具应在开包之后");
   assert.ok(heroIdx > clearIdx, "升星链应在清空之后");
   assert.ok(mailIdx > heroIdx, "邮件应在最后");
+  // 🔴 领取进度奖励已移出编排（游戏内手动领取）
+  assert.equal(
+    h.sent.filter((s) => s.cmd === "activity_claimtaskreward").length,
+    0,
+    "编排内不应有领奖帧",
+  );
   assert.equal(h.errorLogs().length, 0);
 });
 
@@ -1009,7 +1012,7 @@ test("进度不可读：三个消耗 step 全部跳过，不发任何消耗命�
   );
   // 每个消耗 step（含邮件领取）都必须有「进度不可读」日志
   const unreadable = logs.filter((l) => l.message.includes("进度不可读"));
-  assert.equal(unreadable.length, 5);
+  assert.equal(unreadable.length, 4);
   assert.equal(logs.filter((l) => l.type === "error").length, 0);
 });
 

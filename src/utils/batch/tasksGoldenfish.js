@@ -1791,15 +1791,18 @@ export function createTasksGoldenfish(deps) {
   STEPS.upgradeChain = upgradeChainStep;
 
   /**
-   * 金鱼第一阶段一键编排（master 2026-09-30 七步全流程）：
+   * 金鱼第一阶段一键编排（master 2026-09-30 定稿：**领取进度奖励不在编排内**）：
    *   ① 招募/宝箱/钓鱼 三路并行（做到预设值或用光存货）
-   *   ② 领取所有进度奖励（逐轮补领）
-   *   ③ 把金鱼普通道具(5287)全部开掉（产出硬通货 5288；特殊道具绝不动）
-   *   ④ 清空普通道具（非金鱼段；5288/5286 在保护名单）
-   *   ⑤⑥⑦ 英雄升星 → 图鉴升星 → 领图鉴奖励（共享链）
-   *   ⑧ 领取邮件（宝箱周，累积 ≥ 32000 才收）
+   *   ② 把金鱼普通道具(5287)全部开掉（产出硬通货 5288；特殊道具绝不动）
+   *   ③ 清空普通道具（= 非金鱼道具；5288/5286 在保护名单）
+   *   ④⑤⑥ 英雄升星 → 图鉴升星 → 领图鉴奖励（共享链）
+   *   ⑤ 领取邮件（宝箱周，累积 ≥ 32000 才收）
    *
-   * 并行语义：只有 ① 的三路进并行段；②~⑧ 按序串行（②依赖①的进度，③依赖②的产出……因果链）。
+   * 🔴 领取进度奖励（activity_claimtaskreward）**已移出编排**（master 2026-09-30 14:3x 拍板）：
+   *   实测 authuser 会话发领奖请求服务端**不响应**（挂死到断线、领取不生效），只有
+   *   **游戏内会话**能领 ⇒ 进度奖励在**游戏内手动领取**；领完产生的新 5287 由下一次
+   *   编排运行的开包步骤开掉。独立入口 goldenfishClaimProgressRewards 保留。
+   * 并行语义：只有 ① 的三路进并行段；②~⑤ 按序串行（开包→清空→升星→邮件为因果链）。
    * `config.serialConsume = true` 可把①也回退串行。
    */
   const goldenfishConsumeAll = (config) =>
@@ -1808,13 +1811,12 @@ export function createTasksGoldenfish(deps) {
         "consumeRecruit",
         "consumeBoxes",
         "consumeFish",
-        "claimProgressRewards",
         "openGoldenfishPacks",
         "clearItems",
         "upgradeChain",
         "claimMail",
       ],
-      "金鱼第一阶段（消耗→领奖→开包→清空→升星→邮件）",
+      "金鱼第一阶段（消耗→开包→清空→升星→邮件）",
       1,
       config,
     );
