@@ -77,8 +77,6 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "batchResourceUpgradeChain",
     // 2026-09-28 新增：清空背包可消耗道具（30a 抓包实证清单；单次上限 999 分批）
     "batchClearItems",
-    // 2026-09-30 新增：合并鱼（神器 13xx~16xx；代替「切阵容才触发」的服务端合并）
-    "batchFishAutoMerge",
     "legion_storebuygoods",
     "legionStoreBuySkinCoins",
     "batchLegacyClaim",
@@ -116,6 +114,9 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "batchGenieSweep",
     "batchmengjing",
     "batchClaimFreeEnergy",
+    // batchFishAutoMerge（一键合并鱼）2026-09-30 master 拍板不进自由/定时模板：
+    // 合并鱼是一次性操作不是日常，入口只保留批量日常页「资源」栏按钮
+    "batchFishAutoMerge",
   ].forEach((taskId) => assert.equal(taskIds.has(taskId), false, `removed task remains: ${taskId}`));
   assert.equal(
     flexibleTaskGroups.some((group) => group.name === "routine"),

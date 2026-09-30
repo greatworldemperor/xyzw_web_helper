@@ -105,9 +105,9 @@ export const flexibleTaskGroups = [
       // 🔴 master 2026-09-28：清空背包可消耗道具（清单=30a 抓包实证 27 种）。
       // ⚠️ item_openpack 单次上限 999 自动分批；金鱼收尾前勿跑（清单含 5287）
       batchTask("batchClearItems", "一键清空道具（资源兑现）"),
-      // 🔴 master 2026-09-30：代替客户端「切阵容才触发」的服务端合并——
-      // 逐步 artifact_upgradestar 合并 13xx~16xx 四档鱼（高位种子优先，与切阵自动合并同口径）
-      batchTask("batchFishAutoMerge", "一键合并鱼（神器13xx~16xx）"),
+      // ⚠️ 一键合并鱼（batchFishAutoMerge，2026-09-30）刻意**不进**自由/定时模板 ——
+      // master 拍板：合并鱼是一次性操作不是日常（与金鱼 goldenfishUseItem 同待遇），
+      // 入口只保留批量日常页「资源」栏按钮。
       batchTask("legion_storebuygoods", "一键购买四圣碎片"),
       batchTask("legionStoreBuySkinCoins", "一键购买俱乐部5皮肤币"),
     ],
