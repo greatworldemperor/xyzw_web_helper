@@ -6,6 +6,8 @@ import {
 } from "./phase1Cleanup.js";
 import { PEACH_TASKS } from "@/utils/PeachTaskIds";
 import { executeSmartOpenBox } from "@/utils/smartOpenBox";
+// 养鱼/神器（鱼）自动合并（纯逻辑在 fishMerge.js，协议见 docs/fish-merge-and-artifactbook-protocol.md）
+import { runFishAutoMerge } from "./fishMerge.js";
 
 /**
  * 开箱、钓鱼、招募类任务
@@ -1718,6 +1720,94 @@ export function createTasksItem(deps) {
     message.success("按积分开箱结束");
   };
 
+  /**
+   * 养鱼/神器（鱼）自动合并 —— 代替客户端「切阵容才触发」的服务端合并
+   * （master 2026-09-30：不是每个角色都有第二个阵容槽，需要脚本主动合并 13xx~16xx 四档鱼）
+   *
+   * 协议：docs/fish-merge-and-artifactbook-protocol.md —— 逐步 artifact_upgradestar
+   * {heroId:-1, itemId}，规划器 = 高位种子优先（与服务端切阵自动合并逐鱼一致）。
+   * 合并完顺带 book_batchupgrade 图鉴点亮（×≤4）+ book_claimpointreward 领奖（×≤10）。
+   * ⚠️ 只合背包鱼；英雄身上已装备的鱼不在 role.items（想合需先在游戏里卸下）。
+   */
+  const runFishMergeForToken = async (tokenId, tokenName) => {
+    const response = await sendRoleInfo(tokenId, {}, 15000);
+    const role =
+      response?.role || response?.body?.role || response?.body || response || {};
+    return runFishAutoMerge({
+      tokenId,
+      tokenName,
+      role,
+      send: (id, cmd, params, timeout) =>
+        tokenStore.sendMessageWithPromise(id, cmd, params, timeout),
+      shouldStop: () => shouldStop.value,
+      log: (msg, type) =>
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: msg,
+          type: type || "info",
+        }),
+      sleep: () => new Promise((r) => setTimeout(r, delayConfig.action)),
+    });
+  };
+
+  const batchFishAutoMerge = async () => {
+    if (selectedTokens.value.length === 0) return;
+
+    isRunning.value = true;
+    shouldStop.value = false;
+
+    selectedTokens.value.forEach((id) => {
+      tokenStatus.value[id] = "waiting";
+    });
+
+    const taskPromises = selectedTokens.value.map(async (tokenId) => {
+      if (shouldStop.value) return;
+
+      tokenStatus.value[tokenId] = "running";
+      const token = tokens.value.find((t) => t.id === tokenId);
+
+      try {
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `=== 一键合并鱼开始（13xx~16xx）: ${token.name} ===`,
+          type: "info",
+        });
+
+        await ensureConnection(tokenId);
+
+        const stats = await runFishMergeForToken(tokenId, token.name);
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${token.name} 合并鱼完成：合并 ${stats.merges} 步 / 图鉴点亮 ${stats.bookBatches} 轮 / 领点数奖励 ${stats.rewards} 档`,
+          type: "success",
+        });
+
+        tokenStatus.value[tokenId] = "completed";
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${token.name} === 一键合并鱼结束 ===`,
+          type: "success",
+        });
+      } catch (error) {
+        console.error(error);
+        tokenStatus.value[tokenId] = "failed";
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `合并鱼失败: ${error.message}`,
+          type: "error",
+        });
+      } finally {
+        tokenStore.closeWebSocketConnection(tokenId);
+        releaseConnectionSlot();
+      }
+    });
+
+    await Promise.all(taskPromises);
+    isRunning.value = false;
+    currentRunningTokenId.value = null;
+    message.success("一键合并鱼结束");
+  };
+
   return {
     batchOpenBox,
     batchSmartOpenBox,
@@ -1732,5 +1822,6 @@ export function createTasksItem(deps) {
     batchClearItems,
     batchClaimPeachTasks,
     batchGenieSweep,
+    batchFishAutoMerge,
   };
 }

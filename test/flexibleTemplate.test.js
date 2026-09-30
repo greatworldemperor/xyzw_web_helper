@@ -77,6 +77,8 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "batchResourceUpgradeChain",
     // 2026-09-28 新增：清空背包可消耗道具（30a 抓包实证清单；单次上限 999 分批）
     "batchClearItems",
+    // 2026-09-30 新增：合并鱼（神器 13xx~16xx；代替「切阵容才触发」的服务端合并）
+    "batchFishAutoMerge",
     "legion_storebuygoods",
     "legionStoreBuySkinCoins",
     "batchLegacyClaim",

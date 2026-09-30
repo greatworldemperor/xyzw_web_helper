@@ -795,6 +795,13 @@
                 </n-button>
                 <n-button
                   size="small"
+                  @click="batchFishAutoMerge"
+                  :disabled="isRunning || selectedTokens.length === 0"
+                >
+                  一键合并鱼
+                </n-button>
+                <n-button
+                  size="small"
                   @click="activityBuyRecruitWeekReward"
                   :disabled="isRunning || selectedTokens.length === 0"
                 >
@@ -8110,6 +8117,7 @@ const {
   batchClearItems,
   batchClaimPeachTasks,
   batchGenieSweep,
+  batchFishAutoMerge,
 } = tasksItem;
 
 const tasksDungeon = createTasksDungeon(createTaskDeps());

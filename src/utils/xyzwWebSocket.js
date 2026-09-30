@@ -291,6 +291,11 @@ export function registerDefaultCommands(reg) {
     .register("hero_heroupgradestar")
     .register("book_upgrade")
     .register("book_claimpointreward")
+    // 养鱼/神器（鱼）合并 + 图鉴点亮（docs/fish-merge-and-artifactbook-protocol.md）
+    // ⚠️ artifact_upgradestar 响应是通用 SyncResp（resp=seq 匹配），body={heroId:-1, itemId}
+    // ⚠️ book_batchupgrade 响应 Book_BatchUpgradeResp；book_claimpointreward 响应是 Item_OpenBoxResp
+    .register("artifact_upgradestar")
+    .register("book_batchupgrade")
 
     // 排名相关
     .register("rank_getroleinfo")
@@ -1145,6 +1150,9 @@ export class XyzwWebSocketClient {
       hero_heroupgradeorderresp: "hero_heroupgradeorder",
       book_upgraderesp: "book_upgrade",
       book_claimpointrewardresp: "book_claimpointreward",
+      // 养鱼/神器（fishMerge）：batchupgrade 有专用 Resp；upgradestar 响应是
+      // SyncResp / claimpointreward 响应是 Item_OpenBoxResp，均靠 resp=seq 匹配
+      book_batchupgraderesp: "book_batchupgrade",
       // 军团信息
       legion_getinforesp: "legion_getinfo",
       legion_getinforresp: "legion_getinfo",
