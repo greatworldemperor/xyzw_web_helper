@@ -1111,44 +1111,53 @@
         <n-card class="log-card">
           <template #header>
             <div class="custom-card-header">
-              <div class="card-title">
-                {{
-                  currentRunningTokenName
-                    ? `正在执行: ${currentRunningTokenName}`
-                    : "执行日志"
-                }}
-                <span
-                  style="margin-left: 12px; font-size: 12px; color: #86909c"
-                >
-                  {{ logs.length }}/{{ batchSettings.maxLogEntries || 1000 }}
-                </span>
-              </div>
-              <div class="log-header-controls">
-                <n-checkbox v-model:checked="autoScrollLog" size="small">
-                  自动滚动
-                </n-checkbox>
-                <n-checkbox v-model:checked="filterErrorsOnly" size="small">
-                  只看错误
-                </n-checkbox>
-                <n-checkbox
-                  v-model:checked="tokenStore.connectionDiagnosticsEnabled"
+              <div class="log-card-title-row">
+                <div class="card-title">
+                  {{
+                    currentRunningTokenName
+                      ? `正在执行: ${currentRunningTokenName}`
+                      : "执行日志"
+                  }}
+                  <span class="log-count">
+                    {{ logs.length }}/{{ batchSettings.maxLogEntries || 1000 }}
+                  </span>
+                </div>
+                <n-tag
+                  v-if="errorCount > 0"
+                  type="error"
                   size="small"
-                  :disabled="isRunning"
+                  class="log-error-tag"
                 >
-                  连接诊断
-                </n-checkbox>
-                <n-button
-                  size="small"
-                  :disabled="!tokenStore.connectionDiagnosticsEnabled"
-                  @click="exportConnectionDiagnostics"
-                >
-                  导出诊断
-                </n-button>
-                <n-tag v-if="errorCount > 0" type="error" size="small">
                   {{ errorCount }} 个错误
                 </n-tag>
-                <n-button size="small" @click="clearLogs"> 清空日志 </n-button>
-                <n-button size="small" @click="copyLogs"> 复制日志 </n-button>
+              </div>
+              <div class="log-header-controls">
+                <div class="log-control-group">
+                  <n-checkbox v-model:checked="autoScrollLog" size="small">
+                    自动滚动
+                  </n-checkbox>
+                  <n-checkbox v-model:checked="filterErrorsOnly" size="small">
+                    只看错误
+                  </n-checkbox>
+                  <n-checkbox
+                    v-model:checked="tokenStore.connectionDiagnosticsEnabled"
+                    size="small"
+                    :disabled="isRunning"
+                  >
+                    连接诊断
+                  </n-checkbox>
+                </div>
+                <div class="log-control-group log-control-group--actions">
+                  <n-button
+                    size="small"
+                    :disabled="!tokenStore.connectionDiagnosticsEnabled"
+                    @click="exportConnectionDiagnostics"
+                  >
+                    导出诊断
+                  </n-button>
+                  <n-button size="small" @click="clearLogs"> 清空日志 </n-button>
+                  <n-button size="small" @click="copyLogs"> 复制日志 </n-button>
+                </div>
               </div>
             </div>
           </template>
@@ -9458,9 +9467,20 @@ const stopBatch = () => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+}
+
+.log-card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
 }
 
 .card-title {
+  flex: 1;
+  min-width: 0;
   font-size: 16px;
   font-weight: 600;
   white-space: nowrap;
@@ -9468,12 +9488,37 @@ const stopBatch = () => {
   text-overflow: ellipsis;
 }
 
+.log-count {
+  margin-left: 12px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #86909c;
+}
+
+.log-error-tag {
+  flex-shrink: 0;
+}
+
 .log-header-controls {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 6px 12px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.log-control-group {
+  display: flex;
+  align-items: center;
+  gap: 6px 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.log-control-group--actions {
   justify-content: flex-end;
-  flex-wrap: nowrap;
+  margin-left: auto;
 }
 
 /* Cron Parser Styles */
@@ -9527,12 +9572,6 @@ const stopBatch = () => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.log-header-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .log-container {
@@ -9929,8 +9968,21 @@ const stopBatch = () => {
 
   .log-header-controls {
     flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .log-control-group {
+    gap: 4px 8px;
+  }
+
+  .log-control-group--actions {
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+
+  .log-card-title-row {
     align-items: flex-start;
-    gap: 4px;
   }
 
   /* 批量功法残卷赠送样式 */
