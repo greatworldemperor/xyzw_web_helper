@@ -400,25 +400,33 @@ export function createTasksGoldenfish(deps) {
 
   /**
    * 可并行的消耗步骤（master 2026-09-29：「招募、钓鱼可以并行而不是必须串行，
-   * 因为这几个任务是独立限流的」）。
+   * 因为这几个任务是独立限流的」；2026-09-30 master：「为什么宝箱不能一起并行」
+   * → 恢复三路并行）。
    *
    * 并行安全的依据（逐条核实过，不是想当然）：
    *   1. **限流独立**：游戏对每个活动任务独立计数，互不挤占配额（master 口径）；
-   *   2. **道具不交叉**：招募令 1001 / 黄金鱼竿 1012 各用各的，逐帧扣减校验互不误判；
+   *   2. **道具不交叉**：招募令 1001 / 黄金鱼竿 1012 / 宝箱 2001~2004 各用各的，
+   *      逐帧扣减校验各查各的 itemId，互不误判；
    *   3. **协议支持并发**：`sendWithPromise` 以请求 seq 登记 pending promise，
    *      响应 `_handlePromiseResponse` 按 `packet.resp`（= 请求 seq）**精确匹配**，
-   *      并发不会串味；且这两条命令都不在 `CmdDebounceMap`（防抖表）里，无节流/互斥。
+   *      并发不会串味；且都不在 `CmdDebounceMap`（防抖表）里，无节流/互斥；
+   *      `role_getroleinfo` 有 1000ms 防抖缓存 ⇒ 并行时共享同一份**只读**库存快照
+   *      （宝箱重查最坏晚 ≤1s 拿到，少开一轮而已，下轮补上）。
    *
-   * 🔴 **宝箱不在此列**（2026-09-29 线上两轮实测修正）：`consumeBoxes` 内部是
-   *   「开箱 ↔ 积分兑换 ↔ 重查进度」的强一致性循环，开箱走服务端**背包乐观锁**校验
-   *   （提交数量与服务端当前持有必须一致）。与活动任务并发时实测「宝箱数量已发生变化」
-   *   连片失败（3 个号同秒全部失败，而招募/钓鱼都成功）—— 宝箱对背包状态敏感，
-   *   必须独占执行。招募/钓鱼是单纯「发帧扣道具」，互不影响，可以并行。
-   *
-   * ⚠️ 串行回退：`config.serialConsume === true` 时三者全部串行（排查问题用）。
-   * ⚠️ 实验入口：`config.parallelBoxes === true` 让宝箱也参与并行（复测用，默认关）。
+   * 🔴 宝箱并行的历史（别再反复横跳）：
+   *   - 2026-09-29 17:05 三个号同秒报「宝箱数量已发生变化」→ 当时误归因并行，
+   *     把宝箱移出并行组（ccc9c1f8）并留 parallelBoxes 实验开关；
+   *   - **当晚定案推翻**：真凶是「服务端只接受整批开箱（单帧恰好 10 个），余数批被拒」
+   *     —— 串行也复现、被拒帧 number 全 <10、并发判定计数器涨幅 0（alignDownToBatch 修复）；
+   *   - 2026-09-30 master 问「为什么宝箱不能一起并行」→ 恢复三路并行。
+   *   - 兜底不变：乐观锁自愈（重读重试）+ 角色租约（同角色单运行写背包）+
+   *     逐帧扣减校验各查各的 + `config.serialConsume = true` 一键回退串行。
    */
-  const PARALLEL_CONSUME_STEPS = ["consumeRecruit", "consumeFish"];
+  const PARALLEL_CONSUME_STEPS = [
+    "consumeRecruit",
+    "consumeBoxes",
+    "consumeFish",
+  ];
 
   // ------------------------------------------------------------------ 批量框架
 
@@ -733,11 +741,9 @@ export function createTasksGoldenfish(deps) {
         };
 
         // 🔴 2026-09-29 master：招募/钓鱼**独立限流**可并行；**宝箱独占**（背包乐观锁敏感）。
-        // 分组执行：并行段（默认 招募 + 钓鱼）先跑，其余步骤随后串行 —— 单步按钮/购物/投道具
-        // 天然只有 1 个可并行项，会整体走原串行路径，语义不变。
-        const isParallelizable = (id) =>
-          PARALLEL_CONSUME_STEPS.includes(id) ||
-          (config?.parallelBoxes === true && id === "consumeBoxes");
+        // 分组执行：并行段（招募 + 宝箱 + 钓鱼）先跑，其余步骤（邮件）随后串行 ——
+        // 单步按钮/购物/投道具天然只有 1 个可并行项，会整体走原串行路径，语义不变。
+        const isParallelizable = (id) => PARALLEL_CONSUME_STEPS.includes(id);
         const parallelIds =
           config?.serialConsume === true ? [] : stepIds.filter(isParallelizable);
         const useParallel = parallelIds.length >= 2;
@@ -984,12 +990,26 @@ export function createTasksGoldenfish(deps) {
       );
       // 扣减校验（2026-09-29 master 口径「必须得到反馈再继续，避免盲做」，
       // 抓包实证 Hero_RecruitResp.body.role.items 携带实时余额）：
-      // 每帧校验招募令余额扣减 = 本帧数量，不符立即中止防止盲做。
+      // 🔴 净耗合法区间 = (-∞, n]（master 2026-09-30 口径）：三路并行时兄弟任务会
+      //    **正向带进**道具（救援开普通道具给 0.5 招募令/个、钓鱼/奖励回流等）——
+      //    库存可能中途不降反升 ⇒ 净耗小于消耗数甚至为负都正常，只有「多扣」
+      //    （净耗 > 消耗数）才是异常，中止防止盲做。
       const nowStock = readItemCountStrict(resp?.role?.items, ITEM_RECRUIT);
-      if (nowStock != null && lastStock != null && lastStock - nowStock !== n) {
-        throw new Error(
-          `招募令扣减异常：预期 -${n}，实际 ${lastStock - nowStock}（${lastStock}→${nowStock}），中止防止盲做`,
-        );
+      if (nowStock != null && lastStock != null) {
+        const drop = lastStock - nowStock;
+        if (drop > n) {
+          throw new Error(
+            `招募令扣减异常：消耗 ${n}，净耗 ${drop}（${lastStock}→${nowStock}）` +
+              `超出上限（并行任务只会正向带进招募令，多扣 = 异常），中止防止盲做`,
+          );
+        }
+        if (drop !== n) {
+          log(
+            token.name,
+            `招募令净耗 ${drop}/${n}（${lastStock}→${nowStock}，并行任务正向带进，非异常）`,
+            "info",
+          );
+        }
       }
       if (nowStock != null) lastStock = nowStock;
       done += n;
@@ -1069,22 +1089,23 @@ export function createTasksGoldenfish(deps) {
         token,
       );
       // 扣减校验（抓包实证 SyncRewardResp.body.role.items 携带实时余额，resp 序号对齐请求）
-      // 🔴 净耗合法区间 = [0, n]（master 2026-09-30 线上反馈：钓鱼有 10% 概率返还鱼竿，
-      //    用掉 10 根可能返还 1 根 ⇒ 净耗 9 而非 10；38b 案例曾把 -9 误判成「扣减异常」中止）
-      //    超出区间（净耗 > n = 多扣 / 净耗 < 0 = 无端增加）才算异常中止。
+      // 🔴 唯一异常条件 = 多扣（净耗 > 消耗数）（master 2026-09-30 拍板，附钓鱼概率分布表）：
+      //    钓鱼自身 11.11% 概率返还鱼竿（34b 案例：预期 -10 实际 -9 曾被误判中止）；
+      //    三路并行下兄弟任务/邮件/奖励也可能正向带进鱼竿，库存不降反升同样正常
+      //    ⇒ 不设下限，净耗 > n 才中止防盲做（钓鱼概率分布表见协议文档）。
       const nowStock = readItemCountStrict(resp?.role?.items, ITEM_GOLD_ROD);
       if (nowStock != null && lastStock != null) {
         const drop = lastStock - nowStock;
-        if (drop > n || drop < 0) {
+        if (drop > n) {
           throw new Error(
             `黄金鱼竿扣减异常：消耗 ${n}，净耗 ${drop}（${lastStock}→${nowStock}）` +
-              `超出 [0, ${n}]（钓鱼有 10% 概率返还鱼竿，返还已计入区间），中止防止盲做`,
+              `超出上限（并行任务只会正向带进鱼竿，多扣 = 异常），中止防止盲做`,
           );
         }
         if (drop !== n) {
           log(
             token.name,
-            `黄金鱼竿净耗 ${drop}/${n}（${lastStock}→${nowStock}，含 10% 概率返还鱼竿）`,
+            `黄金鱼竿净耗 ${drop}/${n}（${lastStock}→${nowStock}，鱼竿 11.11% 概率返还等正向获取）`,
             "info",
           );
         }
@@ -1256,10 +1277,25 @@ export function createTasksGoldenfish(deps) {
         if (lastItems) {
           const before = readItemCountStrict(lastItems, step.itemId);
           const now = readItemCountStrict(lastResp?.role?.items, step.itemId);
-          if (before != null && now != null && before - now !== n) {
-            throw new Error(
-              `宝箱扣减异常：itemId ${step.itemId} 预期 -${n}，实际 ${before - now}（${before}→${now}），中止防止盲做`,
-            );
+          if (before != null && now != null) {
+            // 🔴 净耗合法区间 = (-∞, n]（master 2026-09-30 口径）：三路并行时
+            //    钓鱼有概率掉落各种宝箱（钻石除外）、救援开普通道具也回流铂金箱 ——
+            //    这些是**正向获取**，宝箱库存可能中途不降反升 ⇒ 净耗小于消耗数
+            //    甚至为负都正常，只有「多扣」（净耗 > 本帧消耗数）才是异常。
+            const drop = before - now;
+            if (drop > n) {
+              throw new Error(
+                `宝箱扣减异常：itemId ${step.itemId} 消耗 ${n}，净耗 ${drop}（${before}→${now}）` +
+                  `超出上限（并行钓鱼/奖励只会正向带进宝箱，多扣 = 异常），中止防止盲做`,
+              );
+            }
+            if (drop !== n) {
+              log(
+                token.name,
+                `宝箱 ${step.itemId} 净耗 ${drop}/${n}（${before}→${now}，并行正向带进，非异常）`,
+                "info",
+              );
+            }
           }
           if (now != null) lastItems = { ...lastItems, [step.itemId]: now };
         }
@@ -1608,8 +1644,10 @@ export function createTasksGoldenfish(deps) {
   /**
    * 金鱼消耗一键编排：招募 + 宝箱 + 钓鱼 + 邮件
    *
-   * 2026-09-29：**招募与钓鱼并行**（独立限流），**宝箱独占串行**（背包乐观锁敏感 ——
-   * 与活动任务并发时服务端会以「宝箱数量已发生变化」拒绝，见 `PARALLEL_CONSUME_STEPS` 注释）。
+   * 2026-09-29：招募/钓鱼并行（独立限流）；宝箱一度独占串行 —— 当晚定案推翻
+   * （「数量已发生变化」真凶是余数批被拒，已修复）；
+   * 2026-09-30 master 拍板恢复**三路并行**（见 `PARALLEL_CONSUME_STEPS` 注释），
+   * 逐帧扣减校验统一「净耗 > 消耗数才异常」（并行正向带进不设下限）。
    * `config.serialConsume = true` 可全部回退串行。
    * 2026-09-30：**邮件领取排最后**（串行段末位）—— 宝箱周每 8000 分 1 轮、最多 4 轮，
    * 累积 ≥ 32000 才收（别收早了）；本轮消耗推过门槛后，新到轮次也能一并收进。
@@ -1617,7 +1655,7 @@ export function createTasksGoldenfish(deps) {
   const goldenfishConsumeAll = (config) =>
     runGoldenfish(
       ["consumeRecruit", "consumeBoxes", "consumeFish", "claimMail"],
-      "金鱼消耗（招募/钓鱼并行，宝箱独占）",
+      "金鱼消耗（招募/宝箱/钓鱼 三路并行）",
       1,
       config,
     );

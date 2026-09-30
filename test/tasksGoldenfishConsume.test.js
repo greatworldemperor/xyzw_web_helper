@@ -57,6 +57,8 @@ function createHarness({ state } = {}) {
   let recruitDeductHack = state?.recruitDeductHack ?? 0; // 第一帧招募多扣（触发扣减校验）
   // 首帧钓鱼返还/多扣模拟：正数 = 10% 概率返还鱼竿（净耗 n-1）；负数 = 多扣（触发扣减异常）
   let fishReturnHack = state?.fishReturnHack ?? 0;
+  // 首帧开箱正向带进模拟（并行钓鱼掉落宝箱）：开完后给该箱型 +N → 净耗 n-N
+  let boxGiftHack = state?.boxGiftHack ?? 0;
   // 普通道具开包的铂金箱期望（默认 0.205/个，与 GOLDENFISH_PACK_RETURNS 一致；测试可覆盖）
   const packPlatinumYield = state?.packPlatinumYield ?? 0.205;
   // 服务端绝对计数器（today:open:box = 开箱调用次数；activity:open:box = 开箱积分）
@@ -128,6 +130,11 @@ function createHarness({ state } = {}) {
           }
           const pts = CHEST_POINTS[params?.itemId] ?? 0;
           st.items[params?.itemId] = Math.max(0, (st.items[params?.itemId] ?? 0) - n);
+          if (boxGiftHack !== 0) {
+            // 首帧模拟并行钓鱼掉落宝箱（正向获取）：开完后 +N → 净耗 n-N
+            st.items[params?.itemId] += boxGiftHack;
+            boxGiftHack = 0;
+          }
           st.boxScoreDone += n * pts;
           // 实证（consumption_tasks.jsonl）：每次 item_openbox 调用 today:+1、activity:+本帧积分
           openboxCallStat += 1 + phantomCallsPerOpenbox;
@@ -303,7 +310,7 @@ test("钓鱼消耗：10% 返还鱼竿不算扣减异常（净耗 9/10 记日志�
   assert.equal(h.errorLogs().length, 0);
 });
 
-test("钓鱼消耗：净耗超出 [0, n]（多扣）仍然中止防盲做", async () => {
+test("钓鱼消耗：多扣（净耗 13 > 10）仍然中止防盲做", async () => {
   const h = createHarness({
     state: { fishDone: 1100, goldRods: 25, fishReturnHack: -3 }, // 首帧多扣 3 → 净耗 13 > 10
   });
@@ -316,9 +323,66 @@ test("钓鱼消耗：净耗超出 [0, n]（多扣）仍然中止防盲做", asyn
     "多扣仍应触发扣减异常并被步骤隔离",
   );
   assert.ok(
-    h.logs.some((l) => l.message.includes("超出 [0, 10]")),
-    "异常文案应说明合法区间",
+    h.logs.some((l) => l.message.includes("超出上限")),
+    "异常文案应说明只允许正向获取",
   );
+});
+
+test("钓鱼消耗：净耗为负（并行正向带进鱼竿）不设下限、放行", async () => {
+  // master 2026-09-30 拍板：检查条件 = 实际减扣数不大于消耗数量，不设下限
+  const h = createHarness({
+    state: { fishDone: 1100, goldRods: 25, fishReturnHack: 11 }, // 首帧返还 11 → 净耗 -1
+  });
+  await h.tasks.goldenfishFish({ fishTarget: 1150 });
+
+  assert.ok(
+    h.logs.some((l) => l.message.includes("黄金鱼竿净耗 -1/10")),
+    "负净耗（正向带进）应打日志放行",
+  );
+  assert.ok(
+    !h.logs.some((l) => l.message.includes("扣减异常")),
+    "正向带进不该被判成扣减异常",
+  );
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("宝箱扣减校验：并行钓鱼掉落宝箱 → 净耗小于消耗数放行（三路并行口径）", async () => {
+  // master 2026-09-30：钓鱼有概率掉各种宝箱（钻石除外），是正向获取 ——
+  // 宝箱库存可能中途不降反升，净耗小于消耗数甚至为负都正常，只有多扣才异常
+  const h = createHarness({
+    state: { boxScoreDone: 98900, bronze: 20, boxGiftHack: 1 }, // 首帧净耗 9
+  });
+  await h.tasks.goldenfishBoxes({ boxTarget: 99100 });
+
+  assert.ok(
+    h.logs.some((l) => l.message.includes("宝箱 2002 净耗 9/10")),
+    "正向带进帧应打净耗日志放行",
+  );
+  assert.ok(
+    !h.logs.some((l) => l.message.includes("扣减异常")),
+    "正向获取不该被判成扣减异常",
+  );
+  assert.ok(h.logs.some((l) => l.message.includes("宝箱消耗结束")));
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("招募扣减校验：并行正向获取（净耗 9/10）放行，多扣才中止", async () => {
+  // 三路并行下救援开普通道具会给 0.5 招募令/个 —— 招募令库存可能中途回升
+  const h = createHarness({
+    state: { recruitDone: 3800, recruitTickets: 120, recruitDeductHack: -1 },
+  });
+  await h.tasks.goldenfishRecruit({ recruitTarget: 3900 });
+
+  assert.ok(
+    h.logs.some((l) => l.message.includes("招募令净耗 9/10")),
+    "正向带进帧应打净耗日志放行",
+  );
+  assert.ok(
+    !h.logs.some((l) => l.message.includes("扣减异常")),
+    "正向获取不该被判成扣减异常",
+  );
+  assert.ok(h.logs.some((l) => l.message.includes("招募消耗结束")));
+  assert.equal(h.errorLogs().length, 0);
 });
 
 test("钓鱼消耗：鱼竿整批发完后仍缺口 → 日志给出缺口次数与竿数折算，留待收尾买竿", async () => {
@@ -943,19 +1007,19 @@ const PARALLEL_STATE = {
 };
 const PARALLEL_CONFIG = { recruitTarget: 3900, boxTarget: 99000, fishTarget: 1100 };
 
-test("并行：招募+钓鱼并行、宝箱独占串行（宝箱背包乐观锁敏感）", async () => {
+test("并行：招募/宝箱/钓鱼 三路并行（2026-09-30 恢复，真凶余数批已定案）", async () => {
   const h = createHarness({ state: PARALLEL_STATE });
   await h.tasks.goldenfishConsumeAll({ ...PARALLEL_CONFIG });
 
   const parallelLog = h.logs.find((l) => l.message.includes("并行执行"));
   assert.ok(parallelLog, "应有并行执行日志");
-  // 日志要点名：并行的是招募+钓鱼，宝箱走串行
-  assert.ok(parallelLog.message.includes("consumeRecruit"), `并行段应含招募：${parallelLog.message}`);
-  assert.ok(parallelLog.message.includes("consumeFish"), `并行段应含钓鱼：${parallelLog.message}`);
   assert.ok(
-    parallelLog.message.includes("其余串行") && parallelLog.message.includes("consumeBoxes"),
-    `日志应说明宝箱串行：${parallelLog.message}`,
+    parallelLog.message.includes("3 个消耗任务"),
+    `应为 3 个并行：${parallelLog.message}`,
   );
+  for (const id of ["consumeRecruit", "consumeBoxes", "consumeFish"]) {
+    assert.ok(parallelLog.message.includes(id), `并行段应含 ${id}：${parallelLog.message}`);
+  }
 
   // 三路命令都发出且都推进到位
   assert.ok(h.sent.some((s) => s.cmd === "hero_recruit"), "招募应有帧");
@@ -964,27 +1028,6 @@ test("并行：招募+钓鱼并行、宝箱独占串行（宝箱背包乐观锁�
   assert.equal(h.state.recruitDone, 3900);
   assert.equal(h.state.fishDone, 1100);
   assert.equal(h.state.boxScoreDone, 99000);
-  assert.equal(h.errorLogs().length, 0);
-
-  // 🔴 宝箱必须**独占**：它的开箱帧全部出现在招募/钓鱼之后
-  const cmds = h.cmds();
-  const firstRecruit = cmds.indexOf("hero_recruit");
-  const firstFish = cmds.indexOf("artifact_lottery");
-  const firstBox = cmds.indexOf("item_openbox");
-  assert.ok(firstRecruit >= 0 && firstFish >= 0 && firstBox >= 0, `三路都要有帧：${cmds.join(",")}`);
-  assert.ok(
-    firstBox > firstRecruit && firstBox > firstFish,
-    `宝箱应独占在并行段之后（避免与活动任务并发触发乐观锁）：${cmds.join(",")}`,
-  );
-});
-
-test("并行：config.parallelBoxes=true → 宝箱也参与并行（实验开关）", async () => {
-  const h = createHarness({ state: PARALLEL_STATE });
-  await h.tasks.goldenfishConsumeAll({ ...PARALLEL_CONFIG, parallelBoxes: true });
-
-  const parallelLog = h.logs.find((l) => l.message.includes("并行执行"));
-  assert.ok(parallelLog?.message.includes("3 个消耗任务"), `应为 3 个并行：${parallelLog?.message}`);
-  assert.ok(parallelLog.message.includes("consumeBoxes"), `宝箱应在并行段：${parallelLog.message}`);
   assert.equal(h.errorLogs().length, 0);
 });
 
