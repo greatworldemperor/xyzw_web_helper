@@ -1684,23 +1684,50 @@ export function createTasksGoldenfish(deps) {
       return;
     }
     log(token.name, `进度奖励补领：${fmtNum(todo.length)} 个达标未领轮次`, "info");
+    // 🔴 请求体必须带 **activityId**（master 2026-09-30 抓包 goldenfish_claimProgressRewards.jsonl
+    //    实证：游戏发 `{ activityId: 2609251, missionId: 52 }`）——只发 missionId 服务端不响应
+    //    ⇒ 请求超时、领取不生效（21号战士线上案例）。缺键补 0 的教训同款：字段要对齐抓包。
     let ok = 0;
     for (const missionId of todo) {
       if (shouldStop.value) break;
       await sendWithRateLimit(
         tokenId,
         "activity_claimtaskreward",
-        { missionId },
+        { activityId: Number(progress.activityId), missionId },
         token,
         8000,
       );
       ok += 1;
     }
-    log(
-      token.name,
-      `进度奖励领取完成：${fmtNum(ok)}/${fmtNum(todo.length)} 轮`,
-      "success",
-    );
+    // 领完重读一次，用响应里的 record 校验全部入账（「必须得到反馈」口径）
+    const verifyResp = await fetchActivityWithLimit(tokenId, token);
+    const verifyProgress = readProgressOrSkip(verifyResp, token.name, "领取进度奖励");
+    if (verifyProgress) {
+      const verified = new Set(
+        Object.keys(verifyProgress.record || {}).map((key) => Number(key)),
+      );
+      const missing = todo.filter((missionId) => !verified.has(missionId));
+      if (missing.length === 0) {
+        log(
+          token.name,
+          `进度奖励领取完成：${fmtNum(ok)}/${fmtNum(todo.length)} 轮（record 校验全部入账）`,
+          "success",
+        );
+      } else {
+        log(
+          token.name,
+          `进度奖励领取后 record 校验：${fmtNum(todo.length - missing.length)}/${fmtNum(todo.length)} 入账，` +
+            `缺 ${fmtNum(missing.length)} 个（${missing.join("、")}）——下一轮运行会自动补领`,
+          "warning",
+        );
+      }
+    } else {
+      log(
+        token.name,
+        `进度奖励领取完成：${fmtNum(ok)}/${fmtNum(todo.length)} 轮（校验时进度不可读，跳过核对）`,
+        "success",
+      );
+    }
   };
 
   /** 【第 3 步】把金鱼普通道具(5287)全部开掉 —— 产出硬通货 5288；特殊道具绝不动 */

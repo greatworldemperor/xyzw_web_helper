@@ -196,6 +196,7 @@ function createHarness({ state } = {}) {
         }
         case "activity_claimtaskreward":
           claimedMissionIds.push(params?.missionId);
+          if (params?.missionId != null) st.record[params.missionId] = 1790736291;
           return {};
         case "hero_heroupgradestar":
           if (heroUpOk > 0) { heroUpOk -= 1; return { code: 0 }; }
@@ -236,6 +237,7 @@ function createHarness({ state } = {}) {
     delayConfig: { action: 1, command: 0 },
     // 活动进度注入（阶段 B 前测试用；线上默认占位返回 null）
     readActivityProgress: () => ({
+      activityId: state?.activityId ?? 2609251,
       recruitDone: st.recruitDone,
       boxScoreDone: st.boxScoreDone,
       fishDone: st.fishDone,
@@ -852,8 +854,19 @@ test("第一阶段第2步：领取所有进度奖励（按达标轮次补领，�
     "补领的 missionId 序列应等于「达标轮次 − 已领」",
   );
   assert.ok(!h.claimedMissionIds.includes(1), "已领的 missionId 不该重领");
+  // 🔴 请求体必须带 activityId（master 2026-09-30 抓包实证：{activityId, missionId}）
+  for (const frame of h.sent.filter((s) => s.cmd === "activity_claimtaskreward")) {
+    assert.deepEqual(
+      frame.params,
+      { activityId: 2609251, missionId: frame.params.missionId },
+      `领奖请求体应对齐抓包：${JSON.stringify(frame.params)}`,
+    );
+  }
   assert.ok(h.logs.some((l) => l.message.includes("进度奖励补领")));
-  assert.ok(h.logs.some((l) => l.message.includes("进度奖励领取完成")));
+  assert.ok(
+    h.logs.some((l) => l.message.includes("record 校验全部入账")),
+    "领取后应回读 record 校验",
+  );
   assert.equal(h.errorLogs().length, 0);
 });
 
