@@ -250,6 +250,24 @@ const rewardText = (response) => {
 };
 
 /**
+ * 账号级兜底重跑次数上限（master 2026-10-01 口径）
+ *
+ * 「出错就重建连接，重新执行当前出错账号的业务」—— 但要有上限，避免
+ * 服务端持续拒绝时无限重连刷屏。每次重跑前都会 close + ensure 连接，
+ * 且只重跑**失败的那几个步骤**（已成功的不再动）。
+ */
+const ACCOUNT_RERUN_MAX = 2;
+
+/**
+ * 不适合账号级重跑的步骤（副作用不可重复）
+ *
+ * 重跑安全的前提是「该步骤开头会重读进度/库存补差值，或本身幂等」。
+ * 投道具（`autumn_useitem { itemNum: N }`）是**投一次就生效**，没有目标差值可补，
+ * 重跑会真的多投 N 个 ⇒ 失败就失败，不重跑（其余消耗/清理类步骤都可重跑）。
+ */
+const NON_RERUNNABLE_STEPS = ["useOneItem"];
+
+/**
  * 页面级「金鱼任务」运行标志（**跨 createTasksGoldenfish 实例共享**）
  *
  * 为什么不能只靠注入的 `isRunning`：页面会给「自由模板」的每个任务各建一份 deps
@@ -307,6 +325,44 @@ export function createTasksGoldenfish(deps) {
 
   const log = (tokenName, text, type = "info") =>
     addLog({ time: nowText(), message: `${tokenName} ${text}`, type });
+
+  /**
+   * 逐帧余额反馈：**以服务端响应为准**（master 2026-10-01 拍板）
+   *
+   * 🔴 旧口径（2026-09-29/30）是「净耗与预期不符即 throw 中止防盲做」，**已废弃**：
+   *    · 服务端的结果一定可靠，本地只是估算；
+   *    · 网络卡顿/丢帧会让数据小幅跳变，而消耗目标本身**都留了余量**，偏差不影响结果；
+   *    · 三路并行时兄弟任务还会**正向带进**道具（救援开普通道具给 0.5 招募令/个、
+   *      钓鱼 11.11% 返还鱼竿、钓鱼掉宝箱），净耗小于消耗数甚至为负都正常。
+   *
+   * 新口径：**只要有响应，就以响应为准** —— 这里永不抛错，只做两件事：
+   *   ① 偏差留痕（日志可见，方便回溯）；② 把基线换成响应里的值继续跑。
+   * 真正需要兜底的是**拿不到响应 / 服务端明确拒绝**（请求失败、超时、200020 等），
+   *   由「step 级连接重试 + 账号级重建连接重跑」处理（见 `runGoldenfish`）。
+   *
+   * @returns 新的基线余额（响应没带该道具时维持原基线）
+   */
+  const applyStockFeedback = ({
+    token,
+    name,
+    lastStock,
+    nowStock,
+    spent,
+    note,
+  }) => {
+    if (nowStock == null) return lastStock; // 响应没带库存 → 无从校准，保持原基线
+    if (lastStock == null) return nowStock; // 首次拿到 → 直接作为基线
+    const drop = lastStock - nowStock;
+    if (drop !== spent) {
+      log(
+        token.name,
+        `${name} 净耗 ${drop}/${spent}（${lastStock}→${nowStock}` +
+          `${note ? `，${note}` : ""}）⇒ 以服务端响应为准，继续`,
+        drop > spent ? "warning" : "info",
+      );
+    }
+    return nowStock;
+  };
 
   /** 可选数值参数一律显式判空（Number(null)===0 陷阱） */
   const clampCount = (raw) => {
@@ -700,7 +756,6 @@ export function createTasksGoldenfish(deps) {
 
         await ensureConnection(tokenId);
 
-        const failedSteps = [];
         /** 跑单个 step；返回 "ok" | "abort"（限流/活动未开，应中断后续）| "failed" */
         const runStep = async (stepId) => {
           const step = STEPS[stepId];
@@ -736,12 +791,11 @@ export function createTasksGoldenfish(deps) {
               );
               return "abort";
             }
-            // 其余错误（如 200020 参数拒绝）：跳过本步骤，继续后续步骤。
+            // 其余错误（如 200020 参数拒绝）：记下本步骤，交给账号级重跑兜底。
             // （2026-09-29 master：招募差 3 触发 200020，不该拦住宝箱/钓鱼）
-            failedSteps.push(stepId);
             log(
               tokenName,
-              `⏭️ ${stepId} 失败（${errorText(error)}），跳过本步骤继续后续`,
+              `⏭️ ${stepId} 失败（${errorText(error)}）`,
               "error",
             );
             return "failed";
@@ -749,33 +803,76 @@ export function createTasksGoldenfish(deps) {
         };
 
         // 🔴 2026-09-29 master：招募/钓鱼**独立限流**可并行；**宝箱独占**（背包乐观锁敏感）。
-        // 分组执行：并行段（招募 + 宝箱 + 钓鱼）先跑，其余步骤（邮件）随后串行 ——
+        // 分组执行：并行段先跑，其余步骤（邮件）随后串行 ——
         // 单步按钮/购物/投道具天然只有 1 个可并行项，会整体走原串行路径，语义不变。
-        const isParallelizable = (id) => PARALLEL_CONSUME_STEPS.includes(id);
-        const parallelIds =
-          config?.serialConsume === true ? [] : stepIds.filter(isParallelizable);
-        const useParallel = parallelIds.length >= 2;
-        const serialIds = useParallel
-          ? stepIds.filter((id) => !parallelIds.includes(id))
-          : stepIds;
+        const runBatch = async (ids) => {
+          const failed = [];
+          let aborted = false;
+          const isParallelizable = (id) => PARALLEL_CONSUME_STEPS.includes(id);
+          const parallelIds =
+            config?.serialConsume === true ? [] : ids.filter(isParallelizable);
+          const useParallel = parallelIds.length >= 2;
+          const serialIds = useParallel
+            ? ids.filter((id) => !parallelIds.includes(id))
+            : ids;
 
-        if (useParallel) {
+          if (useParallel) {
+            log(
+              tokenName,
+              `⚡ 并行执行 ${parallelIds.length} 个消耗任务（独立限流、互不挤占）：${parallelIds.join(" + ")}` +
+                (serialIds.length > 0 ? `；其余串行：${serialIds.join(" + ")}` : ""),
+              "info",
+            );
+            // ⚠️ 并行时单个 step 遇限流无法收回已在跑的其他 step：它们各自也会收到 400340
+            //    并由 tokenStore 自愈重试，最终各自收敛（不会互相拖挂）。
+            const outcomes = await Promise.all(parallelIds.map((stepId) => runStep(stepId)));
+            parallelIds.forEach((id, i) => {
+              if (outcomes[i] === "failed") failed.push(id);
+              if (outcomes[i] === "abort") aborted = true;
+            });
+          }
+          for (const stepId of serialIds) {
+            if (shouldStop.value || consumeAbortAll) break;
+            const outcome = await runStep(stepId);
+            if (outcome === "failed") failed.push(stepId);
+            if (outcome === "abort") {
+              aborted = true;
+              break;
+            }
+            await sleep();
+          }
+          return { failed, aborted };
+        };
+
+        // 🔴 账号级兜底（master 2026-10-01 口径）：「出错就重建连接，重新执行当前出错账号的业务」。
+        //    旧行为是「该步骤失败=跳过、继续下一个」⇒ 剩余步骤照跑，但失败的那个目标没做完。
+        //    新行为：整批跑完后，把**失败的步骤**重建连接再跑一遍（最多 ACCOUNT_RERUN_MAX 次）。
+        //    安全性：消耗类 step 开头都会重新 activity_get 读进度 + 重读库存补差值，
+        //    重跑只会继续向预设目标推进，不会重复消耗，也不会越界。
+        let result = await runBatch(stepIds);
+        let rerun = 0;
+        const rerunnable = () =>
+          result.failed.filter((id) => !NON_RERUNNABLE_STEPS.includes(id));
+        while (
+          rerunnable().length > 0 &&
+          !result.aborted &&
+          rerun < ACCOUNT_RERUN_MAX &&
+          !shouldStop.value &&
+          !consumeAbortAll
+        ) {
+          rerun += 1;
+          const retryIds = rerunnable();
           log(
             tokenName,
-            `⚡ 并行执行 ${parallelIds.length} 个消耗任务（独立限流、互不挤占）：${parallelIds.join(" + ")}` +
-              (serialIds.length > 0 ? `；其余串行：${serialIds.join(" + ")}` : ""),
-            "info",
+            `⟳ ${retryIds.join("、")} 未成功：重建连接后重跑本账号这些步骤` +
+              `（第 ${rerun}/${ACCOUNT_RERUN_MAX} 次；步骤开头会重读进度补差值，只向目标推进）`,
+            "warning",
           );
-          // ⚠️ 并行时单个 step 遇限流无法收回已在跑的其他 step：它们各自也会收到 400340
-          //    并由 tokenStore 自愈重试，最终各自收敛（不会互相拖挂）。
-          await Promise.all(parallelIds.map((stepId) => runStep(stepId)));
+          await tokenStore.closeWebSocketConnection(tokenId);
+          await ensureConnection(tokenId);
+          result = await runBatch(retryIds);
         }
-        for (const stepId of serialIds) {
-          if (shouldStop.value || consumeAbortAll) break;
-          const outcome = await runStep(stepId);
-          if (outcome === "abort") break;
-          await sleep();
-        }
+        const failedSteps = result.failed;
 
         if (failedSteps.length > 0) {
           tokenStatus.value[tokenId] = "failed";
@@ -996,30 +1093,18 @@ export function createTasksGoldenfish(deps) {
         { recruitType: 1, recruitNumber: n },
         token,
       );
-      // 扣减校验（2026-09-29 master 口径「必须得到反馈再继续，避免盲做」，
-      // 抓包实证 Hero_RecruitResp.body.role.items 携带实时余额）：
-      // 🔴 净耗合法区间 = (-∞, n]（master 2026-09-30 口径）：三路并行时兄弟任务会
-      //    **正向带进**道具（救援开普通道具给 0.5 招募令/个、钓鱼/奖励回流等）——
-      //    库存可能中途不降反升 ⇒ 净耗小于消耗数甚至为负都正常，只有「多扣」
-      //    （净耗 > 消耗数）才是异常，中止防止盲做。
-      const nowStock = readItemCountStrict(resp?.role?.items, ITEM_RECRUIT);
-      if (nowStock != null && lastStock != null) {
-        const drop = lastStock - nowStock;
-        if (drop > n) {
-          throw new Error(
-            `招募令扣减异常：消耗 ${n}，净耗 ${drop}（${lastStock}→${nowStock}）` +
-              `超出上限（并行任务只会正向带进招募令，多扣 = 异常），中止防止盲做`,
-          );
-        }
-        if (drop !== n) {
-          log(
-            token.name,
-            `招募令净耗 ${drop}/${n}（${lastStock}→${nowStock}，并行任务正向带进，非异常）`,
-            "info",
-          );
-        }
-      }
-      if (nowStock != null) lastStock = nowStock;
+      // 🔴 以响应为准（master 2026-10-01 口径）：净耗与预期不符**不再中止** ——
+      //    服务端结果可靠，本地只是估算；丢帧/并行正向带进造成的小幅跳变无所谓
+      //    （三路并行时兄弟任务会带进招募令：救援开普通道具 0.5 个/个等）。
+      //    只有「拿不到响应 / 服务端拒绝」才需要兜底 —— 交给 step 级重连 + 账号级重跑。
+      lastStock = applyStockFeedback({
+        token,
+        name: "招募令",
+        lastStock,
+        nowStock: readItemCountStrict(resp?.role?.items, ITEM_RECRUIT),
+        spent: n,
+        note: "并行正向带进/丢帧跳变属正常",
+      });
       done += n;
       sent += 1;
       if (sent % 50 === 0) {
@@ -1097,28 +1182,18 @@ export function createTasksGoldenfish(deps) {
         token,
       );
       // 扣减校验（抓包实证 SyncRewardResp.body.role.items 携带实时余额，resp 序号对齐请求）
-      // 🔴 唯一异常条件 = 多扣（净耗 > 消耗数）（master 2026-09-30 拍板，附钓鱼概率分布表）：
-      //    钓鱼自身 11.11% 概率返还鱼竿（34b 案例：预期 -10 实际 -9 曾被误判中止）；
-      //    三路并行下兄弟任务/邮件/奖励也可能正向带进鱼竿，库存不降反升同样正常
-      //    ⇒ 不设下限，净耗 > n 才中止防盲做（钓鱼概率分布表见协议文档）。
-      const nowStock = readItemCountStrict(resp?.role?.items, ITEM_GOLD_ROD);
-      if (nowStock != null && lastStock != null) {
-        const drop = lastStock - nowStock;
-        if (drop > n) {
-          throw new Error(
-            `黄金鱼竿扣减异常：消耗 ${n}，净耗 ${drop}（${lastStock}→${nowStock}）` +
-              `超出上限（并行任务只会正向带进鱼竿，多扣 = 异常），中止防止盲做`,
-          );
-        }
-        if (drop !== n) {
-          log(
-            token.name,
-            `黄金鱼竿净耗 ${drop}/${n}（${lastStock}→${nowStock}，鱼竿 11.11% 概率返还等正向获取）`,
-            "info",
-          );
-        }
-      }
-      if (nowStock != null) lastStock = nowStock;
+      // 🔴 以响应为准（master 2026-10-01 口径，同招募）：净耗与预期不符**不再中止**。
+      //    钓鱼自身 11.11% 概率返还鱼竿（34b 案例：预期 -10 实际 -9 曾被误判中止），
+      //    并行兄弟任务/邮件/奖励也可能正向带进鱼竿 ⇒ 净耗小于消耗数、为负都正常；
+      //    多扣多为丢帧或第三方消耗，消耗目标已留余量，不值得为它打断整轮。
+      lastStock = applyStockFeedback({
+        token,
+        name: "黄金鱼竿",
+        lastStock,
+        nowStock: readItemCountStrict(resp?.role?.items, ITEM_GOLD_ROD),
+        spent: n,
+        note: "鱼竿 11.11% 概率返还等正向获取/丢帧跳变属正常",
+      });
       done += n;
       sent += 1;
       if (sent % 20 === 0) {
@@ -1246,8 +1321,8 @@ export function createTasksGoldenfish(deps) {
   };
 
   /** 开箱计划逐批发送（10/发+余数），返回最后一份带 role 的响应。
-   * inventory = 发送前已知的库存快照（可选）：逐帧校验该箱型扣减 = 本帧数量，
-   * 不符抛错防盲做（2026-09-29 master 口径；Item_OpenBoxResp.role.items 实证携带余额）
+   * inventory = 发送前已知的库存快照（可选）：逐帧**以响应为准**刷新该箱型基线
+   * （master 2026-10-01 口径：净耗不符只留痕不再抛错；Item_OpenBoxResp.role.items 实证携带余额）
    * progress = 可选的进度记账对象（诊断用）：记录「本次已成功开多少 / 被拒的是哪一帧」 */
   const sendOpenBoxSteps = async ({ tokenId, token, steps, inventory, progress }) => {
     let lastResp = null;
@@ -1283,28 +1358,18 @@ export function createTasksGoldenfish(deps) {
           8000,
         );
         if (lastItems) {
-          const before = readItemCountStrict(lastItems, step.itemId);
-          const now = readItemCountStrict(lastResp?.role?.items, step.itemId);
-          if (before != null && now != null) {
-            // 🔴 净耗合法区间 = (-∞, n]（master 2026-09-30 口径）：三路并行时
-            //    钓鱼有概率掉落各种宝箱（钻石除外）、救援开普通道具也回流铂金箱 ——
-            //    这些是**正向获取**，宝箱库存可能中途不降反升 ⇒ 净耗小于消耗数
-            //    甚至为负都正常，只有「多扣」（净耗 > 本帧消耗数）才是异常。
-            const drop = before - now;
-            if (drop > n) {
-              throw new Error(
-                `宝箱扣减异常：itemId ${step.itemId} 消耗 ${n}，净耗 ${drop}（${before}→${now}）` +
-                  `超出上限（并行钓鱼/奖励只会正向带进宝箱，多扣 = 异常），中止防止盲做`,
-              );
-            }
-            if (drop !== n) {
-              log(
-                token.name,
-                `宝箱 ${step.itemId} 净耗 ${drop}/${n}（${before}→${now}，并行正向带进，非异常）`,
-                "info",
-              );
-            }
-          }
+          // 🔴 以响应为准（master 2026-10-01 口径）：**不再因净耗不符抛错**。
+          //    三路并行时钓鱼有概率掉落各种宝箱（钻石除外）、救援开普通道具也回流铂金箱，
+          //    这些是正向获取 ⇒ 库存可能不降反升；多扣多为丢帧/第三方开箱，
+          //    而宝箱目标同样留了余量 ⇒ 只留痕换基线，继续向目标推进。
+          const now = applyStockFeedback({
+            token,
+            name: `宝箱 ${step.itemId}`,
+            lastStock: readItemCountStrict(lastItems, step.itemId),
+            nowStock: readItemCountStrict(lastResp?.role?.items, step.itemId),
+            spent: n,
+            note: "并行钓鱼掉落/救援回流铂金箱、丢帧跳变属正常",
+          });
           if (now != null) lastItems = { ...lastItems, [step.itemId]: now };
         }
         total += n;

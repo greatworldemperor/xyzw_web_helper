@@ -62,6 +62,8 @@ function createHarness({ state } = {}) {
   let rateLimitOnce = state?.rateLimitOnce ?? false; // 下一次命令抛 400340
   let openboxFailOnce = state?.openboxFailOnce ?? false; // 下一次 item_openbox 抛乐观锁
   const openboxAlwaysFail = state?.openboxAlwaysFail ?? false; // 每次 item_openbox 都抛乐观锁
+  // 前 N 次 item_openbox 抛乐观锁（账号级重跑测试用：先让整轮失败、再让重跑成功）
+  let openboxFailCount = state?.openboxFailCount ?? 0;
   let recruitDeductHack = state?.recruitDeductHack ?? 0; // 第一帧招募多扣（触发扣减校验）
   // 首帧钓鱼返还/多扣模拟：正数 = 10% 概率返还鱼竿（净耗 n-1）；负数 = 多扣（触发扣减异常）
   let fishReturnHack = state?.fishReturnHack ?? 0;
@@ -125,8 +127,9 @@ function createHarness({ state } = {}) {
           return { role: rolePayload().role };
         }
         case "item_openbox": {
-          if (openboxAlwaysFail || openboxFailOnce) {
+          if (openboxAlwaysFail || openboxFailOnce || openboxFailCount > 0) {
             openboxFailOnce = false;
+            if (openboxFailCount > 0) openboxFailCount -= 1;
             // 服务端只要收到调用就计数（被拒也算）→ 本机这 1 帧 + 别处的 phantom 次
             openboxCallStat += 1 + phantomCallsPerOpenbox;
             throw new Error("服务器错误: 200020 - 宝箱数量已发生变化，请重新操作");
@@ -351,7 +354,7 @@ test("钓鱼消耗：10% 返还鱼竿不算扣减异常（净耗 9/10 记日志�
     ],
   );
   assert.ok(
-    h.logs.some((l) => l.message.includes("黄金鱼竿净耗 9/10")),
+    h.logs.some((l) => l.message.includes("黄金鱼竿 净耗 9/10")),
     "返还帧应打净耗日志放行",
   );
   assert.ok(
@@ -362,22 +365,34 @@ test("钓鱼消耗：10% 返还鱼竿不算扣减异常（净耗 9/10 记日志�
   assert.equal(h.errorLogs().length, 0);
 });
 
-test("钓鱼消耗：多扣（净耗 13 > 10）仍然中止防盲做", async () => {
+test("钓鱼消耗：多扣（净耗 13 > 10）不再中止，以服务端响应为准继续（2026-10-01 口径）", async () => {
+  // master 2026-10-01 拍板：只要有响应就以响应为准 —— 服务端结果一定可靠，
+  // 多扣多为丢帧/第三方消耗，消耗目标已留余量 ⇒ 只留痕（warning）继续向目标推进。
   const h = createHarness({
     state: { fishDone: 1100, goldRods: 25, fishReturnHack: -3 }, // 首帧多扣 3 → 净耗 13 > 10
   });
   await h.tasks.goldenfishFish({ fishTarget: 1150 });
 
   assert.ok(
-    h.logs.some(
-      (l) => l.message.includes("consumeFish 失败") && l.message.includes("扣减异常"),
-    ),
-    "多扣仍应触发扣减异常并被步骤隔离",
+    h.logs.some((l) => l.message.includes("黄金鱼竿 净耗 13/10")),
+    "多扣应留痕（以响应为准）",
   );
   assert.ok(
-    h.logs.some((l) => l.message.includes("超出上限")),
-    "异常文案应说明只允许正向获取",
+    h.logs.some((l) => l.message.includes("以服务端响应为准")),
+    "应明确打出「以服务端响应为准」",
   );
+  assert.ok(
+    !h.logs.some((l) => l.message.includes("扣减异常")),
+    "新口径下不存在「扣减异常」这种中止",
+  );
+  // 关键：整批照发完（25 根 → 2 帧），没有被打断
+  assert.equal(
+    h.sent.filter((s) => s.cmd === "artifact_lottery").length,
+    2,
+    "多扣不该中断后续批次",
+  );
+  assert.ok(h.logs.some((l) => l.message.includes("钓鱼消耗结束")));
+  assert.equal(h.errorLogs().length, 0);
 });
 
 test("钓鱼消耗：净耗为负（并行正向带进鱼竿）不设下限、放行", async () => {
@@ -388,7 +403,7 @@ test("钓鱼消耗：净耗为负（并行正向带进鱼竿）不设下限、�
   await h.tasks.goldenfishFish({ fishTarget: 1150 });
 
   assert.ok(
-    h.logs.some((l) => l.message.includes("黄金鱼竿净耗 -1/10")),
+    h.logs.some((l) => l.message.includes("黄金鱼竿 净耗 -1/10")),
     "负净耗（正向带进）应打日志放行",
   );
   assert.ok(
@@ -405,6 +420,7 @@ test("宝箱扣减校验：并行钓鱼掉落宝箱 → 净耗小于消耗数放
     state: { boxScoreDone: 98900, bronze: 20, boxGiftHack: 1 }, // 首帧净耗 9
   });
   await h.tasks.goldenfishBoxes({ boxTarget: 99100 });
+  if (process.env.DBG_LOGS) console.log(JSON.stringify(h.logs.map((l) => l.message), null, 1));
 
   assert.ok(
     h.logs.some((l) => l.message.includes("宝箱 2002 净耗 9/10")),
@@ -426,7 +442,7 @@ test("招募扣减校验：并行正向获取（净耗 9/10）放行，多扣才
   await h.tasks.goldenfishRecruit({ recruitTarget: 3900 });
 
   assert.ok(
-    h.logs.some((l) => l.message.includes("招募令净耗 9/10")),
+    h.logs.some((l) => l.message.includes("招募令 净耗 9/10")),
     "正向带进帧应打净耗日志放行",
   );
   assert.ok(
@@ -457,19 +473,33 @@ test("钓鱼消耗：鱼竿整批发完后仍缺口 → 日志给出缺口次数
   assert.equal(h.errorLogs().length, 0); // 库存不足是正常暂停，不算失败
 });
 
-// ---------------------------------------------------------------- 扣减校验（2026-09-29 master 口径：必须得到反馈再继续，避免盲做）
+// ------------------------------------------------ 余额反馈（2026-10-01 master 口径：以服务端响应为准）
 
-test("招募消耗：余额扣减不符 → 中止步骤防止盲做", async () => {
+test("招募消耗：余额净耗不符 → 留痕但继续，不中止（以响应为准）", async () => {
   const h = createHarness({
     state: { recruitDone: 0, recruitTickets: 100, recruitDeductHack: 20 },
   });
   await h.tasks.goldenfishRecruit({ recruitTarget: 50 });
 
-  // 第一帧多扣 20（服务端口径不符）→ 校验发现 100→70 扣了 30 ≠ 10 → 中止
-  assert.ok(h.logs.some((l) => l.message.includes("招募令扣减异常")));
-  const recruits = h.sent.filter((s) => s.cmd === "hero_recruit").length;
-  assert.equal(recruits, 1); // 只发了 1 帧，没有继续盲做
-  assert.ok(h.errorLogs().length > 0);
+  // 第一帧多扣 20 → 100→70，净耗 30 ≠ 10：旧口径会 throw 中止，新口径只留痕继续
+  assert.ok(
+    h.logs.some((l) => l.message.includes("招募令 净耗 30/10")),
+    "净耗不符应留痕",
+  );
+  assert.ok(
+    h.logs.some((l) => l.message.includes("以服务端响应为准")),
+    "应明确打出「以服务端响应为准」",
+  );
+  assert.ok(
+    !h.logs.some((l) => l.message.includes("扣减异常")),
+    "新口径下不存在「扣减异常」中止",
+  );
+  assert.equal(
+    h.sent.filter((s) => s.cmd === "hero_recruit").length,
+    5,
+    "整批照发完，没有被偏差打断",
+  );
+  assert.equal(h.errorLogs().length, 0);
 });
 
 test("招募消耗：余额逐帧正常扣减 → 校验通过不误杀", async () => {
@@ -1280,10 +1310,13 @@ test("宝箱消耗：三次重试全被拒 → 诊断一次给全（计划/已�
   });
   await h.tasks.goldenfishBoxes({ boxTarget: 99000 });
 
+  // 旧口径：首次 + 2 次重试 = 3 次尝试、2 条重试日志。
+  // 2026-10-01 新口径：步骤失败后还会触发**账号级重跑**（ACCOUNT_RERUN_MAX=2），
+  // 每次重跑又是一轮「首次 + 2 重试」⇒ 共 3 轮 × 2 条 = 6 条重试日志。
   assert.equal(
     h.logs.filter((l) => l.message.includes("宝箱数量已变化")).length,
-    2,
-    "应有 2 条重试日志（首次 + 2 次重试 = 3 次尝试）",
+    6,
+    "3 次尝试 × 3 轮（首轮 + 2 次账号级重跑）= 6 条重试日志",
   );
   const finalLog = h.logs.find((l) => l.message.includes("开箱被服务端拒绝"));
   assert.ok(finalLog, "应有「开箱被服务端拒绝」的最终诊断");
@@ -1305,7 +1338,13 @@ test("宝箱消耗：三次重试全被拒 → 诊断一次给全（计划/已�
   );
   assert.ok(
     h.logs.some((l) => l.message.includes("consumeBoxes 失败")),
-    "应把该步骤标记为失败并继续后续",
+    "应把该步骤标记为失败",
+  );
+  // 🔴 账号级兜底（master 2026-10-01）：失败步骤会被重建连接后重跑，最多 2 次
+  assert.equal(
+    h.logs.filter((l) => l.message.includes("重建连接后重跑本账号这些步骤")).length,
+    2,
+    "应重跑失败步骤 2 次（ACCOUNT_RERUN_MAX）",
   );
   // 服务端绝对计数器：库存行打基线、失败时打前后对比、并给出并发判定
   assert.ok(
@@ -1323,6 +1362,39 @@ test("宝箱消耗：三次重试全被拒 → 诊断一次给全（计划/已�
   assert.ok(
     h.logs.some((l) => l.message.includes("没有第三方在开这个号")),
     "应明确指出不是并发，而是服务端判定口径与 role.items 不一致",
+  );
+});
+
+test("账号级重跑：步骤整轮失败 → 重建连接后重跑该步骤并做成（2026-10-01 口径）", async () => {
+  // 首轮：step 内部 3 次尝试（首次 + 2 次重读重试）全被拒 ⇒ 整轮失败；
+  // 新口径：不再「跳过继续下一个」，而是重建连接后**重跑这个失败的步骤**。
+  // 第 4 次调用仍被拒（重跑内的首次尝试）、第 5 次成功 ⇒ 这一轮真的做成了。
+  const h = createHarness({
+    state: { boxScoreDone: 98000, platinum: 2, bronze: 20, openboxFailCount: 4 },
+  });
+  await h.tasks.goldenfishBoxes({ boxTarget: 99000 });
+
+  assert.equal(
+    h.logs.filter((l) => l.message.includes("重建连接后重跑本账号这些步骤")).length,
+    1,
+    "首轮失败后应重跑一次",
+  );
+  assert.ok(
+    h.logs.some((l) => l.message.includes("开箱完成：本次共开")),
+    "重跑应真的把箱开掉（而不是跳过）",
+  );
+  assert.ok(
+    h.state.boxScoreDone > 98000,
+    `重跑后进度应推进：${h.state.boxScoreDone}`,
+  );
+  assert.ok(
+    h.logs.some((l) => l.message.includes("宝箱消耗结束")),
+    "重跑那一轮应正常收尾",
+  );
+  assert.equal(
+    h.logs.filter((l) => l.message.includes("开箱被服务端拒绝")).length,
+    1,
+    "只有首轮打最终诊断（重跑轮没被拒到底）",
   );
 });
 
