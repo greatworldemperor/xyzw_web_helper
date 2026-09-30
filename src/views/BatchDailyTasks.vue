@@ -7445,6 +7445,21 @@ const getGroupTokenList = (groupId) => {
 
 // 注: pickArenaTargetId, FISH_TARGET, ARENA_TARGET, getTodayStartSec, isTodayAvailable, calculateMonthProgress 已从 @/utils/batch 导入
 
+// .log-item 开了 content-visibility 后，没渲染过的行先用 contain-intrinsic-size 的估算高度占位，
+// 一次跳到底之后这些行才按真实高度排版、把内容又撑长 ⇒ 下一帧补滚一次才能真正贴底
+let keepBottomRaf = 0;
+const scrollLogToBottom = () => {
+  const el = logContainer.value;
+  if (!el || !autoScrollLog.value) return;
+  el.scrollTop = el.scrollHeight;
+  if (typeof requestAnimationFrame !== "function" || keepBottomRaf) return;
+  keepBottomRaf = requestAnimationFrame(() => {
+    keepBottomRaf = 0;
+    const el2 = logContainer.value;
+    if (el2 && autoScrollLog.value) el2.scrollTop = el2.scrollHeight;
+  });
+};
+
 const addLog = (log) => {
   // 写入环形缓冲（满了自动覆盖最早一行），日志条数上限由 ring capacity 保证
   logRing.push(log);
@@ -7453,10 +7468,7 @@ const addLog = (log) => {
   // 尝试DOM操作，但不依赖nextTick确保日志显示
   // 在后台运行时，浏览器可能会限制DOM操作
   try {
-    if (logContainer.value && autoScrollLog.value) {
-      // 直接尝试滚动，不使用nextTick
-      logContainer.value.scrollTop = logContainer.value.scrollHeight;
-    }
+    scrollLogToBottom();
   } catch (error) {
     // 忽略DOM操作错误，确保日志数据仍然被记录
     console.warn("Failed to scroll log container:", error);
@@ -7465,9 +7477,7 @@ const addLog = (log) => {
   // 同时使用nextTick作为后备，确保在页面回到前台时能正确滚动
   nextTick(() => {
     try {
-      if (logContainer.value && autoScrollLog.value) {
-        logContainer.value.scrollTop = logContainer.value.scrollHeight;
-      }
+      scrollLogToBottom();
     } catch (error) {
       // 忽略错误
     }
@@ -7478,7 +7488,7 @@ watch(autoScrollLog, (newValue) => {
   if (newValue && logContainer.value) {
     nextTick(() => {
       try {
-        logContainer.value.scrollTop = logContainer.value.scrollHeight;
+        scrollLogToBottom();
       } catch (error) {
         // 忽略DOM操作错误
         console.warn("Failed to scroll log container:", error);
