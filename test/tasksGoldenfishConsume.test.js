@@ -284,6 +284,27 @@ test("钓鱼消耗：只用黄金鱼竿，库存不足正常停（整批发 20�
   assert.equal(h.errorLogs().length, 0);
 });
 
+test("钓鱼消耗：fishDone=0（零进度补 0 后）正常执行，不再整步跳过", async () => {
+  // 2026-09-30 定案：服务端对零进度任务不下发 task 键（21号战士/39b 缺 task.3）
+  // 读取层补 0 后，钓鱼应按「有多少做多少」正常规划执行
+  const h = createHarness({ state: { fishDone: 0, goldRods: 20 } });
+  await h.tasks.goldenfishFish({ fishTarget: 1140 });
+
+  assert.deepEqual(
+    h.sent.filter((s) => s.cmd === "artifact_lottery").map((s) => s.params),
+    [
+      { type: 2, lotteryNumber: 10, newFree: true },
+      { type: 2, lotteryNumber: 10, newFree: true },
+    ],
+  );
+  assert.equal(h.state.fishDone, 20);
+  assert.ok(
+    !h.logs.some((l) => l.message.includes("缺 task.3")),
+    "零进度不该再被判成缺字段跳过",
+  );
+  assert.equal(h.errorLogs().length, 0);
+});
+
 test("钓鱼消耗：10% 返还鱼竿不算扣减异常（净耗 9/10 记日志放行，2026-09-30 线上反馈）", async () => {
   // 34b 线上案例：预期 -10 实际 -9 —— 钓鱼有 10% 概率返还鱼竿，净耗 9 是合法的
   const h = createHarness({
@@ -910,21 +931,29 @@ test("阶段B 真实数据：钓鱼进度 1140 = 目标 → 已达标不发命�
   assert.equal(h.errorLogs().length, 0);
 });
 
-test("阶段B 真实数据：槽位缺失（只有 task.1）→ 对应 step 跳过并指名缺哪个槽", async () => {
+test("阶段B 真实数据：残缺 task 表（只有 task.1）→ 缺槽位按 0，宝箱/钓鱼正常执行", async () => {
+  // 2026-09-30 抓包 9721_fishing_start.jsonl 铁证：没钓过鱼的号 activity_get 里
+  // 2609251.task = {1,2,4,5}（唯独没有 3）⇒ 服务端对零进度任务不下发键。
+  // 旧行为「缺 task.2/3 → 整步跳过」被废弃（会永久卡住钓鱼进度）。
   const h = createRealActivityHarness({
     commonActivityInfo: {
       2609251: { task: { 1: 3685 }, isBought: false },
       2609252: { isBought: false },
     },
-    items: { 1012: { quantity: 500 } },
+    items: { 1012: { quantity: 500 }, 1001: { quantity: 0 } },
   });
   await h.tasks.goldenfishConsumeAll({ recruitTarget: 3900, boxTarget: 99000, fishTarget: 1140 });
 
-  // 缺 task.2/task.3 → 宝箱与钓鱼都跳过，不发消耗命令
-  assert.ok(!h.sent.some((s) => s.cmd === "artifact_lottery"));
+  // 缺槽位不再「缺字段跳过」
+  assert.ok(!h.logs.some((l) => l.message.includes("缺 task.2（宝箱）")));
+  assert.ok(!h.logs.some((l) => l.message.includes("缺 task.3（钓鱼）")));
+  // 钓鱼按库存 500 根正常执行 → 50 帧 ×10
+  const fish = h.sent.filter((s) => s.cmd === "artifact_lottery");
+  assert.equal(fish.length, 50);
+  assert.ok(fish.every((s) => s.params.lotteryNumber === 10));
+  // 宝箱：零可开箱 → 走救援后暂停（不发 item_openbox）
   assert.ok(!h.sent.some((s) => s.cmd === "item_openbox"));
-  assert.ok(h.logs.some((l) => l.message.includes("缺 task.2（宝箱）")));
-  assert.ok(h.logs.some((l) => l.message.includes("缺 task.3（钓鱼）")));
+  assert.ok(h.logs.some((l) => l.message.includes("无箱可开")));
   assert.equal(h.errorLogs().length, 0);
 });
 

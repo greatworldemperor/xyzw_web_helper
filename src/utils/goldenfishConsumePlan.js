@@ -516,14 +516,28 @@ export const readActivityProgress = (response, options = {}) => {
   if (!resolved.ok) return null;
 
   const { task } = resolved;
+  // 🔴 服务端对**零进度/尚未开始**的任务不下发 task 键（2026-09-30 线上定案：
+  //    21号战士-0-139084096 / 39b 等还没钓过鱼的号，task 只有 {1,2}，缺 task.3
+  //    ⇒ 被误判「进度不可读」整步跳过钓鱼）。
+  //    自动解析出的活动 task 表必然非空（`isGoldenfishTaskMap` 要求至少一键）
+  //    ⇒ 缺失槽位按 **0** 处理（零进度是「可读的 0」，不是「不可读」）；
+  //    仅当 task 表完全缺失（manual 模式指向了没 task 的活动）才保持 null，
+  //    交由调用方跳过（宁可不跑不可盲跑）。
+  const taskIsReadable =
+    task && typeof task === "object" && Object.keys(task).length > 0;
+  const readSlot = (slot) => {
+    const value = readTaskValue(task, slot);
+    return taskIsReadable ? value ?? 0 : value;
+  };
+
   return {
     activityId: resolved.activityId,
     source: resolved.source,
-    recruitDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.recruit),
-    boxScoreDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.box),
-    fishDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.fish),
-    jarDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.jar),
-    goldDone: readTaskValue(task, GOLDENFISH_TASK_SLOTS.gold),
+    recruitDone: readSlot(GOLDENFISH_TASK_SLOTS.recruit),
+    boxScoreDone: readSlot(GOLDENFISH_TASK_SLOTS.box),
+    fishDone: readSlot(GOLDENFISH_TASK_SLOTS.fish),
+    jarDone: readSlot(GOLDENFISH_TASK_SLOTS.jar),
+    goldDone: readSlot(GOLDENFISH_TASK_SLOTS.gold),
     record: resolved.record,
     candidates: resolved.candidates,
   };

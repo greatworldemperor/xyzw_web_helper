@@ -351,6 +351,35 @@ test("readActivityProgress: 兼容裸 body / activity 两种层级", () => {
   assert.equal(flat.activityId, "2609251");
 });
 
+test("readActivityProgress: 残缺 task 表（零进度任务不下发）→ 缺失槽位补 0（2026-09-30 定案）", () => {
+  // 21号战士-0-139084096 线上实况：还没钓过鱼 ⇒ task 只有 {1,2}，缺 task.3
+  // 旧行为：fishDone=null → 「缺 task.3 进度字段」整步跳过钓鱼（39b 同现象）
+  const partial = {
+    2609251: {
+      task: { 1: 3899, 2: 50 },
+      isBought: false,
+    },
+    2609252: { isBought: false },
+  };
+  const p = readActivityProgress({ commonActivityInfo: partial });
+  assert.equal(p.activityId, "2609251");
+  assert.equal(p.recruitDone, 3899);
+  assert.equal(p.boxScoreDone, 50);
+  // 缺键 = 可读的 0（不是不可读）→ 钓鱼/罐子/金砖按 0 起算，能正常排计划
+  assert.equal(p.fishDone, 0);
+  assert.equal(p.jarDone, 0);
+  assert.equal(p.goldDone, 0);
+});
+
+test("readActivityProgress: task 表完全缺失（manual 指向无 task 的活动）→ 保持 null 交由调用方跳过", () => {
+  const noTask = { 2609251: { isBought: false } };
+  const p = readActivityProgress({ commonActivityInfo: noTask }, { manualId: "2609251" });
+  assert.equal(p.activityId, "2609251");
+  assert.equal(p.recruitDone, null);
+  assert.equal(p.boxScoreDone, null);
+  assert.equal(p.fishDone, null);
+});
+
 test("readActivityProgress: 找不到金鱼活动一律返回 null（宁可不跑不可盲跑）", () => {
   assert.equal(readActivityProgress({ statistics: {} }), null);
   assert.equal(readActivityProgress({}), null);
@@ -367,21 +396,23 @@ test("readActivityProgress: 找不到金鱼活动一律返回 null（宁可不�
   );
 });
 
-test("readActivityProgress: 缺槽位 → 该字段 null 而不冒充 0", () => {
+test("readActivityProgress: 非空 task 表缺槽位 → 补 0（零进度不等于不可读，2026-09-30 定案）", () => {
   const p = readActivityProgress({
     commonActivityInfo: { 2609251: { task: { 1: 3685 } } },
   });
   assert.equal(p.recruitDone, 3685);
-  assert.equal(p.boxScoreDone, null);
-  assert.equal(p.fishDone, null);
-  assert.equal(p.jarDone, null);
-  assert.equal(p.goldDone, null);
-  // 显式 null 值同样视为「读不到」（Number(null)===0 陷阱）
+  // 服务端对**零进度**任务不下发键（21号战士/39b 缺 task.3 的根因）⇒
+  // 缺失槽位 = 可读的 0，按 0 起算正常排计划（旧行为「null → 整步跳过」已废弃）
+  assert.equal(p.boxScoreDone, 0);
+  assert.equal(p.fishDone, 0);
+  assert.equal(p.jarDone, 0);
+  assert.equal(p.goldDone, 0);
+  // 显式 null / 空串同样补 0（Number(null)===0 陷阱仍在 readTaskValue 层被挡住）
   const p2 = readActivityProgress({
     commonActivityInfo: { 2609251: { task: { 1: null, 2: "" } } },
   });
-  assert.equal(p2.recruitDone, null);
-  assert.equal(p2.boxScoreDone, null);
+  assert.equal(p2.recruitDone, 0);
+  assert.equal(p2.boxScoreDone, 0);
 });
 
 test("resolveGoldenfishActivity: 多期残留取最大 ID（最新一期）", () => {
