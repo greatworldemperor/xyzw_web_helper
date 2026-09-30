@@ -72,6 +72,7 @@ import {
 } from "../goldenfishFinishPlan.js";
 // 第一阶段流水线的「清空道具 / 升星链」共享实现（与 tasksItem 同一份，避免清单与链路漂移）
 import {
+  NON_GOLDFISH_CLEAR_ITEM_IDS,
   clearInventoryByPacks,
   runHeroBookUpgradeChain,
 } from "./phase1Cleanup.js";
@@ -1711,13 +1712,21 @@ export function createTasksGoldenfish(deps) {
     }
   };
 
-  /** 【第 4 步】清空普通道具（非金鱼段；保护名单含 5288/5286，绝不触碰） */
+  /**
+   * 【第 4 步】清空普通道具
+   *   master 2026-09-30 定义：**普通道具 = 非金鱼道具** ⇒ 只清非金鱼段
+   *   （英雄碎片包 3002~3012 + 杂项 35011/36001/37005/40008），**不碰 52xx 金鱼段**
+   *   （5287 已在第 3 步开完；其余 52xx 留给收尾/手动）。
+   *   5288（金鱼特殊道具）/ 5286（投币道具）在保护名单，绝不触碰。
+   *   手动按钮「一键清空道具（资源兑现）」仍走全清单（那是收尾清扫工具）。
+   */
   const clearItemsStep = async ({ tokenId, token }) => {
     const role = await fetchRoleWithLimit(tokenId, token);
     const result = await clearInventoryByPacks({
       tokenId,
       tokenName: token.name,
       items: role?.items,
+      itemIds: NON_GOLDFISH_CLEAR_ITEM_IDS,
       send: (id, cmd, params, timeout) =>
         sendWithRateLimit(id, cmd, params, token, timeout),
       shouldStop: () => shouldStop.value,
@@ -1726,7 +1735,7 @@ export function createTasksGoldenfish(deps) {
     });
     log(
       token.name,
-      `清空道具完成：${fmtNum(result.kinds)} 种 / ${fmtNum(result.batches)} 批 / 共 ${fmtNum(result.count)} 个`,
+      `清空普通道具完成：${fmtNum(result.kinds)} 种 / ${fmtNum(result.batches)} 批 / 共 ${fmtNum(result.count)} 个`,
       "success",
     );
   };

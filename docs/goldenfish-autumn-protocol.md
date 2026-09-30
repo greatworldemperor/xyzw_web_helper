@@ -164,7 +164,7 @@ master 定口径（进游戏实测）：
 | ① | 招募/宝箱/钓鱼 做到预设值或用光存货 | `consumeRecruit` / `consumeBoxes` / `consumeFish`（**三路并行**） | `hero_recruit` / `item_openbox` / `artifact_lottery` |
 | ② | **领取所有进度奖励** | `claimProgressRewards`（按达标轮次补领 = `completedRounds(slot,进度)` − `record` 已领） | `activity_claimtaskreward { missionId }` |
 | ③ | **把金鱼普通道具(5287)全部开掉** | `openGoldenfishPacks`（复用救援用的 `openOrdinaryPacks`） | `item_openpack { 5287 }` |
-| ④ | **清空普通道具**（非金鱼段） | `clearItems`（共享 `phase1Cleanup.clearInventoryByPacks`） | `item_openpack`（清单，≤999/批） |
+| ④ | **清空普通道具**（master 定义：普通道具 = **非金鱼道具**；52xx 金鱼段不在此步，5288/5286 保护名单） | `clearItems`（共享 `phase1Cleanup.clearInventoryByPacks`，清单 = `NON_GOLDFISH_CLEAR_ITEM_IDS`） | `item_openpack`（清单，≤999/批） |
 | ⑤ | **一键英雄升星** | `upgradeChain`（共享 `runHeroBookUpgradeChain`） | `hero_heroupgradestar { heroId }` |
 | ⑥ | **一键图鉴升星** | 同上（因果链，一次连接按序做完） | `book_upgrade { heroId }` |
 | ⑦ | **一键领取图鉴奖励** | 同上 | `book_claimpointreward {}` |

@@ -871,12 +871,14 @@ test("第一阶段第3步：金鱼普通道具(5287)全部开掉，特殊道具(
   assert.equal(h.errorLogs().length, 0);
 });
 
-test("第一阶段第4步：清空普通道具（清单内开掉，5288/5286 保护名单绝不开）", async () => {
+test("第一阶段第4步：清空普通道具 = 非金鱼道具（5288/5286 与 52xx 金鱼段绝不开）", async () => {
   const h = createHarness({
     state: {
       extraItems: {
-        3005: { quantity: 1200 },
-        5288: { quantity: 9 }, // 硬通货
+        3005: { quantity: 1200 }, // 英雄碎片包（非金鱼）→ 应开
+        5264: { quantity: 30 }, // 52xx 金鱼段 → 不自动清
+        5287: { quantity: 50 }, // 金鱼普通道具 → 由第 3 步开，不在本步
+        5288: { quantity: 9 }, // 金鱼特殊道具（硬通货）
         5286: { quantity: 9 }, // 投道具用道具
       },
     },
@@ -886,9 +888,12 @@ test("第一阶段第4步：清空普通道具（清单内开掉，5288/5286 保
   const ops = h.sent
     .filter((s) => s.cmd === "item_openpack")
     .map((s) => [s.params.itemId, s.params.number]);
-  assert.deepEqual(ops, [[3005, 999], [3005, 201]], "3005 ×1200 按 999+201 开完");
-  assert.ok(!ops.some(([id]) => id === 5288 || id === 5286), "保护名单道具绝不清");
-  assert.ok(h.logs.some((l) => l.message.includes("清空道具完成")));
+  assert.deepEqual(ops, [[3005, 999], [3005, 201]], "只清非金鱼段（3005 ×1200 → 999+201）");
+  assert.ok(
+    !ops.some(([id]) => [5264, 5287, 5288, 5286].includes(id)),
+    "52xx 金鱼段与保护名单道具绝不被本步清空",
+  );
+  assert.ok(h.logs.some((l) => l.message.includes("清空普通道具完成")));
   assert.equal(h.errorLogs().length, 0);
 });
 

@@ -17,19 +17,33 @@ import { HERO_DICT } from "../HeroList.js";
 export const ITEM_OPENPACK_MAX_PER_CALL = 999;
 
 /**
- * 🔴 可清空道具清单 = master 30a 抓包（local-data/misc/clear_inventory.jsonl）
- * 里实际开过的 27 种 itemId —— 实证安全清单：
+ * 🔴 术语定义（master 2026-09-30 拍板）：
+ *   - **普通道具**   = 非金鱼道具（下面 `NON_GOLDFISH_CLEAR_ITEM_IDS`）
+ *   - **金鱼普通道具** = **5287**（产出硬通货；开完才轮到清空普通道具）
+ *   - **金鱼特殊道具** = **5288**（兑换金鱼的硬通货，250 个兑换）
+ *
+ * `CLEAR_ITEM_IDS`（全清单）用于**手动**的「一键清空道具（资源兑现）」——
+ *   master 的收尾清扫工具：金鱼收尾后连 52xx/5287 一起扫掉。
+ * `NON_GOLDFISH_CLEAR_ITEM_IDS`（非金鱼段）用于**金鱼第一阶段流水线的第 4 步「清空普通道具」**——
+ *   按定义只清非金鱼道具，**不碰 52xx 段**（金鱼道具留给收尾/手动）。
+ *
+ * 清单来源：master 30a 抓包（local-data/misc/clear_inventory.jsonl）实际开过的 itemId：
  *   - 3002~3012：英雄碎片包 / 资源包（产出英雄碎片 1xx/2xx/3xx，自动进图鉴进度）
  *   - 35011 / 36001 / 37005 / 40008：杂项礼包
- *   - 5264~5287（52xx 段）：金鱼活动道具 —— ⚠️ **5287 要先把「金鱼普通道具用完」再清**
- *     （5287 = 硬通货 5288 的唯一来源；master 是在「金鱼领光、特殊道具已够 250」之后才全开的）
- *   ⚠️ 清单外发现：同次抓包还开过 5506 / 5507 / 5508（各 ×2）但未收录（待 master 确认后补）
+ *   - 5264~5287（52xx 段）：**金鱼活动道具**（只进全清单，不进第一阶段清空段）
+ *   ⚠️ 同次抓包还开过 5506 / 5507 / 5508（各 ×2）但未收录（待 master 确认后补）
  */
 export const CLEAR_ITEM_IDS = Object.freeze([
   3002, 3005, 3006, 3007, 3008, 3009, 3010, 3011, 3012,
   35011, 36001, 37005, 40008,
   5264, 5265, 5268, 5269, 5271, 5272, 5273, 5275, 5276, 5277, 5279, 5280,
   5283, 5287,
+]);
+
+/** 非金鱼段（第一阶段第 4 步「清空普通道具」的清单；不含任何 52xx 金鱼道具） */
+export const NON_GOLDFISH_CLEAR_ITEM_IDS = Object.freeze([
+  3002, 3005, 3006, 3007, 3008, 3009, 3010, 3011, 3012,
+  35011, 36001, 37005, 40008,
 ]);
 
 /**
@@ -53,6 +67,8 @@ const defaultSleep = (ms = 0) =>
  * @param {string} [ctx.tokenName]
  * @param {object} ctx.items        role.items 快照（{[itemId]:{quantity}}）
  * @param {Function} ctx.send       (tokenId, cmd, params, timeout) => Promise
+ * @param {Array<number>} [ctx.itemIds]  清空清单（默认全清单 `CLEAR_ITEM_IDS`；
+ *                  金鱼第一阶段第 4 步传 `NON_GOLDFISH_CLEAR_ITEM_IDS`）
  * @param {Function} [ctx.shouldStop]
  * @param {Function} [ctx.log]      (message, type) => void
  * @param {Function} [ctx.sleep]    () => Promise
@@ -62,6 +78,7 @@ export async function clearInventoryByPacks({
   tokenId,
   tokenName = "",
   items = {},
+  itemIds = CLEAR_ITEM_IDS,
   send,
   shouldStop = () => false,
   log = () => {},
@@ -71,7 +88,7 @@ export async function clearInventoryByPacks({
   let batches = 0;
   let count = 0;
 
-  for (const itemId of CLEAR_ITEM_IDS) {
+  for (const itemId of itemIds) {
     if (shouldStop()) break;
     if (PROTECTED_ITEM_IDS.has(itemId)) continue; // 双保险，理论上不会命中
 
