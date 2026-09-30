@@ -55,6 +55,8 @@ function createHarness({ state } = {}) {
   let openboxFailOnce = state?.openboxFailOnce ?? false; // 下一次 item_openbox 抛乐观锁
   const openboxAlwaysFail = state?.openboxAlwaysFail ?? false; // 每次 item_openbox 都抛乐观锁
   let recruitDeductHack = state?.recruitDeductHack ?? 0; // 第一帧招募多扣（触发扣减校验）
+  // 首帧钓鱼返还/多扣模拟：正数 = 10% 概率返还鱼竿（净耗 n-1）；负数 = 多扣（触发扣减异常）
+  let fishReturnHack = state?.fishReturnHack ?? 0;
   // 普通道具开包的铂金箱期望（默认 0.205/个，与 GOLDENFISH_PACK_RETURNS 一致；测试可覆盖）
   const packPlatinumYield = state?.packPlatinumYield ?? 0.205;
   // 服务端绝对计数器（today:open:box = 开箱调用次数；activity:open:box = 开箱积分）
@@ -99,6 +101,11 @@ function createHarness({ state } = {}) {
         case "artifact_lottery": {
           const n = params?.lotteryNumber ?? 0;
           st.items[1012] = Math.max(0, st.items[1012] - n);
+          if (fishReturnHack !== 0) {
+            // 首帧模拟钓鱼返还（正数 = 10% 概率返还鱼竿）或多扣（负数，异常用例）
+            st.items[1012] += fishReturnHack;
+            fishReturnHack = 0;
+          }
           st.fishDone += n;
           return { role: rolePayload().role };
         }
@@ -268,6 +275,50 @@ test("钓鱼消耗：只用黄金鱼竿，库存不足正常停（整批发 20�
     h.logs.some((l) => l.message.includes("不足一批(10)") && l.message.includes("留待最后补满")),
   );
   assert.equal(h.errorLogs().length, 0);
+});
+
+test("钓鱼消耗：10% 返还鱼竿不算扣减异常（净耗 9/10 记日志放行，2026-09-30 线上反馈）", async () => {
+  // 34b 线上案例：预期 -10 实际 -9 —— 钓鱼有 10% 概率返还鱼竿，净耗 9 是合法的
+  const h = createHarness({
+    state: { fishDone: 1100, goldRods: 25, fishReturnHack: 1 },
+  });
+  await h.tasks.goldenfishFish({ fishTarget: 1150 });
+
+  assert.deepEqual(
+    h.sent.filter((s) => s.cmd === "artifact_lottery").map((s) => s.params),
+    [
+      { type: 2, lotteryNumber: 10, newFree: true },
+      { type: 2, lotteryNumber: 10, newFree: true },
+    ],
+  );
+  assert.ok(
+    h.logs.some((l) => l.message.includes("黄金鱼竿净耗 9/10")),
+    "返还帧应打净耗日志放行",
+  );
+  assert.ok(
+    !h.logs.some((l) => l.message.includes("扣减异常")),
+    "返还不该被判成扣减异常",
+  );
+  assert.ok(h.logs.some((l) => l.message.includes("钓鱼消耗结束")));
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("钓鱼消耗：净耗超出 [0, n]（多扣）仍然中止防盲做", async () => {
+  const h = createHarness({
+    state: { fishDone: 1100, goldRods: 25, fishReturnHack: -3 }, // 首帧多扣 3 → 净耗 13 > 10
+  });
+  await h.tasks.goldenfishFish({ fishTarget: 1150 });
+
+  assert.ok(
+    h.logs.some(
+      (l) => l.message.includes("consumeFish 失败") && l.message.includes("扣减异常"),
+    ),
+    "多扣仍应触发扣减异常并被步骤隔离",
+  );
+  assert.ok(
+    h.logs.some((l) => l.message.includes("超出 [0, 10]")),
+    "异常文案应说明合法区间",
+  );
 });
 
 test("钓鱼消耗：鱼竿整批发完后仍缺口 → 日志给出缺口次数与竿数折算，留待收尾买竿", async () => {

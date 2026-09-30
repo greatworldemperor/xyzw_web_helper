@@ -1069,11 +1069,25 @@ export function createTasksGoldenfish(deps) {
         token,
       );
       // 扣减校验（抓包实证 SyncRewardResp.body.role.items 携带实时余额，resp 序号对齐请求）
+      // 🔴 净耗合法区间 = [0, n]（master 2026-09-30 线上反馈：钓鱼有 10% 概率返还鱼竿，
+      //    用掉 10 根可能返还 1 根 ⇒ 净耗 9 而非 10；38b 案例曾把 -9 误判成「扣减异常」中止）
+      //    超出区间（净耗 > n = 多扣 / 净耗 < 0 = 无端增加）才算异常中止。
       const nowStock = readItemCountStrict(resp?.role?.items, ITEM_GOLD_ROD);
-      if (nowStock != null && lastStock != null && lastStock - nowStock !== n) {
-        throw new Error(
-          `黄金鱼竿扣减异常：预期 -${n}，实际 ${lastStock - nowStock}（${lastStock}→${nowStock}），中止防止盲做`,
-        );
+      if (nowStock != null && lastStock != null) {
+        const drop = lastStock - nowStock;
+        if (drop > n || drop < 0) {
+          throw new Error(
+            `黄金鱼竿扣减异常：消耗 ${n}，净耗 ${drop}（${lastStock}→${nowStock}）` +
+              `超出 [0, ${n}]（钓鱼有 10% 概率返还鱼竿，返还已计入区间），中止防止盲做`,
+          );
+        }
+        if (drop !== n) {
+          log(
+            token.name,
+            `黄金鱼竿净耗 ${drop}/${n}（${lastStock}→${nowStock}，含 10% 概率返还鱼竿）`,
+            "info",
+          );
+        }
       }
       if (nowStock != null) lastStock = nowStock;
       done += n;
