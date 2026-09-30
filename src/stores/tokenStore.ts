@@ -372,9 +372,49 @@ export const useTokenStore = defineStore("tokens", () => {
     }
   };
 
+  // ===== 连接诊断（master 2026-09-30：批量页 WSS/Token 链路录制，供 bin 实测对比）=====
+  // 录制开关默认关闭；关闭时零开销（录制点第一个判断就是开关，不序列化不进数组）。
+  interface ConnectionDiagEntry {
+    t: number;
+    tokenId: string;
+    kind: string;
+    [key: string]: unknown;
+  }
+  const connectionDiagnosticsEnabled = ref(false);
+  const connectionDiagnostics: ConnectionDiagEntry[] = [];
+  const CONNECTION_DIAG_MAX = 800;
+  const pushConnectionDiag = (entry: ConnectionDiagEntry) => {
+    if (!connectionDiagnosticsEnabled.value) return;
+    connectionDiagnostics.push({ ...entry });
+    if (connectionDiagnostics.length > CONNECTION_DIAG_MAX) {
+      connectionDiagnostics.splice(
+        0,
+        connectionDiagnostics.length - CONNECTION_DIAG_MAX,
+      );
+    }
+  };
+  const safeDiagPreview = (value: unknown, max = 600) => {
+    try {
+      const s = typeof value === "string" ? value : JSON.stringify(value);
+      return s.length > max ? s.slice(0, max) + `…(len=${s.length})` : s;
+    } catch {
+      return String(value).slice(0, max);
+    }
+  };
+  const arrayBufferToBase64 = (buf: ArrayBuffer | Uint8Array) => {
+    const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode(
+        ...Array.from(bytes.subarray(i, i + chunk)),
+      );
+    }
+    return btoa(binary);
+  };
+
   // Token管理
-  const addToken = (tokenData: TokenData) => {
-    let id =
+  const addToken = (tokenData: TokenData) => {    let id =
       tokenData.id ||
       `token_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const newToken = {
@@ -542,7 +582,19 @@ export const useTokenStore = defineStore("tokens", () => {
         throw new Error("未找到BIN数据");
       }
 
+      pushConnectionDiag({
+        t: Date.now(),
+        tokenId: gameToken.id,
+        kind: "refresh.req",
+        binB64: arrayBufferToBase64(userToken),
+      });
       const token = await transformToken(userToken);
+      pushConnectionDiag({
+        t: Date.now(),
+        tokenId: gameToken.id,
+        kind: "refresh.token",
+        token,
+      });
       if (!validateEncryptedToken(token)) {
         throw new Error("BIN转换结果不是有效的加密Token");
       }
@@ -1014,6 +1066,13 @@ export const useTokenStore = defineStore("tokens", () => {
       const baseWsUrl = `wss://xxz-xyzw.hortorgames.com/agent?p=${encodeURIComponent(actualToken)}&e=x&lang=chinese`;
 
       const wsUrl = customWsUrl || baseWsUrl;
+      pushConnectionDiag({
+        t: Date.now(),
+        tokenId,
+        kind: "ws.connect",
+        wsUrl,
+        actualToken,
+      });
 
       wsLogger.debug(
         `Token: ${actualToken.substring(0, 10)}...${actualToken.slice(-4)}`,
@@ -1025,6 +1084,51 @@ export const useTokenStore = defineStore("tokens", () => {
         utils: g_utils,
         heartbeatMs: 5000,
       });
+
+      // 7.5 诊断录制：包装 sendWithPromise（开关关闭时直通，零序列化开销）
+      const origSendWithPromise = wsClient.sendWithPromise.bind(wsClient);
+      (wsClient as any).sendWithPromise = (
+        cmd: string,
+        params: any,
+        timeoutMs?: number,
+      ) => {
+        if (!connectionDiagnosticsEnabled.value) {
+          return origSendWithPromise(cmd, params, timeoutMs);
+        }
+        const startedAt = Date.now();
+        pushConnectionDiag({
+          t: startedAt,
+          tokenId,
+          kind: "ws.send",
+          cmd,
+          params: safeDiagPreview(params, 300),
+        });
+        return origSendWithPromise(cmd, params, timeoutMs).then(
+          (body: unknown) => {
+            pushConnectionDiag({
+              t: Date.now(),
+              tokenId,
+              kind: "ws.resp",
+              cmd,
+              ms: Date.now() - startedAt,
+              body: safeDiagPreview(body, 600),
+            });
+            return body;
+          },
+          (err: any) => {
+            pushConnectionDiag({
+              t: Date.now(),
+              tokenId,
+              kind: "ws.resp.err",
+              cmd,
+              ms: Date.now() - startedAt,
+              code: err?.code ?? null,
+              err: safeDiagPreview(String(err?.message || err), 300),
+            });
+            throw err;
+          },
+        );
+      };
 
       // 8. 设置连接状态（带会话ID）
       wsConnections.value[tokenId] = {
@@ -2000,6 +2104,13 @@ export const useTokenStore = defineStore("tokens", () => {
     selectedTokenId,
     wsConnections,
     gameData,
+
+    // 连接诊断（录制开关 + 导出）
+    connectionDiagnosticsEnabled,
+    getConnectionDiagnostics: () => connectionDiagnostics.slice(),
+    clearConnectionDiagnostics: () => {
+      connectionDiagnostics.length = 0;
+    },
 
     // 计算属性
     hasTokens,

@@ -1121,6 +1121,20 @@
                 <n-checkbox v-model:checked="filterErrorsOnly" size="small">
                   只看错误
                 </n-checkbox>
+                <n-checkbox
+                  v-model:checked="tokenStore.connectionDiagnosticsEnabled"
+                  size="small"
+                  :disabled="isRunning"
+                >
+                  连接诊断
+                </n-checkbox>
+                <n-button
+                  size="small"
+                  :disabled="!tokenStore.connectionDiagnosticsEnabled"
+                  @click="exportConnectionDiagnostics"
+                >
+                  导出诊断
+                </n-button>
                 <n-tag v-if="errorCount > 0" type="error" size="small">
                   {{ errorCount }} 个错误
                 </n-tag>
@@ -7437,6 +7451,27 @@ watch(autoScrollLog, (newValue) => {
     });
   }
 });
+
+/** 连接诊断导出：把录制的 authuser/WS token/逐命令请求响应 dump 成 JSONL（bin 实测对比用） */
+const exportConnectionDiagnostics = () => {
+  const entries = tokenStore.getConnectionDiagnostics();
+  if (entries.length === 0) {
+    message.warning("没有诊断记录：先勾选「连接诊断」再跑一次任务");
+    return;
+  }
+  const text = entries.map((entry) => JSON.stringify(entry)).join("\n");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const blob = new Blob([text], { type: "application/x-ndjson" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `wss-diag-${stamp}.jsonl`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+  message.success(`已导出 ${entries.length} 条诊断记录`);
+};
 
 const copyLogs = async () => {
   if (logs.value.length === 0) {
