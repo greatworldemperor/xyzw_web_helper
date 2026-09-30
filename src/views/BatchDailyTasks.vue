@@ -7446,18 +7446,23 @@ const getGroupTokenList = (groupId) => {
 // 注: pickArenaTargetId, FISH_TARGET, ARENA_TARGET, getTodayStartSec, isTodayAvailable, calculateMonthProgress 已从 @/utils/batch 导入
 
 // .log-item 开了 content-visibility 后，没渲染过的行先用 contain-intrinsic-size 的估算高度占位，
-// 一次跳到底之后这些行才按真实高度排版、把内容又撑长 ⇒ 下一帧补滚一次才能真正贴底
+// 跳到底之后这些行要过一帧才按真实高度参与排版、把内容撑长 ⇒ 连盯 3 帧补滚，才能真正贴底
 let keepBottomRaf = 0;
+let keepBottomFrames = 0;
+const stepKeepBottom = () => {
+  keepBottomRaf = 0;
+  const el = logContainer.value;
+  if (el && autoScrollLog.value) el.scrollTop = el.scrollHeight;
+  keepBottomFrames -= 1;
+  if (keepBottomFrames > 0) keepBottomRaf = requestAnimationFrame(stepKeepBottom);
+};
 const scrollLogToBottom = () => {
   const el = logContainer.value;
   if (!el || !autoScrollLog.value) return;
   el.scrollTop = el.scrollHeight;
-  if (typeof requestAnimationFrame !== "function" || keepBottomRaf) return;
-  keepBottomRaf = requestAnimationFrame(() => {
-    keepBottomRaf = 0;
-    const el2 = logContainer.value;
-    if (el2 && autoScrollLog.value) el2.scrollTop = el2.scrollHeight;
-  });
+  if (typeof requestAnimationFrame !== "function") return;
+  keepBottomFrames = 3;
+  if (!keepBottomRaf) keepBottomRaf = requestAnimationFrame(stepKeepBottom);
 };
 
 const addLog = (log) => {
