@@ -23,6 +23,10 @@ import {
   CHEST_POINTS,
   OPENBOX_BATCH_SIZE,
 } from "../src/utils/goldenfishConsumePlan.js";
+import {
+  completedRounds,
+  toMissionId,
+} from "../src/utils/goldenfishFinishPlan.js";
 
 /** 宝箱积分兑换的 9 档成本（与生产同一份定义，避免测试里再抄一遍） */
 const BOX_POINT_COSTS = BOX_POINT_STEP_COSTS;
@@ -38,6 +42,9 @@ function createHarness({ state } = {}) {
     recruitDone: state?.recruitDone ?? 0,
     boxScoreDone: state?.boxScoreDone ?? 0,
     fishDone: state?.fishDone ?? 0,
+    jarDone: state?.jarDone ?? 0,
+    goldDone: state?.goldDone ?? 0,
+    record: state?.record ?? {},
     boxPoint: state?.boxPoint ?? 0,
     boxPointLastReward: state?.boxPointLastReward ?? 0,
     items: {
@@ -49,6 +56,7 @@ function createHarness({ state } = {}) {
       2004: state?.platinum ?? 0,
       2005: state?.diamond ?? 0,
       5287: state?.packs ?? 0, // 普通道具（金鱼活动，item_openpack 开包）
+      ...(state?.extraItems || {}), // 额外道具（清空清单/保护名单测试用）
     },
   };
   let rateLimitOnce = state?.rateLimitOnce ?? false; // 下一次命令抛 400340
@@ -59,6 +67,11 @@ function createHarness({ state } = {}) {
   let fishReturnHack = state?.fishReturnHack ?? 0;
   // 首帧开箱正向带进模拟（并行钓鱼掉落宝箱）：开完后给该箱型 +N → 净耗 n-N
   let boxGiftHack = state?.boxGiftHack ?? 0;
+  // 第一阶段后段步骤的 mock 配额：heroUpOk/bookUpOk/starClaimOk = 前若干次返回成功
+  let heroUpOk = state?.heroUpOk ?? 0;
+  let bookUpOk = state?.bookUpOk ?? 0;
+  let starClaimOk = state?.starClaimOk ?? 0;
+  const claimedMissionIds = []; // activity_claimtaskreward 的 missionId 序列
   // 普通道具开包的铂金箱期望（默认 0.205/个，与 GOLDENFISH_PACK_RETURNS 一致；测试可覆盖）
   const packPlatinumYield = state?.packPlatinumYield ?? 0.205;
   // 服务端绝对计数器（today:open:box = 开箱调用次数；activity:open:box = 开箱积分）
@@ -181,6 +194,18 @@ function createHarness({ state } = {}) {
           }
           return { role: { ...rolePayload().role } };
         }
+        case "activity_claimtaskreward":
+          claimedMissionIds.push(params?.missionId);
+          return {};
+        case "hero_heroupgradestar":
+          if (heroUpOk > 0) { heroUpOk -= 1; return { code: 0 }; }
+          return { code: 1 };
+        case "book_upgrade":
+          if (bookUpOk > 0) { bookUpOk -= 1; return { code: 0 }; }
+          return { code: 1 };
+        case "book_claimpointreward":
+          if (starClaimOk > 0) { starClaimOk -= 1; return { code: 0 }; }
+          return { code: 1 };
         default:
           return {};
       }
@@ -214,6 +239,9 @@ function createHarness({ state } = {}) {
       recruitDone: st.recruitDone,
       boxScoreDone: st.boxScoreDone,
       fishDone: st.fishDone,
+      jarDone: st.jarDone,
+      goldDone: st.goldDone,
+      record: st.record,
     }),
   };
 
@@ -222,6 +250,7 @@ function createHarness({ state } = {}) {
     sent,
     logs,
     warnings,
+    claimedMissionIds,
     tasks,
     state: st,
     shouldStop: deps.shouldStop,
@@ -795,7 +824,132 @@ test("独立领取邮件：goldenfishClaimMail 只发一帧 mail_claimallattachm
   assert.equal(h.errorLogs().length, 0);
 });
 
-// ---------------------------------------------------------------- 进度不可读
+// -------------------------------------------- 第一阶段流水线：领奖 → 开包 → 清空 → 升星
+
+test("第一阶段第2步：领取所有进度奖励（按达标轮次补领，已领跳过）", async () => {
+  const h = createHarness({
+    state: {
+      recruitDone: 3900,
+      boxScoreDone: 99000,
+      fishDone: 1140,
+      jarDone: 60,
+      record: { 1: 1790578205 }, // 已领：招募第 1 轮（missionId 1）
+    },
+  });
+  await h.tasks.goldenfishClaimProgressRewards({});
+
+  const expected = [];
+  for (const [slot, value] of Object.entries({ 1: 3900, 2: 99000, 3: 1140, 4: 60, 5: 0 })) {
+    const done = completedRounds(Number(slot), value);
+    for (let round = 1; round <= done; round += 1) {
+      const mid = toMissionId(Number(slot), round);
+      if (mid !== 1) expected.push(mid);
+    }
+  }
+  assert.deepEqual(
+    h.claimedMissionIds,
+    expected,
+    "补领的 missionId 序列应等于「达标轮次 − 已领」",
+  );
+  assert.ok(!h.claimedMissionIds.includes(1), "已领的 missionId 不该重领");
+  assert.ok(h.logs.some((l) => l.message.includes("进度奖励补领")));
+  assert.ok(h.logs.some((l) => l.message.includes("进度奖励领取完成")));
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("第一阶段第3步：金鱼普通道具(5287)全部开掉，特殊道具(5288)绝不动", async () => {
+  const h = createHarness({
+    state: { packs: 1000, extraItems: { 5288: { quantity: 174 } } },
+  });
+  await h.tasks.goldenfishOpenPacks({});
+
+  const ops = h.sent
+    .filter((s) => s.cmd === "item_openpack")
+    .map((s) => [s.params.itemId, s.params.number]);
+  assert.deepEqual(ops, [[5287, 999], [5287, 1]], "1000 个 5287 按 999+1 两批开完");
+  assert.ok(!ops.some(([id]) => id === 5288), "硬通货 5288 绝不开");
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("第一阶段第4步：清空普通道具（清单内开掉，5288/5286 保护名单绝不开）", async () => {
+  const h = createHarness({
+    state: {
+      extraItems: {
+        3005: { quantity: 1200 },
+        5288: { quantity: 9 }, // 硬通货
+        5286: { quantity: 9 }, // 投道具用道具
+      },
+    },
+  });
+  await h.tasks.goldenfishClearItems({});
+
+  const ops = h.sent
+    .filter((s) => s.cmd === "item_openpack")
+    .map((s) => [s.params.itemId, s.params.number]);
+  assert.deepEqual(ops, [[3005, 999], [3005, 201]], "3005 ×1200 按 999+201 开完");
+  assert.ok(!ops.some(([id]) => id === 5288 || id === 5286), "保护名单道具绝不清");
+  assert.ok(h.logs.some((l) => l.message.includes("清空道具完成")));
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("第一阶段第5~7步：英雄升星→图鉴升星→领图鉴奖励（因果链按序）", async () => {
+  const h = createHarness({ state: { heroUpOk: 3, bookUpOk: 2, starClaimOk: 1 } });
+  await h.tasks.goldenfishUpgradeChain({});
+
+  const cmds = h.cmds();
+  const iHero = cmds.indexOf("hero_heroupgradestar");
+  const iBook = cmds.indexOf("book_upgrade");
+  const iClaim = cmds.indexOf("book_claimpointreward");
+  assert.ok(iHero >= 0, "应有英雄升星帧");
+  assert.ok(iBook > iHero, `图鉴升星应在英雄升星之后：${cmds.join(",")}`);
+  assert.ok(iClaim > iBook, `领图鉴奖励应在图鉴升星之后：${cmds.join(",")}`);
+  assert.ok(
+    h.logs.some((l) =>
+      l.message.includes("资源升级链完成：英雄升星 3 / 图鉴升星 2 / 领图鉴奖励 1"),
+    ),
+    "应打链路统计",
+  );
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("第一阶段全流程：消耗 → 领奖 → 开包 → 清空 → 升星 → 邮件（顺序断言）", async () => {
+  const h = createHarness({
+    state: {
+      recruitDone: 3900, // 已达标 → 不跑
+      boxScoreDone: 98000,
+      wooden: 1200, // 保留 200 → 可开 1000 分 → 补齐 99000
+      fishDone: 1140, // 已达标 → 不跑
+      packs: 10,
+      extraItems: { 3005: { quantity: 5 } },
+      heroUpOk: 1,
+    },
+  });
+  await h.tasks.goldenfishConsumeAll({
+    recruitTarget: 3900,
+    boxTarget: 99000,
+    fishTarget: 1140,
+  });
+
+  const cmds = h.cmds();
+  const firstOpenbox = cmds.indexOf("item_openbox");
+  const firstClaimReward = cmds.indexOf("activity_claimtaskreward");
+  const packIdx = h.sent.findIndex(
+    (s) => s.cmd === "item_openpack" && s.params.itemId === 5287,
+  );
+  const clearIdx = h.sent.findIndex(
+    (s) => s.cmd === "item_openpack" && s.params.itemId === 3005,
+  );
+  const heroIdx = cmds.indexOf("hero_heroupgradestar");
+  const mailIdx = cmds.indexOf("mail_claimallattachment");
+
+  assert.ok(firstOpenbox >= 0, "应有开箱帧");
+  assert.ok(firstClaimReward > firstOpenbox, "领奖应在消耗之后");
+  assert.ok(packIdx > firstClaimReward, "开金鱼普通道具应在领奖之后");
+  assert.ok(clearIdx > packIdx, "清空道具应在开包之后");
+  assert.ok(heroIdx > clearIdx, "升星链应在清空之后");
+  assert.ok(mailIdx > heroIdx, "邮件应在最后");
+  assert.equal(h.errorLogs().length, 0);
+});
 
 test("进度不可读：三个消耗 step 全部跳过，不发任何消耗命令", async () => {
   const sent = [];
@@ -837,7 +991,7 @@ test("进度不可读：三个消耗 step 全部跳过，不发任何消耗命�
   );
   // 每个消耗 step（含邮件领取）都必须有「进度不可读」日志
   const unreadable = logs.filter((l) => l.message.includes("进度不可读"));
-  assert.equal(unreadable.length, 4);
+  assert.equal(unreadable.length, 5);
   assert.equal(logs.filter((l) => l.type === "error").length, 0);
 });
 

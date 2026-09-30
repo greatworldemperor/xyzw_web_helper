@@ -157,6 +157,25 @@ master 定口径（进游戏实测）：
   **净耗 > 消耗数（多扣）**；不设下限 —— 钓鱼/救援/奖励会**正向带进**宝箱、鱼竿、招募令，
   库存不降反升是正常的，只记日志（`净耗 X/N`）不中止。
 
+## 第一阶段全流程（master 2026-09-30 定稿 · 一键编排 `goldenfishConsumeAll`）
+
+| # | 步骤 | 实现 | 命令 |
+| --- | --- | --- | --- |
+| ① | 招募/宝箱/钓鱼 做到预设值或用光存货 | `consumeRecruit` / `consumeBoxes` / `consumeFish`（**三路并行**） | `hero_recruit` / `item_openbox` / `artifact_lottery` |
+| ② | **领取所有进度奖励** | `claimProgressRewards`（按达标轮次补领 = `completedRounds(slot,进度)` − `record` 已领） | `activity_claimtaskreward { missionId }` |
+| ③ | **把金鱼普通道具(5287)全部开掉** | `openGoldenfishPacks`（复用救援用的 `openOrdinaryPacks`） | `item_openpack { 5287 }` |
+| ④ | **清空普通道具**（非金鱼段） | `clearItems`（共享 `phase1Cleanup.clearInventoryByPacks`） | `item_openpack`（清单，≤999/批） |
+| ⑤ | **一键英雄升星** | `upgradeChain`（共享 `runHeroBookUpgradeChain`） | `hero_heroupgradestar { heroId }` |
+| ⑥ | **一键图鉴升星** | 同上（因果链，一次连接按序做完） | `book_upgrade { heroId }` |
+| ⑦ | **一键领取图鉴奖励** | 同上 | `book_claimpointreward {}` |
+| ⑧ | 领取邮件（宝箱周返还） | `claimMail`（累积 ≥ 32000 才收） | `mail_claimallattachment { category:0 }` |
+
+- 执行顺序：① 三路进**并行段**；②~⑧ **串行且严格按序**（②依赖①的进度、③依赖②的产出……因果链）。
+- 清空清单 / 保护名单 / 升星链与批量功能里的「一键清空道具」「一键升星领奖链」**同一份实现**
+  （`src/utils/batch/phase1Cleanup.js`），避免清单与链路在两处漂移。
+- 🔴 保护名单（绝不触碰）：**5288**（硬通货）/ **5286**（投币道具）/ 1013 / 1001 / 1012 / 2001~2005。
+- 各步都有独立入口（`goldenfishClaimProgressRewards` / `goldenfishOpenPacks` / `goldenfishClearItems` / `goldenfishUpgradeChain`），排查时可单跑。
+
 ### 钓鱼奖励概率分布（master 2026-09-30 提供游戏内数据）
 
 `artifact_lottery { type:2 }` 每条鱼的掉落（**箱子行的数量 = 积分面值**，即 1 个对应档位宝箱）：

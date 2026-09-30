@@ -1,4 +1,9 @@
 import { HERO_DICT } from "@/utils/HeroList";
+// 清理清单 / 清空执行 / 升星链已抽到共享模块（与金鱼第一阶段流水线同一份实现）
+import {
+  clearInventoryByPacks,
+  runHeroBookUpgradeChain,
+} from "./phase1Cleanup.js";
 import { PEACH_TASKS } from "@/utils/PeachTaskIds";
 import { executeSmartOpenBox } from "@/utils/smartOpenBox";
 
@@ -331,110 +336,21 @@ export function createTasksItem(deps) {
    * @returns {Promise<{heroUp:number, bookUp:number, claims:number}>}
    */
   const runHeroBookChainForToken = async (tokenId, tokenName) => {
-    const name = tokenName || tokenId;
-
-    /** 升星循环（cmd + 文案参数化；英雄升星与图鉴升星同构） */
-    const upgradeLoop = async (cmd, okLabel, failLabel) => {
-      let okCount = 0;
-      for (const heroId of heroIds) {
-        if (shouldStop.value) break;
-        for (let i = 1; i <= 10; i += 1) {
-          if (shouldStop.value) break;
-          try {
-            const res = await tokenStore.sendMessageWithPromise(
-              tokenId,
-              cmd,
-              { heroId },
-              5000,
-            );
-            const ok =
-              res &&
-              (res.code === 0 || res.success === true || res.result === 0);
-            if (!ok) throw new Error(failLabel);
-            okCount += 1;
-            addLog({
-              time: new Date().toLocaleTimeString(),
-              message: `${name} 英雄ID:${heroId} ${okLabel} (第${i}次)`,
-              type: "success",
-            });
-          } catch (err) {
-            // 失败说明该英雄无法继续（碎片不足/满星），停止当前英雄、换下一个
-            break;
-          }
-          await new Promise((r) => setTimeout(r, delayConfig.action));
-        }
-      }
-      return okCount;
-    };
-
-    // 第 1 步：英雄升星 —— 升星后才会解锁新的图鉴星级
-    addLog({
-      time: new Date().toLocaleTimeString(),
-      message: `${name} 【1/3】英雄升星开始`,
-      type: "info",
-    });
-    const heroUp = await upgradeLoop(
-      "hero_heroupgradestar",
-      "升星成功",
-      "升星失败",
-    );
-    addLog({
-      time: new Date().toLocaleTimeString(),
-      message: `${name} 【1/3】英雄升星完成，共成功 ${heroUp} 次`,
-      type: "success",
-    });
-
-    // 第 2 步：图鉴升星 —— 英雄升星带来的新图鉴进度在这里兑现
-    addLog({
-      time: new Date().toLocaleTimeString(),
-      message: `${name} 【2/3】图鉴升星开始`,
-      type: "info",
-    });
-    const bookUp = await upgradeLoop("book_upgrade", "图鉴升星成功", "图鉴升星失败");
-    addLog({
-      time: new Date().toLocaleTimeString(),
-      message: `${name} 【2/3】图鉴升星完成，共成功 ${bookUp} 次`,
-      type: "success",
-    });
-
-    // 第 3 步：领取图鉴奖励 —— 图鉴升星产生的奖励在这里收走
-    addLog({
-      time: new Date().toLocaleTimeString(),
-      message: `${name} 【3/3】领取图鉴奖励开始`,
-      type: "info",
-    });
-    let claims = 0;
-    for (let i = 1; i <= 10; i += 1) {
-      if (shouldStop.value) break;
-      try {
-        const res = await tokenStore.sendMessageWithPromise(
-          tokenId,
-          "book_claimpointreward",
-          {},
-          5000,
-        );
-        const ok =
-          res && (res.code === 0 || res.success === true || res.result === 0);
-        if (!ok) throw new Error("领取奖励失败");
-        claims += 1;
+    // 实现在共享模块（与金鱼第一阶段流水线同一份）——日志格式与统计口径保持一致
+    return runHeroBookUpgradeChain({
+      tokenId,
+      tokenName,
+      send: (id, cmd, params, timeout) =>
+        tokenStore.sendMessageWithPromise(id, cmd, params, timeout),
+      shouldStop: () => shouldStop.value,
+      log: (message, type) =>
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `${name} 领取图鉴奖励成功 (第${i}次)`,
-          type: "success",
-        });
-      } catch (err) {
-        // 没有更多奖励可领，停止
-        break;
-      }
-      await new Promise((r) => setTimeout(r, delayConfig.action));
-    }
-    addLog({
-      time: new Date().toLocaleTimeString(),
-      message: `${name} 【3/3】领取图鉴奖励完成，共成功 ${claims} 次`,
-      type: "success",
+          message,
+          type: type || "info",
+        }),
+      sleep: () => new Promise((r) => setTimeout(r, delayConfig.action)),
     });
-
-    return { heroUp, bookUp, claims };
   };
 
   /**
@@ -502,37 +418,7 @@ export function createTasksItem(deps) {
 
   // ---------------------------------------------------------------- 一键清空道具
 
-  /**
-   * 🔴 可清空道具清单 = master 30a 抓包（local-data/misc/clear_inventory.jsonl）
-   * 里实际开过的 27 种 itemId —— 实证安全清单：
-   *   - 3002~3012：英雄碎片包 / 资源包（产出英雄碎片 1xx/2xx/3xx，自动进图鉴进度）
-   *   - 35011 / 36001 / 37005 / 40008：杂项礼包
-   *   - 5264~5287（52xx 段）：金鱼活动道具 —— ⚠️ **金鱼收尾前勿跑本任务**
-   *     （清单含 5287 普通道具 = 召唤金鱼的资源；master 是在「金鱼领光、特殊道具
-     *     已够 250」之后才全开的。什么时候跑由 master 自己掌握时机）
-   */
-  const CLEAR_ITEM_IDS = Object.freeze([
-    3002, 3005, 3006, 3007, 3008, 3009, 3010, 3011, 3012,
-    35011, 36001, 37005, 40008,
-    5264, 5265, 5268, 5269, 5271, 5272, 5273, 5275, 5276, 5277, 5279, 5280,
-    5283, 5287,
-  ]);
-
-  /**
-   * 🔴 保护名单（代码层最后防线）：这些**永不清空**，即使被误加进清单。
-   * 5286 = 金鱼「投道具」用道具（每日投币；金鱼消耗活动的赠品 —— master 2026-09-30 口径：
-   *        **不是**兑换金鱼的硬通货，别按硬通货保底囤积）
-   * 5288 = **金鱼特殊道具（兑换金鱼的硬通货，250 个兑换）** —— 抓包实证：
-   *        `item_openpack 5287×684 → 5288×174`（25.4%）/ 1013 = 珍珠 / 1001 = 招募令 /
-   * 1012 = 黄金鱼竿 / 2001~2005 = 宝箱（开箱任务的原材料）。
-   */
-  const PROTECTED_ITEM_IDS = Object.freeze(new Set([
-    5288, // 🔴 金鱼特殊道具（兑换金鱼的硬通货，250 个兑换）—— 抓包 goldenfish_critical_item.jsonl 实证：684 个 5287 开出 174 个 5288
-    5286, 1013, 1001, 1012, 2001, 2002, 2003, 2004, 2005,
-  ]));
-
-  /** 🔴 item_openpack 单次 number 上限 = **999**（master 2026-09-28 强调；抓包实证 3005 开 6207 = 6×999 + 213） */
-  const ITEM_OPENPACK_MAX_PER_CALL = 999;
+  // 清单 / 保护名单 / 分批执行都在 ./phase1Cleanup.js（单一来源，与金鱼第一阶段流水线共用）
 
   /**
    * 一键清空道具：把背包里清单内道具全部用掉（资源兑现）
@@ -569,45 +455,26 @@ export function createTasksItem(deps) {
         const roleInfo = await sendRoleInfo(tokenId);
         const bagItems = roleInfo?.role?.items || {};
 
-        // 2) 逐清单项：按持有量分批（单次 ≤999）开掉
-        let totalKinds = 0;
-        let totalBatches = 0;
-        let totalCount = 0;
-        for (const itemId of CLEAR_ITEM_IDS) {
-          if (shouldStop.value) break;
-          if (PROTECTED_ITEM_IDS.has(itemId)) continue; // 双保险，理论上不会命中
-
-          const quantity = Math.floor(
-            Number(bagItems[String(itemId)]?.quantity) || 0,
-          );
-          if (quantity <= 0) continue;
-
-          let left = quantity;
-          while (left > 0 && !shouldStop.value) {
-            const batch = Math.min(ITEM_OPENPACK_MAX_PER_CALL, left);
-            await tokenStore.sendMessageWithPromise(
-              tokenId,
-              "item_openpack",
-              { itemId, number: batch, index: 0 },
-              5000,
-            );
-            left -= batch;
-            totalBatches += 1;
-            totalCount += batch;
-            await new Promise((r) => setTimeout(r, delayConfig.action));
-          }
-
-          totalKinds += 1;
-          addLog({
-            time: new Date().toLocaleTimeString(),
-            message: `${token.name} itemId ${itemId} 已用 ${quantity} 个（${Math.ceil(quantity / ITEM_OPENPACK_MAX_PER_CALL)} 批）`,
-            type: "success",
-          });
-        }
+        // 2) 逐清单项：按持有量分批（单次 ≤999）开掉（共享实现见 phase1Cleanup.js）
+        const clearResult = await clearInventoryByPacks({
+          tokenId,
+          tokenName: token.name,
+          items: bagItems,
+          send: (id, cmd, params, timeout) =>
+            tokenStore.sendMessageWithPromise(id, cmd, params, timeout),
+          shouldStop: () => shouldStop.value,
+          log: (m, type) =>
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: m,
+              type: type || "info",
+            }),
+          sleep: () => new Promise((r) => setTimeout(r, delayConfig.action)),
+        });
 
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `${token.name} 清空道具完成：${totalKinds} 种 / ${totalBatches} 批 / 共 ${totalCount} 个`,
+          message: `${token.name} 清空道具完成：${clearResult.kinds} 种 / ${clearResult.batches} 批 / 共 ${clearResult.count} 个`,
           type: "success",
         });
 

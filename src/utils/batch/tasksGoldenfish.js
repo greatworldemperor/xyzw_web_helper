@@ -67,7 +67,14 @@ import { runWithConnectionRetry } from "../helperTaskRunner.js";
 import {
   fishesToRods,
   GOLDENFISH_PACK_RETURNS,
+  completedRounds,
+  toMissionId,
 } from "../goldenfishFinishPlan.js";
+// 第一阶段流水线的「清空道具 / 升星链」共享实现（与 tasksItem 同一份，避免清单与链路漂移）
+import {
+  clearInventoryByPacks,
+  runHeroBookUpgradeChain,
+} from "./phase1Cleanup.js";
 
 /**
  * 金鱼消耗目标默认值（页面可调）
@@ -1641,21 +1648,137 @@ export function createTasksGoldenfish(deps) {
 
   STEPS.claimMail = claimMailStep;
 
+  /* ================= 第一阶段流水线：领奖 → 开包 → 清空 → 升星（master 2026-09-30 七步） ================= */
+
   /**
-   * 金鱼消耗一键编排：招募 + 宝箱 + 钓鱼 + 邮件
+   * 【第 2 步】领取所有金鱼进度奖励（master 2026-09-30 抓包口径）
+   *   `missionId = (slot-1)*20 + round`；`activity_get` 的 `record[missionId]` = 已领轮次时间戳
+   *   ⇒ 每个 slot 用 `completedRounds(slot, 累计值)` 求达标轮数，减去已领，逐轮补领
+   *   （服务端**不自动发奖**，一轮一领；master 抓包里连发 68 帧就是这个动作）。
+   */
+  const claimProgressRewardsStep = async ({ tokenId, token }) => {
+    const activityResp = await fetchActivityWithLimit(tokenId, token);
+    const progress = readProgressOrSkip(activityResp, token.name, "领取进度奖励");
+    if (!progress) return;
+    const claimed = new Set(
+      Object.keys(progress.record || {}).map((key) => Number(key)),
+    );
+    const slotProgress = {
+      1: progress.recruitDone,
+      2: progress.boxScoreDone,
+      3: progress.fishDone,
+      4: progress.jarDone,
+      5: progress.goldDone,
+    };
+    const todo = [];
+    for (const slot of [1, 2, 3, 4, 5]) {
+      const done = completedRounds(slot, slotProgress[slot]);
+      for (let round = 1; round <= done; round += 1) {
+        const missionId = toMissionId(slot, round);
+        if (!claimed.has(missionId)) todo.push(missionId);
+      }
+    }
+    if (todo.length === 0) {
+      log(token.name, "进度奖励已全领（五类任务达标轮次均已领取），无补领", "info");
+      return;
+    }
+    log(token.name, `进度奖励补领：${fmtNum(todo.length)} 个达标未领轮次`, "info");
+    let ok = 0;
+    for (const missionId of todo) {
+      if (shouldStop.value) break;
+      await sendWithRateLimit(
+        tokenId,
+        "activity_claimtaskreward",
+        { missionId },
+        token,
+        8000,
+      );
+      ok += 1;
+    }
+    log(
+      token.name,
+      `进度奖励领取完成：${fmtNum(ok)}/${fmtNum(todo.length)} 轮`,
+      "success",
+    );
+  };
+
+  /** 【第 3 步】把金鱼普通道具(5287)全部开掉 —— 产出硬通货 5288；特殊道具绝不动 */
+  const openGoldenfishPacksStep = async ({ tokenId, token }) => {
+    const role = await fetchRoleWithLimit(tokenId, token);
+    const result = await openOrdinaryPacks({ tokenId, token, role });
+    if (result.opened === 0) {
+      log(token.name, "金鱼普通道具(5287) 已无库存（跳过）", "info");
+    }
+  };
+
+  /** 【第 4 步】清空普通道具（非金鱼段；保护名单含 5288/5286，绝不触碰） */
+  const clearItemsStep = async ({ tokenId, token }) => {
+    const role = await fetchRoleWithLimit(tokenId, token);
+    const result = await clearInventoryByPacks({
+      tokenId,
+      tokenName: token.name,
+      items: role?.items,
+      send: (id, cmd, params, timeout) =>
+        sendWithRateLimit(id, cmd, params, token, timeout),
+      shouldStop: () => shouldStop.value,
+      log: (message, type) => log(token.name, message, type),
+      sleep: () => sleep(),
+    });
+    log(
+      token.name,
+      `清空道具完成：${fmtNum(result.kinds)} 种 / ${fmtNum(result.batches)} 批 / 共 ${fmtNum(result.count)} 个`,
+      "success",
+    );
+  };
+
+  /** 【第 5~7 步】英雄升星 → 图鉴升星 → 领图鉴奖励（共享链，一次连接按序做完） */
+  const upgradeChainStep = async ({ tokenId, token }) => {
+    const stats = await runHeroBookUpgradeChain({
+      tokenId,
+      tokenName: token.name,
+      send: (id, cmd, params, timeout) =>
+        sendWithRateLimit(id, cmd, params, token, timeout),
+      shouldStop: () => shouldStop.value,
+      log: (message, type) => log(token.name, message, type),
+      sleep: () => sleep(),
+    });
+    log(
+      token.name,
+      `资源升级链完成：英雄升星 ${fmtNum(stats.heroUp)} / 图鉴升星 ${fmtNum(stats.bookUp)} / 领图鉴奖励 ${fmtNum(stats.claims)}`,
+      "success",
+    );
+  };
+
+  STEPS.claimProgressRewards = claimProgressRewardsStep;
+  STEPS.openGoldenfishPacks = openGoldenfishPacksStep;
+  STEPS.clearItems = clearItemsStep;
+  STEPS.upgradeChain = upgradeChainStep;
+
+  /**
+   * 金鱼第一阶段一键编排（master 2026-09-30 七步全流程）：
+   *   ① 招募/宝箱/钓鱼 三路并行（做到预设值或用光存货）
+   *   ② 领取所有进度奖励（逐轮补领）
+   *   ③ 把金鱼普通道具(5287)全部开掉（产出硬通货 5288；特殊道具绝不动）
+   *   ④ 清空普通道具（非金鱼段；5288/5286 在保护名单）
+   *   ⑤⑥⑦ 英雄升星 → 图鉴升星 → 领图鉴奖励（共享链）
+   *   ⑧ 领取邮件（宝箱周，累积 ≥ 32000 才收）
    *
-   * 2026-09-29：招募/钓鱼并行（独立限流）；宝箱一度独占串行 —— 当晚定案推翻
-   * （「数量已发生变化」真凶是余数批被拒，已修复）；
-   * 2026-09-30 master 拍板恢复**三路并行**（见 `PARALLEL_CONSUME_STEPS` 注释），
-   * 逐帧扣减校验统一「净耗 > 消耗数才异常」（并行正向带进不设下限）。
-   * `config.serialConsume = true` 可全部回退串行。
-   * 2026-09-30：**邮件领取排最后**（串行段末位）—— 宝箱周每 8000 分 1 轮、最多 4 轮，
-   * 累积 ≥ 32000 才收（别收早了）；本轮消耗推过门槛后，新到轮次也能一并收进。
+   * 并行语义：只有 ① 的三路进并行段；②~⑧ 按序串行（②依赖①的进度，③依赖②的产出……因果链）。
+   * `config.serialConsume = true` 可把①也回退串行。
    */
   const goldenfishConsumeAll = (config) =>
     runGoldenfish(
-      ["consumeRecruit", "consumeBoxes", "consumeFish", "claimMail"],
-      "金鱼消耗（招募/宝箱/钓鱼 三路并行）",
+      [
+        "consumeRecruit",
+        "consumeBoxes",
+        "consumeFish",
+        "claimProgressRewards",
+        "openGoldenfishPacks",
+        "clearItems",
+        "upgradeChain",
+        "claimMail",
+      ],
+      "金鱼第一阶段（消耗→领奖→开包→清空→升星→邮件）",
       1,
       config,
     );
@@ -1665,6 +1788,15 @@ export function createTasksGoldenfish(deps) {
     runGoldenfish(["consumeBoxes"], "金鱼宝箱消耗", 1, config);
   const goldenfishClaimMail = (config) =>
     runGoldenfish(["claimMail"], "金鱼领取邮件奖励", 1, config);
+  // 第一阶段各步的独立入口（排查/单跑用）
+  const goldenfishClaimProgressRewards = (config) =>
+    runGoldenfish(["claimProgressRewards"], "金鱼领取进度奖励", 1, config);
+  const goldenfishOpenPacks = (config) =>
+    runGoldenfish(["openGoldenfishPacks"], "金鱼开普通道具(5287)", 1, config);
+  const goldenfishClearItems = (config) =>
+    runGoldenfish(["clearItems"], "金鱼清空普通道具", 1, config);
+  const goldenfishUpgradeChain = (config) =>
+    runGoldenfish(["upgradeChain"], "金鱼升星链（英雄→图鉴→领奖）", 1, config);
   const goldenfishFish = (config) =>
     runGoldenfish(["consumeFish"], "金鱼钓鱼消耗", 1, config);
 
@@ -1912,6 +2044,10 @@ export function createTasksGoldenfish(deps) {
     goldenfishRecruit,
     goldenfishBoxes,
     goldenfishClaimMail,
+    goldenfishClaimProgressRewards,
+    goldenfishOpenPacks,
+    goldenfishClearItems,
+    goldenfishUpgradeChain,
     goldenfishFish,
   };
 }
