@@ -11,6 +11,9 @@ export * from './connectionManager.js';
 // Log utilities
 export * from './logUtils.js';
 
+// Log ring buffer（定长槽位 + 指针覆盖，日志面板性能用）
+export * from './logRing.js';
+
 // Car utilities
 
 // Task factories
