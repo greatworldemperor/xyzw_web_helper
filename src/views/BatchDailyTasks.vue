@@ -1071,6 +1071,14 @@
                   >
                     领取进度奖励
                   </n-button>
+                  <n-button
+                    size="small"
+                    type="warning"
+                    @click="runGoldenfishFinish"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    一键收尾（第1~16步）
+                  </n-button>
                 </n-space>
                 <span class="xiaoyaojin-hint">
                   金鱼第一阶段全流程（每账号先查活动进度再补差值，可分多天断点续跑）：
@@ -1316,6 +1324,51 @@
           选中错误账号
         </n-button>
         <n-button type="primary" @click="showBatchResultModal = false">
+          关闭
+        </n-button>
+      </div>
+    </n-modal>
+
+    <!-- 金鱼收尾结果（第 15/16 步：判定 + 失败清单下载） -->
+    <n-modal
+      v-model:show="showGoldenfishFinishModal"
+      preset="card"
+      title="金鱼收尾结果"
+      style="width: 90%; max-width: 520px"
+    >
+      <div v-if="goldenfishFinishSummary" class="batch-result-content">
+        <div class="batch-result-label">
+          成功 <strong style="color: #18a058">{{ goldenfishFinishSummary.successCount }}</strong>
+          / 失败 <strong style="color: #d03050">{{ goldenfishFinishSummary.failedCount }}</strong>
+          / 跳过 {{ goldenfishFinishSummary.skippedCount }}
+          （共 {{ goldenfishFinishSummary.total }} 个账号）
+        </div>
+        <div class="batch-result-label" style="margin-top: 6px; color: #888">
+          判定口径：金鱼特殊道具(5288) ≥ 250
+        </div>
+        <div v-if="goldenfishFinishSummary.failures.length > 0" class="batch-failed-tokens">
+          <div class="batch-failed-title">失败角色清单（可下载后手动补做）</div>
+          <div
+            v-for="(row, i) in goldenfishFinishSummary.failures"
+            :key="i"
+            class="batch-failed-token"
+          >
+            {{ row.name }}（服{{ row.serverId }}）5288={{ row.specialCount }}，差 {{ row.shortfall }}；
+            {{ row.reasonText }}
+          </div>
+        </div>
+        <div v-else class="batch-no-failures">全部账号收尾成功 🎉</div>
+      </div>
+      <div class="modal-actions" style="margin-top: 20px; text-align: right">
+        <n-button
+          type="warning"
+          :disabled="!goldenfishFinishSummary"
+          @click="downloadGoldenfishFinishReport"
+          style="margin-right: 8px"
+        >
+          下载失败清单
+        </n-button>
+        <n-button type="primary" @click="showGoldenfishFinishModal = false">
           关闭
         </n-button>
       </div>
@@ -4067,6 +4120,9 @@ import {
   DEFAULT_GOLDENFISH_EXCLUDE_SERVERS,
   resolveDefaultBlackMarketKeys,
 } from "@/utils/batch";
+
+// 金鱼收尾（第 1~16 步）：第 16 步的失败清单汇总 + 可下载文本
+import { summarizeFinishResults } from "@/utils/goldenfishFinishRun";
 
 import { merchantConfig, goldItemsConfig } from "@/utils/dreamConstants";
 
@@ -8374,6 +8430,8 @@ const {
   goldenfishBoxes,
   goldenfishFish,
   goldenfishClaimProgressRewards,
+  goldenfishFinish,
+  getGoldenfishFinishOutcomes,
 } = tasksGoldenfish;
 
 // 周一白玉 / 预约比赛：两个命令都不需要额外参数
@@ -8548,6 +8606,33 @@ const runGoldenfishFish = () => goldenfishFish(goldenfishConsumeConfig());
 // 见 docs/goldenfish-claim-session-gap-analysis.md）；config 传消费目标仅保持签名统一，本步骤不读
 const runGoldenfishClaimProgressRewards = () =>
   goldenfishClaimProgressRewards(goldenfishConsumeConfig());
+
+/**
+ * 金鱼收尾（第 1~16 步，master 2026-10-01 口径）：
+ * ①宝箱10万 → ②招募4000 → ③领进度奖 → ④开5287 → ⑤买竿推到金砖42万 → ⑥钓鱼1300
+ * → ⑦领进度奖 → ⑧开5287 → ⑨~⑪算 r/m 并求解 x,y → ⑫执行 x 轮钓鱼 + y 轮金砖
+ * （每轮后补 ⑬领奖+⑭开包，**达成即停**）→ ⑮判定 → ⑯失败清单弹窗 + 下载
+ */
+const showGoldenfishFinishModal = ref(false);
+const goldenfishFinishSummary = ref(null);
+const runGoldenfishFinish = async () => {
+  await goldenfishFinish(goldenfishConsumeConfig());
+  goldenfishFinishSummary.value = summarizeFinishResults(getGoldenfishFinishOutcomes());
+  showGoldenfishFinishModal.value = true;
+};
+const downloadGoldenfishFinishReport = () => {
+  const text = goldenfishFinishSummary.value?.text || "";
+  if (!text) return;
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `金鱼收尾失败清单_${new Date().toISOString().slice(0, 10)}.txt`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};
 
 const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksHangUp(deps),

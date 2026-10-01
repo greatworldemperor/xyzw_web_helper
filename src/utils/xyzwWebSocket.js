@@ -124,6 +124,10 @@ export function registerDefaultCommands(reg) {
     })
     .register("system_getdatabundlever", { isAudit: false })
     .register("system_buygold", { buyNum: 1 })
+    // 通用购买：黄金鱼竿(1012) 原价 600 金砖/根就走这条
+    // （master 2026-10-01 抓包 `goldenfish/purchase_fishing_rod_no_discount.jsonl` 实证：
+    //   body = { itemId: 1012, buyNum: 2 }，响应 SyncRewardResp；不经过商店清单/discount）
+    .register("system_buyitem", { itemId: 0, buyNum: 1 })
     .register("system_claimhangupreward")
     .register("system_hangupupgrade", { upgradeNum: 1 })
     .register("system_signinreward")
@@ -1259,6 +1263,8 @@ export class XyzwWebSocketClient {
       ],
       syncrewardresp: [
         "system_buygold",
+        // 购买黄金鱼竿等通用购买（原价 600/根）
+        "system_buyitem",
         "discount_claimreward",
         "card_claimreward",
         "artifact_lottery",

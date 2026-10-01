@@ -1103,18 +1103,31 @@ function createRealActivityHarness({ commonActivityInfo, items = {}, cmds = {} }
   };
 }
 
-test("阶段B 真实数据：招募进度 3685 → 差值 215 → 21 发 10（余 5 不做）；activity_get 先于 role", async () => {
+test("阶段B 真实数据：招募进度 3685 → 差值 215 → 21 发 10 + 5 发 1（master 2026-10-01「只能用 1 或 10」）；activity_get 先于 role", async () => {
   const h = createRealActivityHarness({
     commonActivityInfo: CAPTURE_COMMON,
     items: { 1001: { quantity: 500 } },
   });
   await h.tasks.goldenfishRecruit({ recruitTarget: 3900 });
 
-  // alignDown（2026-09-29 口径）：recruitNumber 余数批会被 200020 拒 → 只发整批
+  // 🔴 master 2026-10-01 口径：招募只能用「1 个」或「10 个」，不能用别的数。
+  //    余数不再丢弃 ⇒ 215 = 21×10 + 5×1，共 26 帧；没有任何一帧是 2..9。
   const recruits = h.sent.filter((s) => s.cmd === "hero_recruit").map((s) => s.params);
-  assert.equal(recruits.length, 21);
-  assert.deepEqual(recruits, Array.from({ length: 21 }, () => ({ recruitType: 1, recruitNumber: 10 })));
-  assert.ok(h.logs.some((l) => l.message.includes("不足一批(10)")));
+  assert.equal(recruits.length, 26);
+  assert.deepEqual(
+    recruits,
+    [
+      ...Array.from({ length: 21 }, () => ({ recruitType: 1, recruitNumber: 10 })),
+      ...Array.from({ length: 5 }, () => ({ recruitType: 1, recruitNumber: 1 })),
+    ],
+  );
+  assert.ok(recruits.every((r) => r.recruitNumber === 1 || r.recruitNumber === 10));
+  assert.equal(
+    recruits.reduce((sum, r) => sum + r.recruitNumber, 0),
+    215,
+  );
+  // 旧口径的「余数不做」提示不应再出现
+  assert.ok(!h.logs.some((l) => l.message.includes("不足一批(10)")));
 
   // 进度靠 activity_get（不是 role）→ 它必须先发
   const seq = h.cmds();
@@ -1600,4 +1613,62 @@ test("同批重复导入：两条 token 指向同一角色 → 只跑第一条�
     "应给出重复导入跳过日志",
   );
   assert.equal(logs.filter((l) => l.type === "error").length, 0);
+});
+
+// ---------------------------------------------------------------- 收尾阶段（第 1~16 步）
+
+test("收尾：5288 已达标 → 达成即停，结果记为 success", async () => {
+  // 五项进度都已在收尾起点（宝箱10万/招募4000/钓鱼1300/金砖42万），5288 已 ≥250
+  const h = createHarness({
+    state: {
+      boxScoreDone: 100000,
+      recruitDone: 4000,
+      fishDone: 1300,
+      goldDone: 420000,
+      extraItems: { 5288: 251 },
+    },
+  });
+  await h.tasks.goldenfishFinish({});
+
+  const outcomes = h.tasks.getGoldenfishFinishOutcomes();
+  assert.equal(outcomes.length, 1);
+  assert.equal(outcomes[0].outcome, "success");
+  assert.equal(outcomes[0].specialCount, 251);
+  assert.ok(h.logs.some((l) => l.message.includes("5288 已达标")));
+  // 已达标就不该再买竿（金砖进度已在 42 万）
+  assert.equal(h.sent.filter((s) => s.cmd === "system_buyitem").length, 0);
+  assert.equal(h.errorLogs().length, 0);
+});
+
+test("收尾：第 ① 步宝箱目标用 10 万（不是第一阶段的 99000）", async () => {
+  const h = createHarness({
+    state: { boxScoreDone: 99500, recruitDone: 4000, fishDone: 1300, goldDone: 420000, extraItems: { 5288: 250 } },
+  });
+  await h.tasks.goldenfishFinish({});
+  // 目标 100000 ⇒ 日志里应出现 /100,000；99500 起手应触发开箱
+  assert.ok(
+    h.logs.some((l) => l.message.includes("宝箱消耗开始")),
+    "宝箱未到 10 万时应进入消耗流程",
+  );
+});
+
+test("收尾：买竿走 system_buyitem 一帧买完（不分批）", async () => {
+  // 金砖进度 380000 → 目标 420000，差 40000 ⇒ 40000/600 = 67 根，一帧
+  const h = createHarness({
+    state: {
+      boxScoreDone: 100000,
+      recruitDone: 4000,
+      fishDone: 1300,
+      goldDone: 380000,
+      goldRods: 0,
+      extraItems: { 5288: 250 },
+    },
+  });
+  await h.tasks.goldenfishFinish({});
+
+  const buys = h.sent.filter((s) => s.cmd === "system_buyitem").map((s) => s.params);
+  assert.ok(buys.length >= 1, "应发出买竿请求");
+  assert.deepEqual(buys[0], { itemId: 1012, buyNum: 67 });
+  // 一帧买完 ⇒ 同轮不应出现第二帧同参请求
+  assert.equal(buys.length, 1);
 });

@@ -113,6 +113,12 @@ export const alignDownToBatch = (count, size = OPENBOX_BATCH_SIZE) => {
 };
 /** 招募命令单发数量（hero_recruit recruitNumber，抓包口径 10） */
 export const RECRUIT_BATCH_SIZE = 10;
+/**
+ * 招募余数补充帧大小（master 2026-10-01 口径）：
+ * **招募只能用「1 个」或「10 个」，不能用别的数**。
+ * 例：差 37 次 ⇒ `[10,10,10,1,1,1,1,1,1,1]`（3 帧 10 + 7 帧 1），而不是丢掉余数 7。
+ */
+export const RECRUIT_FILL_SIZE = 1;
 /** 钓鱼命令单发数量（artifact_lottery lotteryNumber，抓包口径 10） */
 export const FISH_BATCH_SIZE = 10;
 
@@ -170,6 +176,32 @@ export const chunkBatches = (count, size = OPENBOX_BATCH_SIZE) => {
 };
 
 /**
+ * 大帧优先 + 余数用小帧补的切分（master 2026-10-01 招募口径：**只能用 1 或 10**）
+ *
+ * 例：`chunkBatchesMixed(37, 10, 1)` → `[10,10,10,1,1,1,1,1,1,1]`
+ *
+ * 与 `chunkBatches` 的区别：后者会把余数原样作为一帧（如 `[10,10,10,7]`，7 会被服务端拒）；
+ * 本函数把余数拆成若干 `small` 大小的合法帧。
+ */
+export const chunkBatchesMixed = (count, big = 10, small = 1) => {
+  const total = Math.max(0, Math.floor(Number(count) || 0));
+  const B = Math.max(1, Math.floor(Number(big) || 1));
+  const S = Math.max(1, Math.floor(Number(small) || 1));
+  const out = [];
+  let left = total;
+  while (left >= B) {
+    out.push(B);
+    left -= B;
+  }
+  while (left > 0) {
+    const n = Math.min(S, left);
+    out.push(n);
+    left -= n;
+  }
+  return out;
+};
+
+/**
  * 消耗类任务（招募/钓鱼）差值规划：进度未知时拒绝执行（断点续跑基准）
  *
  * alignDown（2026-09-29 master 口径）：招募/钓鱼抓包口径单发固定 10（recruitNumber /
@@ -177,8 +209,19 @@ export const chunkBatches = (count, size = OPENBOX_BATCH_SIZE) => {
  * 「出了点小问题」）。开启后 willDo 向下取整到 batchSize 的整批倍数，余数不做：
  * 「差 3 次不做就不做了，没必要非做不可，本来就是留一点点余量等着最后一天补满的」。
  * alignedShort = 因对齐被跳过的余数（区别于库存不足）。
+ *
+ * fillRemainder（master 2026-10-01，**招募专用**）：传 >0 时不再丢余数，而是把余数拆成
+ * 该大小的合法帧（招募用 1）。此时 `alignedShort` 恒为 false，`willDo` 保持原值。
+ * 钓鱼/开箱不传此参数 ⇒ 行为不变（仍为整批 10，余数不做）。
  */
-export const planCountConsume = ({ done, target, stock, batchSize, alignDown = false }) => {
+export const planCountConsume = ({
+  done,
+  target,
+  stock,
+  batchSize,
+  alignDown = false,
+  fillRemainder = 0,
+}) => {
   if (done == null || !Number.isFinite(Number(done))) {
     return { ok: false, reason: "progress-unknown" };
   }
@@ -191,6 +234,19 @@ export const planCountConsume = ({ done, target, stock, batchSize, alignDown = f
   const stockNum = stock == null ? Infinity : Math.max(0, Math.floor(Number(stock) || 0));
   let willDo = Math.min(remaining, stockNum);
   let alignedShort = false;
+  const fill = Math.max(0, Math.floor(Number(fillRemainder) || 0));
+  if (fill > 0) {
+    // 余数用小帧补齐（招募「1 或 10」口径）⇒ 不丢余数
+    return {
+      ok: true,
+      remaining,
+      willDo,
+      batches: chunkBatchesMixed(willDo, batchSize, fill),
+      stockShort: willDo < remaining,
+      alignedShort: false,
+      reached: false,
+    };
+  }
   if (alignDown) {
     const step = Math.max(1, Math.floor(Number(batchSize) || 1));
     const aligned = Math.floor(willDo / step) * step;

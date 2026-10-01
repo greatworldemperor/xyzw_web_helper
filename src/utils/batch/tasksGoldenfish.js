@@ -46,6 +46,8 @@ import {
   BOX_POINT_BATCH_MIN,
   GOLDENFISH_CONSUME_DEFAULTS,
   OPENBOX_BATCH_SIZE,
+  RECRUIT_BATCH_SIZE,
+  RECRUIT_FILL_SIZE,
   WOODEN_RESERVE,
   chestScoreAvailable,
   chunkBatches,
@@ -70,6 +72,13 @@ import {
   completedRounds,
   toMissionId,
 } from "../goldenfishFinishPlan.js";
+// 收尾阶段（第 1~16 步）纯逻辑：档位/算账/判定/失败清单（master 2026-10-01 口径）
+import {
+  GOLDENFISH_FINISH_TARGETS,
+  classifyFinishOutcome,
+  goldToRods,
+  planFinishTopUp,
+} from "../goldenfishFinishRun.js";
 // 第一阶段流水线的「清空道具 / 升星链」共享实现（与 tasksItem 同一份，避免清单与链路漂移）
 import {
   NON_GOLDFISH_CLEAR_ITEM_IDS,
@@ -1116,8 +1125,12 @@ export function createTasksGoldenfish(deps) {
       done: progress.recruitDone,
       target,
       stock,
-      batchSize: 10,
-      alignDown: true, // 抓包口径单发固定 10：余数批次会被 200020 拒绝（2026-09-29）
+      batchSize: RECRUIT_BATCH_SIZE,
+      alignDown: true,
+      // 🔴 master 2026-10-01：招募**只能用 1 个或 10 个**，不能用别的数。
+      //    因此余数不再丢弃，而是拆成若干个「1 个」帧（此前 alignDown 会把余数整段跳过）。
+      //    例：差 37 次 ⇒ [10,10,10,1,1,1,1,1,1,1]。
+      fillRemainder: RECRUIT_FILL_SIZE,
     });
     if (!plan.ok) {
       log(token.name, `招募消耗跳过：进度不可读（${progressText(target, null, stock, "招募令")}）`, "warning");
@@ -1969,10 +1982,258 @@ export function createTasksGoldenfish(deps) {
     );
   };
 
+  // ---------------------------------------------------------------- 收尾阶段（第 1~16 步，master 2026-10-01 口径）
+
+  /** 金鱼特殊道具（250 个换金鱼） */
+  const ITEM_SPECIAL_PACK = 5288;
+
+  /** 读一次收尾判定状态（5288 数量 / 金砖 / 鱼竿 / 活动进度） */
+  const readFinishState = async (tokenId, token) => {
+    const role = await fetchRoleWithLimit(tokenId, token);
+    const activity = await fetchActivityWithLimit(tokenId, token);
+    return {
+      role,
+      progress: readProgressRef(activity),
+      special: readItemCount(role?.items, ITEM_SPECIAL_PACK),
+      rods: readItemCount(role?.items, ITEM_GOLD_ROD),
+      diamond: Number(role?.diamond ?? 0) || 0,
+    };
+  };
+
+  /**
+   * 【第 5 步 / 第 12 步】买原价黄金鱼竿（`system_buyitem {itemId:1012, buyNum}`）
+   *
+   * master 2026-10-01 抓包 `goldenfish/purchase_fishing_rod_no_discount.jsonl` 实证：
+   * 原价竿走通用购买命令，**不经过商店清单/discount**（所以「原价 600」天然成立）。
+   * 把金砖消费进度推到 `goldTarget`；按 600/根折算要买多少根。
+   *
+   * @returns {{ok:boolean, bought:number, goldNow:number, goldAfter:number, reason?:string}}
+   */
+  const buyRodsStep = async ({ tokenId, token, goldTarget, config = null }) => {
+    const F = GOLDENFISH_FINISH_TARGETS;
+    const target = Math.max(0, Math.floor(Number(goldTarget) || 0));
+    const state = await readFinishState(tokenId, token);
+    if (!state.progress) {
+      log(token.name, `买竿跳过：活动进度不可读`, "warning");
+      return { ok: false, bought: 0, goldNow: 0, goldAfter: 0, reason: "progress-unknown" };
+    }
+    const goldNow = Math.max(0, Math.floor(Number(state.progress.goldDone) || 0));
+    const needGold = Math.max(0, target - goldNow);
+    if (needGold <= 0) {
+      log(token.name, `买竿跳过：金砖进度 ${fmtNum(goldNow)} 已达 ${fmtNum(target)}`, "info");
+      return { ok: true, bought: 0, goldNow, goldAfter: goldNow };
+    }
+
+    const rodsTotal = goldToRods(needGold, F.rodPrice);
+    if (state.diamond < rodsTotal * F.rodPrice) {
+      log(
+        token.name,
+        `⚠️ 买竿金砖不足：需 ${fmtNum(rodsTotal * F.rodPrice)}（${fmtNum(rodsTotal)} 根），` +
+          `现有 ${fmtNum(state.diamond)}`,
+        "warning",
+      );
+    }
+    log(
+      token.name,
+      `买竿开始：金砖进度 ${fmtNum(goldNow)} → ${fmtNum(target)}（差 ${fmtNum(needGold)}），` +
+        `买 ${fmtNum(rodsTotal)} 根原价竿（1 帧）`,
+      "info",
+    );
+
+    // master 2026-10-01：**只要金砖够，一帧可以买任意数量** ⇒ 不分批，一帧买完
+    let bought = 0;
+    if (rodsTotal > 0) {
+      await sendWithRateLimit(
+        tokenId,
+        "system_buyitem",
+        { itemId: ITEM_GOLD_ROD, buyNum: rodsTotal },
+        token,
+      );
+      bought = rodsTotal;
+      await sleep();
+    }
+
+    // 复核（买竿是金砖消耗任务的实现手段，进度由服务端统计）
+    const after = await readFinishState(tokenId, token);
+    const goldAfter = Math.max(0, Math.floor(Number(after?.progress?.goldDone) || 0));
+    log(
+      token.name,
+      `买竿结束：共 ${fmtNum(bought)} 根；金砖进度 ${fmtNum(goldNow)} → ${fmtNum(goldAfter)}` +
+        (goldAfter >= target ? "" : `（⚠️ 未达 ${fmtNum(target)}，可能金砖不足）`),
+      goldAfter >= target ? "success" : "warning",
+    );
+    return { ok: goldAfter >= target, bought, goldNow, goldAfter };
+  };
+
+  /** 【第 9~11 步】读状态 → 算 r/m → 求解 x,y（纯逻辑，不联网只读） */
+  const planFinishTopUpStep = async ({ tokenId, token }) => {
+    const state = await readFinishState(tokenId, token);
+    if (!state.progress) return null;
+    const plan = planFinishTopUp({
+      specialCount: state.special,
+      progressBySlot: {
+        1: state.progress.recruitDone,
+        2: state.progress.boxScoreDone,
+        3: state.progress.fishDone,
+        4: state.progress.jarDone,
+        5: state.progress.goldDone,
+      },
+      rodStock: state.rods,
+      goldInStock: state.diamond,
+    });
+    log(
+      token.name,
+      `收尾算账：5288=${fmtNum(state.special)}（目标 ${fmtNum(GOLDENFISH_FINISH_TARGETS.specialTarget)}）` +
+        `，还需 ${fmtNum(plan.packsNeeded)} 个普通道具；` +
+        `可行域 钓鱼 ${fmtNum(plan.maxX)} 档 × 金砖 ${fmtNum(plan.maxY)} 档`,
+      "info",
+    );
+    if (plan.done) {
+      log(token.name, `✅ 5288 已达标（${fmtNum(state.special)}）——达成即停`, "success");
+    } else if (!plan.feasible) {
+      log(
+        token.name,
+        `❌ 档位做满也只有 ${fmtNum(plan.maxItems)} 个 < 需要 ${fmtNum(plan.packsNeeded)} ⇒ 标记失败`,
+        "error",
+      );
+    } else {
+      log(
+        token.name,
+        `最优解：钓鱼 ${fmtNum(plan.best.x)} 轮 + 金砖 ${fmtNum(plan.best.y)} 轮` +
+          `（产出 ${fmtNum(plan.best.items)}，浪费 ${fmtNum(plan.best.waste)}）`,
+        "success",
+      );
+    }
+    return { state, plan };
+  };
+
+  /** 被跳过/失败账号的收尾结果（供第 16 步汇总导出） */
+  let finishOutcomes = [];
+  const recordFinishOutcome = (token, state, reason, specialCount) => {
+    const n = Math.max(0, Math.floor(Number(specialCount) || 0));
+    finishOutcomes.push({
+      name: token?.name || "",
+      serverId: token?.serverId ?? "",
+      roleId: token?.roleId ?? "",
+      specialCount: n,
+      outcome: n >= GOLDENFISH_FINISH_TARGETS.specialTarget ? "success" : "failed",
+      reason: n >= GOLDENFISH_FINISH_TARGETS.specialTarget ? null : reason || "not-reached",
+      detail: state?.detail || "",
+    });
+  };
+
+  /**
+   * 【第 1~16 步】金鱼收尾（master 2026-10-01 口径，以此为准）
+   *
+   * 顺序：①宝箱10万 → ②招募4000 → ③领进度奖 → ④开5287 → ⑤买竿推到金砖42万
+   *      → ⑥钓鱼1300 → ⑦领进度奖 → ⑧开5287 → ⑨~⑪读n算x/y → ⑫执行x轮钓鱼+y轮金砖
+   *      → 每轮后补 ⑬领奖+⑭开包 并**达成即停** → ⑮判定 → ⑯汇总失败清单
+   */
+  const goldenfishFinishStep = async ({ tokenId, token, config }) => {
+    const F = GOLDENFISH_FINISH_TARGETS;
+    const cfg = config || {};
+
+    // ①② 补齐宝箱 / 招募（复用现有消耗 step，只改 target）
+    await consumeBoxesStep({ tokenId, token, config: { ...cfg, boxTarget: F.boxScore } });
+    await consumeRecruitStep({ tokenId, token, config: { ...cfg, recruitTarget: F.recruit } });
+
+    // ③④ 领奖 + 开普通道具
+    await claimProgressRewardsStep({ tokenId, token });
+    await openGoldenfishPacksStep({ tokenId, token });
+
+    // ⑤ 买竿把金砖推到 42 万
+    await buyRodsStep({ tokenId, token, goldTarget: F.goldProgress, config: cfg });
+
+    // ⑥ 钓鱼到 1300
+    await consumeFishStep({ tokenId, token, config: { ...cfg, fishTarget: F.fishCount } });
+
+    // ⑦⑧ 领奖 + 开包
+    await claimProgressRewardsStep({ tokenId, token });
+    await openGoldenfishPacksStep({ tokenId, token });
+
+    // ⑨⑩⑪ 算账
+    let planned = await planFinishTopUpStep({ tokenId, token });
+    if (!planned) {
+      recordFinishOutcome(token, { detail: "活动进度不可读" }, "claim-failed", 0);
+      return;
+    }
+    let state = planned.state;
+    if (planned.plan.done) {
+      recordFinishOutcome(token, {}, null, state.special);
+      return;
+    }
+    if (!planned.plan.feasible) {
+      recordFinishOutcome(
+        token,
+        { detail: `档位做满仅 ${planned.plan.maxItems} 个，需 ${planned.plan.packsNeeded} 个` },
+        "tiers-exhausted",
+        state.special,
+      );
+      return;
+    }
+
+    // ⑫ 执行 x 轮钓鱼 + y 轮金砖；每轮后 ⑬⑭ 并检查达标（**达成即停**）
+    const checkReached = async () => {
+      const s = await readFinishState(tokenId, token);
+      return s?.special ?? 0;
+    };
+
+    const { x, y } = planned.plan.best;
+    for (let i = 0; i < x; i += 1) {
+      if (shouldStop.value) break;
+      const round = await planFinishTopUpStep({ tokenId, token });
+      const base = Math.max(0, Math.floor(Number(round?.state?.progress?.fishDone) || 0));
+      await consumeFishStep({
+        tokenId,
+        token,
+        config: { ...cfg, fishTarget: base + planned.plan.execution.fishPerRound },
+      });
+      await claimProgressRewardsStep({ tokenId, token });
+      await openGoldenfishPacksStep({ tokenId, token });
+      const n = await checkReached();
+      log(token.name, `第 ${fmtNum(i + 1)}/${fmtNum(x)} 轮钓鱼完成：5288=${fmtNum(n)}`, "info");
+      if (n >= F.specialTarget) {
+        log(token.name, `✅ 5288 达标（${fmtNum(n)}）——达成即停`, "success");
+        recordFinishOutcome(token, {}, null, n);
+        return;
+      }
+    }
+
+    for (let j = 0; j < y; j += 1) {
+      if (shouldStop.value) break;
+      const round = await planFinishTopUpStep({ tokenId, token });
+      const base = Math.max(0, Math.floor(Number(round?.state?.progress?.goldDone) || 0));
+      await buyRodsStep({ tokenId, token, goldTarget: base + planned.plan.execution.goldPerRound, config: cfg });
+      await claimProgressRewardsStep({ tokenId, token });
+      await openGoldenfishPacksStep({ tokenId, token });
+      const n = await checkReached();
+      log(token.name, `第 ${fmtNum(j + 1)}/${fmtNum(y)} 轮金砖完成：5288=${fmtNum(n)}`, "info");
+      if (n >= F.specialTarget) {
+        log(token.name, `✅ 5288 达标（${fmtNum(n)}）——达成即停`, "success");
+        recordFinishOutcome(token, {}, null, n);
+        return;
+      }
+    }
+
+    // ⑮ 判定
+    const final = await readFinishState(tokenId, token);
+    const n = final?.special ?? 0;
+    const verdict = classifyFinishOutcome(n);
+    log(
+      token.name,
+      verdict.success
+        ? `✅ 收尾成功：5288 = ${fmtNum(n)} ≥ ${fmtNum(F.specialTarget)}`
+        : `❌ 收尾失败：5288 = ${fmtNum(n)}，还差 ${fmtNum(verdict.shortfall)}`,
+      verdict.success ? "success" : "error",
+    );
+    recordFinishOutcome(token, { detail: `收尾后 5288=${n}` }, "not-reached", n);
+  };
+
   STEPS.claimProgressRewards = claimProgressRewardsStep;
   STEPS.openGoldenfishPacks = openGoldenfishPacksStep;
   STEPS.clearItems = clearItemsStep;
   STEPS.upgradeChain = upgradeChainStep;
+  STEPS.finish = goldenfishFinishStep;
 
   /**
    * 金鱼第一阶段一键编排（master 2026-09-30 定稿：**领取进度奖励不在编排内**）：
@@ -2021,6 +2282,19 @@ export function createTasksGoldenfish(deps) {
     runGoldenfish(["upgradeChain"], "金鱼升星链（英雄→图鉴→领奖）", 1, config);
   const goldenfishFish = (config) =>
     runGoldenfish(["consumeFish"], "金鱼钓鱼消耗", 1, config);
+
+  /**
+   * 【收尾阶段】金鱼一键收尾（第 1~16 步，master 2026-10-01 口径）
+   *
+   * 每个账号跑完整 16 步；跑完可通过 `getGoldenfishFinishOutcomes()` 取第 16 步的失败清单。
+   */
+  const goldenfishFinish = (config) => {
+    finishOutcomes = []; // 每轮清空，避免上一轮结果混进来
+    return runGoldenfish(["finish"], "金鱼收尾（第 1~16 步）", 1, config);
+  };
+
+  /** 第 16 步：取本轮收尾的逐账号结果（未跑过则为空数组） */
+  const getGoldenfishFinishOutcomes = () => finishOutcomes.slice();
 
   // ---------------------------------------------------------------- 金鱼号检测
 
@@ -2271,6 +2545,8 @@ export function createTasksGoldenfish(deps) {
     goldenfishClearItems,
     goldenfishUpgradeChain,
     goldenfishFish,
+    goldenfishFinish,
+    getGoldenfishFinishOutcomes,
   };
 }
 
