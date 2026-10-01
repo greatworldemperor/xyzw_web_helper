@@ -969,7 +969,9 @@
                     placeholder="投掷数量"
                     :disabled="isRunning"
                   />
-                  <span class="xiaoyaojin-hint">投掷数量（单发 itemNum，N>1 待实测）</span>
+                  <span class="xiaoyaojin-hint"
+                    >投掷数量（≤3000；投前先查 5286 存量，不足按存量投，没有则跳过）</span
+                  >
                 </n-space>
                 <n-space :size="8">
                   <n-button
@@ -983,7 +985,8 @@
                 </n-space>
                 <span class="xiaoyaojin-hint">
                   金鱼为秋季限时活动：autumn_useitem {'{'}itemNum: N{'}'}，单发按数量投掷，
-                  服务端自动扣减并返回奖励与前进距离；道具不足/活动未开视为正常跳过。
+                  服务端自动扣减并返回奖励与前进距离；活动未开视为正常跳过。
+                  投掷前先读 5286 存量：请求数超过存量按存量投，存量为 0 直接跳过（库存快照读不到时按请求数投，以服务端为准）。
                   完整自动金鱼开发中——协议见 docs/goldenfish-autumn-protocol.md。
                   商店购物列表已移至「日常」栏目（金鱼活动的商店也用它）。
                 </span>

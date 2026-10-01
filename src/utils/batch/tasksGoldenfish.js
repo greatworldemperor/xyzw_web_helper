@@ -276,6 +276,13 @@ const NON_RERUNNABLE_STEPS = ["useOneItem"];
 const USE_ITEM_MAX = 3000;
 
 /**
+ * 投道具消耗的道具 id：**5286**（每日投币 / 投道具用道具）
+ * 与 `phase1Cleanup.PROTECTED_ITEM_IDS` 里的 5286 是同一个东西（那边注释即写「金鱼投道具用道具」）；
+ * ⚠️ 它**不是** goldenfishFinishPlan 模型的产出物（5287 开包 → 5288 才是）。
+ */
+const USE_ITEM_ID = 5286;
+
+/**
  * 页面级「金鱼任务」运行标志（**跨 createTasksGoldenfish 实例共享**）
  *
  * 为什么不能只靠注入的 `isRunning`：页面会给「自由模板」的每个任务各建一份 deps
@@ -394,10 +401,40 @@ export function createTasksGoldenfish(deps) {
     return parts.length > 0 ? `；余额 ${parts.join(" ")}` : "";
   };
 
-  /** 投 N 个道具：autumn_useitem { itemNum: N }，响应里带回进度/奖励/余额
-   *  ⚠️ 抓包只实测过 itemNum:1；N>1 是否单次生效待活动开放时间验证（见 docs 待验证清单） */
+  /**
+   * 投 N 个道具：先查 5286 库存 → 不足按存量投 / 没有就跳过 → autumn_useitem { itemNum: N }
+   *
+   * master 2026-10-01 口径：投之前先监测道具总数，请求数 > 存量时**按存量投**，
+   * 存量为 0（或没有该道具）**直接跳过**；上限 3000（`USE_ITEM_MAX`）。
+   *
+   * ⚠️ 库存快照**读不到**（`role.items` 缺失 / 5286 键缺失，`readItemCountStrict` 返回 null）时
+   *    **不跳过**，退化为「按请求数量投，以服务端扣减为准」——否则一次快照抖动会让整个
+   *    投掷功能静默失效（抓包实证服务端会自己扣道具，不足时返回的是业务拒绝而非多扣）。
+   *
+   * 响应带回：reward（本次奖励）/ roleAutumn.distance（前进距离）/ role.items（余额快照）
+   */
   const useOneItem = async ({ tokenId, token, count }) => {
-    const n = clampItemCount(count);
+    const wanted = clampItemCount(count);
+    const role = await fetchRoleWithLimit(tokenId, token);
+    const stock = readItemCountStrict(role?.items, USE_ITEM_ID);
+    let n = wanted;
+    if (stock === null) {
+      log(
+        token.name,
+        `${USE_ITEM_ID} 库存快照不可读，按请求数量投 ${wanted} 个（以服务端扣减为准）`,
+        "warning",
+      );
+    } else if (stock <= 0) {
+      log(token.name, `没有 ${USE_ITEM_ID} 道具（存量 ${stock}），跳过投掷`, "warning");
+      return;
+    } else if (stock < wanted) {
+      n = stock;
+      log(
+        token.name,
+        `存量不足：请求 ${wanted} 个，实投 ${n} 个（${USE_ITEM_ID} 仅剩 ${stock}）`,
+        "warning",
+      );
+    }
     const response = await tokenStore.sendMessageWithPromise(
       tokenId,
       "autumn_useitem",
