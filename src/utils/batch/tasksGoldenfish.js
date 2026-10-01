@@ -2059,29 +2059,42 @@ export function createTasksGoldenfish(deps) {
       return { ok: false, reason: "gold-shortfall", upgraded: true, openedBoxes: 0, diamond };
     }
 
-    // 整批 10 个一帧，开到够为止（实际产出以服务端为准，所以每轮重读核实）
+    // 整批 10 个一帧，开到够为止；实际产出以服务端为准，所以按轮核实。
+    // 🔴 不能每帧都重读 role：诊断日志里出现过 `role_getroleinfo 200400 操作太快`，
+    //    逐帧重读会把限流引进来（tokenStore 的限流控制器会弹窗 + 5s 重试，批量场景直接卡住）。
+    //    ⇒ 每轮先算「还差几个箱子 → 要发几帧」，一口气发完再重读一次核实。
     let openedBoxes = 0;
-    for (let i = 0; i < 200; i += 1) {
+    for (let round = 0; round < 40; round += 1) {
       if (shouldStop.value) break;
       const r = await fetchRoleWithLimit(tokenId, token);
       diamond = Number(r?.diamond ?? 0) || 0;
       if (diamond >= target) break;
-      const left =
-        Math.floor(readItemCount(r?.items, ITEM_DIAMOND_BOX) / OPENBOX_BATCH_SIZE) * OPENBOX_BATCH_SIZE;
-      if (left <= 0) break;
-      try {
-        await sendWithRateLimit(
-          tokenId,
-          "item_openbox",
-          { itemId: ITEM_DIAMOND_BOX, number: OPENBOX_BATCH_SIZE },
-          token,
-        );
-      } catch (e) {
-        log(token.name, `开钻石宝箱失败：${String(e?.message || e).slice(0, 80)}`, "warning");
-        break;
+      const boxesNeeded = Math.ceil((target - diamond) / DIAMOND_BOX_GOLD);
+      const framesWanted = Math.ceil(boxesNeeded / OPENBOX_BATCH_SIZE);
+      const framesAvail = Math.floor(
+        readItemCount(r?.items, ITEM_DIAMOND_BOX) / OPENBOX_BATCH_SIZE,
+      );
+      const frames = Math.min(framesWanted, framesAvail);
+      if (frames <= 0) break;
+      let aborted = false;
+      for (let f = 0; f < frames; f += 1) {
+        if (shouldStop.value) break;
+        try {
+          await sendWithRateLimit(
+            tokenId,
+            "item_openbox",
+            { itemId: ITEM_DIAMOND_BOX, number: OPENBOX_BATCH_SIZE },
+            token,
+          );
+        } catch (e) {
+          log(token.name, `开钻石宝箱失败：${String(e?.message || e).slice(0, 80)}`, "warning");
+          aborted = true;
+          break;
+        }
+        openedBoxes += OPENBOX_BATCH_SIZE;
+        await sleep();
       }
-      openedBoxes += OPENBOX_BATCH_SIZE;
-      await sleep();
+      if (aborted) break;
     }
     role = await fetchRoleWithLimit(tokenId, token);
     diamond = Number(role?.diamond ?? 0) || 0;
