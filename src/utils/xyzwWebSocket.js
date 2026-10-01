@@ -111,11 +111,15 @@ export function registerDefaultCommands(reg) {
   const registry = reg
     .registerHeartbeat()
     // 角色/系统
+    // 🔴 首帧口径 = 游戏本体原值（h5 / 1.89.8-wx）：官方 H5 入口全员口径（2026-10-01 会话缺口
+    // 实验 E4/E7 实证，docs/goldenfish-claim-session-gap-analysis.md）——activity_claimtaskreward
+    // 受理需要「首帧口径对齐 + 进主城初始化序列」双因素，mix/2.21.2（自编口径）会被服务端拒。
+    // 仅此帧带 platformExt/clientVersion，其余命令 body 不含这些字段，无 3000070 口径污染。
     .register("role_getroleinfo", {
-      clientVersion: "2.21.2-fa918e1997301834-wx",
+      clientVersion: "1.89.8-wx",
       inviteUid: 0,
       platform: "hortor",
-      platformExt: "mix",
+      platformExt: "h5",
       scene: "",
     })
     .register("system_getdatabundlever", { isAudit: false })

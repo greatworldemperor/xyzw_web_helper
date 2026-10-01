@@ -1717,12 +1717,80 @@ export function createTasksGoldenfish(deps) {
   /* ================= 第一阶段流水线：领奖 → 开包 → 清空 → 升星（master 2026-09-30 七步） ================= */
 
   /**
+   * 🔴 进主城初始化序列（2026-10-01 会话缺口实验 E4/E7 实证，docs/goldenfish-claim-session-gap-analysis.md）：
+   *   activity_claimtaskreward 受理要求会话「已进入游戏」——连接后直接发 claim 会被服务端
+   *   静默丢弃（批量页实测挂死）/ 断线（Node 实测 1006）；先照抄游戏本体进主城的 36 帧
+   *   （来源 21a_success_xyzw-runtime-wss 抓包，末帧 role_backclaimreward = 进城结算标记）
+   *   之后 claim 立即放行（Activity_RewardResp 带实时 items 增量，9755 实领 5287×8 入账）。
+   *   单帧失败（200020 会话冲突 / 200160 模块未开启 / 2300100 无权限）不影响后续，忽略继续。
+   */
+  const GOLDENFISH_ENTER_GAME_SEQUENCE = [
+    { cmd: "role_getroleinfo", params: {} },
+    { cmd: "system_getdatabundlever", params: { isAudit: false } },
+    { cmd: "activity_get", params: {} },
+    { cmd: "role_getfirstmonthdate", params: {} },
+    { cmd: "mail_getmtlshortinfo", params: {} },
+    { cmd: "legion_getinfo", params: {} },
+    { cmd: "system_getchatmessage", params: { channel: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] } },
+    { cmd: "matchteam_getroleteaminfo", params: { roleID: 0 } },
+    { cmd: "invite_getinfo", params: {} },
+    { cmd: "collection_getinfo", params: {} },
+    { cmd: "collection_goodslist", params: {} },
+    { cmd: "legion_getpayloadtask", params: {} },
+    { cmd: "role_gettargetteam", params: { targetId: 0, teamType: 14, cCMonsterId: 0 } },
+    { cmd: "system_userminiprogram", params: {} },
+    { cmd: "sky_getgdrolesky", params: {} },
+    { cmd: "mail_getmtlinfo", params: { list: [] } },
+    { cmd: "legion_applylist", params: {} },
+    { cmd: "queue_getinfo", params: { queueType: "sky" } },
+    { cmd: "apex_getroleinfo", params: { roleId: 0 } },
+    { cmd: "system_getservertimestamp", params: {} },
+    { cmd: "fight_startlevel", params: {} },
+    { cmd: "nightmare_getroleinfo", params: { roleId: 0 } },
+    { cmd: "nmext_getinfo", params: {} },
+    { cmd: "beginnerbox_getinfo", params: {} },
+    { cmd: "club_getinfo", params: {} },
+    { cmd: "system_custom", params: { key: "randomSeed", value: 4255826325 } },
+    { cmd: "boss_getstate", params: { bossId: 9902 } },
+    { cmd: "store_goodslist", params: { storeId: 1 } },
+    { cmd: "mail_getbattlefieldreportlist", params: { lastId: 0, category: 1, size: 60 } },
+    { cmd: "mail_getbattlefieldreportlist", params: { lastId: 0, category: 2, size: 60 } },
+    { cmd: "role_backclaimreward", params: {} },
+    { cmd: "friend_getfollowinfo", params: { friendId: 0 } },
+    { cmd: "friend_list", params: {} },
+    { cmd: "friend_applylist", params: {} },
+    { cmd: "pkroom_getfightroominfo", params: {} },
+    { cmd: "pkroom_getfightroomdetail", params: { roomId: "" } },
+  ];
+
+  const runEnterGameSequence = async ({ tokenId, token }) => {
+    let ok = 0;
+    for (const { cmd, params } of GOLDENFISH_ENTER_GAME_SEQUENCE) {
+      try {
+        await sendWithRateLimit(tokenId, cmd, params, token, 8000);
+        ok += 1;
+      } catch {
+        // 单帧失败（200020 会话冲突 / 200160 模块未开启 / 2300100 无权限 / 超时）忽略继续
+      }
+      await sleep();
+    }
+    return ok;
+  };
+
+  /**
    * 【第 2 步】领取所有金鱼进度奖励（master 2026-09-30 抓包口径）
    *   `missionId = (slot-1)*20 + round`；`activity_get` 的 `record[missionId]` = 已领轮次时间戳
    *   ⇒ 每个 slot 用 `completedRounds(slot, 累计值)` 求达标轮数，减去已领，逐轮补领
    *   （服务端**不自动发奖**，一轮一领；master 抓包里连发 68 帧就是这个动作）。
    */
   const claimProgressRewardsStep = async ({ tokenId, token }) => {
+    // 🔴 领奖资格：先跑进主城初始化序列（实验 E4/E7 实证，见 GOLDENFISH_ENTER_GAME_SEQUENCE 注释）
+    const initOk = await runEnterGameSequence({ tokenId, token });
+    log(
+      token.name,
+      `进主城初始化序列：${fmtNum(initOk)}/${fmtNum(GOLDENFISH_ENTER_GAME_SEQUENCE.length)} 帧成功`,
+      initOk >= GOLDENFISH_ENTER_GAME_SEQUENCE.length - 8 ? "info" : "warning",
+    );
     const activityResp = await fetchActivityWithLimit(tokenId, token);
     const progress = readProgressOrSkip(activityResp, token.name, "领取进度奖励");
     if (!progress) return;
