@@ -90,11 +90,35 @@ _connParam = { roleToken, sessId: 100*Date.now()+~~(100*Math.random()), connId: 
 > 注意 1：09-30 bin-test 的「游戏原值 1.89.8-wx+h5」实验针对的是 **p= token 字段组合 + role_getroleinfo 200020** 问题（Node 场景），**首帧 body 差异对 claim 挂死的影响没有单独验证过**——实验 A 不是重复劳动。
 > 注意 2：实验 F 依据 —— 21a_fail 批量页 p= 带 roleId 时 role_getroleinfo 等命令全通，说明服务端**接受**该连接；但 claim 单命令挂死 ⇒ 服务端可能在**命令受理层**按 p= 字段集（roleId 有无）区分会话类型。 roleId=uid（249954438）在游戏 SDK 连接参数里本来就不存在，是 `transformToken` 把 authuser 响应整体展开带进去的——游戏原生客户端从不发送它。
 
-## 5. 全自动化路径（按实验结果择路）
+## 7. 定案（2026-10-01 13:5x，bin-test 对照实验全链路）
 
-- **路径一（若实锤 Cookie，改动最小）**：批量页领奖命令走 **multi-game iframe 桥**（postMessage → 游戏本体 → 原生会话领奖），其余命令仍走轻量 WS。游戏本体领奖已被 3 份抓包 100% 验证；multi-game 上号器（sh1.js）就是现成的批量原生登录框架，120 号可逐号隐形开 iframe 登录 → 桥发领奖 → 销毁。
-- **路径二（若实锤 Cookie 且想彻底协议化）**：Node 复刻原生登录全链拿 Cookie（实验 E），批量页 WS 握手带 Cookie + p= 双凭据。一劳永逸，但要逆向完整 HTTP 登录链。
-- **路径三（若 H-状态机/指纹成立）**：批量页发包编排加「首帧指纹对齐 + 进主城初始化序列」两步，纯协议层解决，无需 iframe。成本最低、最干净，优先验证。
+master 指示用 bin 文件 + `xyzw-bin-test` skill 逐项对照，单变量实验链：
+
+| 实验 | 形态 | 结果 |
+|---|---|---|
+| E0 | Node 默认首帧（mix/2.21.2）+ 四字段 p= | **role_getroleinfo 成功**（09-30 的 Node 200020 之谜 = p= 带 roleId / 会话残留，四字段已解） |
+| E2 | claim 模式（自动算 78 轮补领） | activity_get ✓ 78 轮 todo，**首条 claim → 服务端断线 1006** |
+| E3 | --firstframe game + claim | 仍断线 ⇒ 首帧口径**单独不充分** |
+| E4 | **init 序列（36 帧进主城）+ firstframe + claim** | **✓ claim 成功**（Activity_RewardResp 带实时 items） |
+| E5/E6 | init（无 firstframe / 有）+ claim，9754 | ✗ 断线——9754 已被反复连挂（**会话冷却**：同角色频繁 authuser/断线后 200020 泛滥，数分钟后恢复） |
+| E7 | 干净号 9755 复刻 E4 | **✓ claim 成功**（实领 5287×8 入账）→ **可复制** |
+| E8 | 9755 紧接 E7 再连 | ✗（会话冷却，2 分钟内重连被拒） |
+
+### 根因定案
+
+**`activity_claimtaskreward` 受理 = 双因素**：
+1. **会话状态**：必须先跑「进主城初始化序列」（游戏本体连上后的 36 帧，末帧 `role_backclaimreward` = 进城结算标记）——服务端据此标记「已进入游戏」才受理领奖；
+2. **首帧口径**：role_getroleinfo 用游戏本体原值（`platformExt:"h5"` / `clientVersion:"1.89.8-wx"` / `scene:""`）。
+
+批量页此前缺这两样（首帧自编口径 mix/2.21.2 + 连上后直奔业务命令）⇒ 挂死。
+**附带发现**：同角色频繁重建会话会触发服务端冷却（200020 泛滥，约数分钟），批量页重跑间隔 3s 太激进。
+
+### 生产化（commit `ceb1dcf3`，13:52 部署上线）
+
+- `xyzwWebSocket.js`：role_getroleinfo 注册 body → 游戏本体原值（h5/1.89.8-wx；仅此帧带这些字段，无 3000070 口径污染）；
+- `tasksGoldenfish.js`：`GOLDENFISH_ENTER_GAME_SEQUENCE`（36 帧）+ claimProgressRewardsStep 前置执行，完成帧数进日志；
+- 测试 554/555（唯一红 = skinChallenge 基线）。
+- 待办：多开桥/运行时页路径的 2.21.2 口径（gameCommands / firstFrameSpoof rules）不在本次 claim 路径上，后续统一。
 
 ## 6. 证据文件索引
 
@@ -109,3 +133,78 @@ _connParam = { roleToken, sessId: 100*Date.now()+~~(100*Math.random()), connId: 
 | `public/game/sh1.readable.js:451`（doInjectLogin） | 游戏端 BIN 登录注入（LoginService.mix + authUser hook + SwitchRole） |
 | `public/game/platform-spoof.js` | 平台口径背景（h5web/h5/mix、3000070、authuser 直连实测） |
 | `src/utils/pushLevelResearchBridge.js` + `public/game/push-level-research-bridge.js:3177` | 推关页 postMessage 桥（`account:load` = BIN 交游戏上号器） |
+
+## 8. 🔴 真正的生产根因（2026-10-01 17:4x）：命令从未注册
+
+> 第 7 节的「双因素」是**必要前置**，但**不是生产失败的全部**。今天实测发现生产还有一处更硬的缺口。
+
+### 现象
+
+生产（批量页 / Node）发送 claim 时报：
+
+```
+[WS] [ERROR] 发送消息失败: activity_claimtaskreward Error: Unknown cmd: activity_claimtaskreward
+```
+
+`CommandRegistry.build` 对未注册命令直接 `throw`。异常之后**连接被打成 `close 1006`，后续每一帧都只入队**
+（`WebSocket 未连接，消息已入队: xxx` 无限循环）——这正是此前被描述为「挂死 / 全帧入队」的现象。
+
+### 两个缺口（`local-data/_check_registry.mjs` 实测）
+
+| # | 缺口 | 影响 |
+|---|---|---|
+| ① | `activity_claimtaskreward` **从未注册**（`xyzwWebSocket.js` 里只出现在注释中） | claim 帧根本发不出去 |
+| ② | `GOLDENFISH_ENTER_GAME_SEQUENCE` 36 帧里 **19 帧未注册**（含 `role_backclaimreward`），覆盖率仅 **17/36** | 连 init 序列都跑不完，第 4 节的双因素根本无法达成 |
+
+缺失的 19 帧：`role_getfirstmonthdate` / `system_getchatmessage` / `invite_getinfo` / `collection_getinfo` /
+`system_userminiprogram` / `sky_getgdrolesky` / `queue_getinfo` / `system_getservertimestamp` / `nmext_getinfo` /
+`beginnerbox_getinfo` / `boss_getstate` / `mail_getbattlefieldreportlist` / `role_backclaimreward` /
+`friend_getfollowinfo` / `friend_list` / `friend_applylist` / `pkroom_getfightroominfo` / `pkroom_getfightroomdetail`
+
+### 为什么 E4/E7「看起来」通过了？
+
+`local-data/bin-test/bin-test.mjs` 的 `commands:` 模式与 `runInitSequence()` 都会**自动兜底注册**：
+
+```js
+if (!ws.registry.commands.has(item.cmd)) ws.registry.register(item.cmd);
+```
+
+⇒ **研究 harness 比生产宽松，把生产缺口整个掩盖了**。
+**教训：协议命令的「注册覆盖率」必须单独核查，不能把 harness 的通过当成生产可用。**
+
+### 修复与验证
+
+`src/utils/xyzwWebSocket.js`：
+1. 补注册 `activity_claimtaskreward { activityId: 0, missionId: 0 }`；
+2. 补注册上述 19 帧（默认 body 取抓包原值）；
+3. 响应映射 `activity_rewardresp` 由 `"activity_claimsignreward"` 改为
+   `["activity_claimsignreward", "activity_claimtaskreward"]`（两者都回 `Activity_RewardResp`）。
+
+复检：**36/36 全覆盖**，注册表 189 → 207。
+
+**✅ 实测（2026-10-01 17:42，9740 服 / 内部 9767 / 角色 40a）**：
+
+```
+进主城初始化序列：29/36 帧成功
+进度奖励补领：77 个达标未领轮次
+进度奖励领取完成：77/77 轮（record 校验全部入账）   ← 服务端 record 确认
+全程 21 秒（init 12s + 领奖 8s）
+```
+
+### 排查命令（改动命令后必跑）
+
+```bash
+node --import ./local-data/_alias_loader.mjs local-data/_check_registry.mjs
+```
+
+### 附：`200020` 的正确归因（同时推翻一条旧结论）
+
+`200020`（"出了点小问题，请尝试重启游戏解决～"）的**头号原因是该角色会话被占用**
+（批量页在跑 / 游戏客户端在线 / 另有一个进程在连同一角色），**不是 bin 类型问题**。
+
+实测 `_cmp_bins.mjs`：`rolebin-9754`(9754) / `rolebin-1009754`(1009754) / `rolebin-2009754`(2009754) / `fresh-28a-0`(9755)
+—— **四个不同服的 bin，`info` 字段完全相同**（sha `09d64898` / timestamp `1790514993`），**唯一差异是 `serverId`**。
+⇒ 所谓「角色级 bin」本质就是「账号 info + serverId」，`mobile.vue` 的 `createRoleBin` 注入法**本来就是对的**；
+账号级 bin（如 `gh_repo/mobile.bin`）注入 `serverId` 后**完全可用**（9767 已实测通过）。
+
+⚠️ 另注：同一角色被两个进程同时连接会互相踢（`close 1006`）——本次研究中曾因此误判为「服务端冷却」。

@@ -130,6 +130,36 @@ export function registerDefaultCommands(reg) {
     .register("system_mysharecallback", { isSkipShareCard: true, type: 2 })
     .register("system_custom", { key: "", value: 0 })
 
+    // ── 进主城初始化序列所需命令（2026-10-01 补注册）────────────────────────────
+    // 🔴 背景：`tasksGoldenfish.GOLDENFISH_ENTER_GAME_SEQUENCE`（36 帧，照抄游戏本体进主城的
+    //    首屏请求）是 activity_claimtaskreward 被受理的**前置条件**之一（双因素，见
+    //    docs/goldenfish-claim-session-gap-analysis.md）。但此前这 36 帧里**有 19 帧没进注册表**
+    //    ⇒ 生产 runEnterGameSequence 一发送就抛 `Unknown cmd`，异常把连接打成 close 1006、
+    //    后续帧全部只入队（就是"全帧入队/挂死"态）。bin-test 的 `commands:` 与 runInitSequence
+    //    会自动兜底注册，**掩盖了这个缺口**（实验 E4/E7 因此"看起来"通过）。
+    //    ⇒ 教训：研究用的 harness 比生产宽松时，结论会失真；注册覆盖率要单独核（见
+    //    local-data/_check_registry.mjs）。
+    // 默认 body 取抓包原值；序列里会传显式参数覆盖，这里的默认值只在单独调用时生效。
+    .register("role_getfirstmonthdate")
+    .register("system_getchatmessage", { channel: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] })
+    .register("invite_getinfo")
+    .register("collection_getinfo")
+    .register("system_userminiprogram")
+    .register("sky_getgdrolesky")
+    .register("queue_getinfo", { queueType: "sky" })
+    .register("system_getservertimestamp")
+    .register("nmext_getinfo")
+    .register("beginnerbox_getinfo")
+    .register("boss_getstate", { bossId: 0 })
+    .register("mail_getbattlefieldreportlist", { lastId: 0, category: 1, size: 60 })
+    // 进城结算标记帧（序列第 31/36 帧）：服务端据此确认会话「已进入游戏」
+    .register("role_backclaimreward")
+    .register("friend_getfollowinfo", { friendId: 0 })
+    .register("friend_list")
+    .register("friend_applylist")
+    .register("pkroom_getfightroominfo")
+    .register("pkroom_getfightroomdetail", { roomId: "" })
+
     // 任务相关
     .register("task_claimdailypoint", { taskId: 1 })
     .register("task_claimdailyreward", { rewardId: 0 })
@@ -318,6 +348,12 @@ export function registerDefaultCommands(reg) {
     .register("activity_warorderrewardclaim", { actId: 0 })
     .register("activity_commonbuygoods", { goodsId: 0 })
     .register("activity_claimsignreward", { activityId: 0, patchDay: 0 })
+    // 🔴 金鱼消耗活动「领取进度奖励」（2026-10-01 补注册）：`missionId = (slot-1)*20 + round`，
+    // 必须带 activityId（只发 missionId 服务端不响应）。响应 cmd = Activity_RewardResp。
+    // ⚠️ 此前**漏注册** ⇒ 生产发送即抛 `Unknown cmd: activity_claimtaskreward`，
+    //    且异常会把该连接打成 close 1006、后续帧全部只入队（"全帧入队"态）——
+    //    bin-test 的 `commands:` 模式会自动兜底注册，掩盖了这个缺口（实验 E4/E7 就是这么过的）。
+    .register("activity_claimtaskreward", { activityId: 0, missionId: 0 })
     .register("activity_getlotteryinfo")
     .register("activity_lottery", { times: 1 })
     // 累计抽奖奖励：每档固定 +2 张抽奖券 5283（2026-09-25 抓包实证 id 11~15）
@@ -1178,7 +1214,7 @@ export class XyzwWebSocketClient {
       ],
       // 逍遥津（限时临时活动）响应映射
       activity_warordergetresp: "activity_warorderget",
-      activity_rewardresp: "activity_claimsignreward",
+      activity_rewardresp: ["activity_claimsignreward", "activity_claimtaskreward"],
       activity_getlotteryinforesp: "activity_getlotteryinfo",
       activity_lotteryresp: "activity_lottery",
       activity_claimlotterycumulativeresp: "activity_claimlotterycumulative",
