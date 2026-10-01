@@ -1061,6 +1061,13 @@
                   >
                     只跑钓鱼
                   </n-button>
+                  <n-button
+                    size="small"
+                    @click="runGoldenfishClaimProgressRewards"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    领取进度奖励
+                  </n-button>
                 </n-space>
                 <span class="xiaoyaojin-hint">
                   金鱼第一阶段全流程（每账号先查活动进度再补差值，可分多天断点续跑）：
@@ -1072,7 +1079,10 @@
                   → <b>④⑤⑥ 英雄升星 → 图鉴升星 → 领图鉴奖励</b>（因果链，一次连接按序做完）
                   → <b>⑦ 领取邮件</b>（宝箱周返还，累积 ≥ 32000 才收）。
                   🔴 <b>进度奖励（activity_claimtaskreward）不在编排内</b>：实测 authuser 会话发领奖
-                  服务端不响应（挂死且不生效），<b>需在游戏内手动领取</b>——领完产生的新 5287 由下一次
+                  服务端不响应（挂死且不生效）。独立按钮「领取进度奖励」= 会话缺口实验入口
+                  （实验 F：连接 p= 去 roleId 对齐游戏 SDK 四字段，2026-10-01 部署）——
+                  <b>跑一个号即有结论：仍挂死 = 假设排除；有响应（哪怕"已领过"错误码）= 通道打通</b>
+                  （差异分析：docs/goldenfish-claim-session-gap-analysis.md）。领完产生的新 5287 由下一次
                   编排的开包步骤消化。
                   <b>同一角色同一时间只允许一个运行写背包</b>：
                   同页面重复启动会被拒，跨标签页/窗口用 localStorage 租约让后者跳过
@@ -8360,6 +8370,7 @@ const {
   goldenfishRecruit,
   goldenfishBoxes,
   goldenfishFish,
+  goldenfishClaimProgressRewards,
 } = tasksGoldenfish;
 
 // 周一白玉 / 预约比赛：两个命令都不需要额外参数
@@ -8530,6 +8541,10 @@ const runGoldenfishConsumeAll = () =>
 const runGoldenfishRecruit = () => goldenfishRecruit(goldenfishConsumeConfig());
 const runGoldenfishBoxes = () => goldenfishBoxes(goldenfishConsumeConfig());
 const runGoldenfishFish = () => goldenfishFish(goldenfishConsumeConfig());
+// 进度奖独立入口：排查/实验 F 测试用（activity_claimtaskreward 会话资格验证，
+// 见 docs/goldenfish-claim-session-gap-analysis.md）；config 传消费目标仅保持签名统一，本步骤不读
+const runGoldenfishClaimProgressRewards = () =>
+  goldenfishClaimProgressRewards(goldenfishConsumeConfig());
 
 const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksHangUp(deps),
