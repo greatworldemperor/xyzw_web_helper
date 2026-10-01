@@ -1986,6 +1986,97 @@ export function createTasksGoldenfish(deps) {
 
   /** 金鱼特殊道具（250 个换金鱼） */
   const ITEM_SPECIAL_PACK = 5288;
+  /** 钻石宝箱（收尾时用作金砖的最后来源） */
+  const ITEM_DIAMOND_BOX = 2005;
+  /**
+   * 每个钻石宝箱折合的金砖（master 2026-10-01 口径）。
+   * ⚠️ 这是**估算值**，用于「够不够补」的预判；实际开出来的以服务端扣减为准。
+   */
+  const DIAMOND_BOX_GOLD = 300;
+
+  /**
+   * 金砖不足时的三级兜底（master 2026-10-01 口径，按顺序）：
+   *   ① **升星链**（英雄升星 → 图鉴升星 → 领图鉴奖励）——有机会拿到金砖
+   *   ② **钻石宝箱**：一个按 300 金砖估算；预判够补就开（整批 10 个一帧，开到够为止）
+   *   ③ 还补不上 ⇒ `ok:false`（调用方**标记该角色失败并跳过**，不再空转）
+   *
+   * @param {number} deficit 还缺多少金砖
+   * @returns {{ok:boolean, reason?:string, upgraded:boolean, openedBoxes:number, diamond:number}}
+   */
+  const ensureGoldForRods = async ({ tokenId, token, deficit, config = null }) => {
+    let need = Math.max(0, Math.floor(Number(deficit) || 0));
+    if (need <= 0) return { ok: true, upgraded: false, openedBoxes: 0, diamond: 0 };
+
+    // ① 升星链补金砖（图鉴奖励是金砖回流的重要途径）
+    log(token.name, `金砖缺 ${fmtNum(need)}：先跑升星链（英雄→图鉴→领奖）看能否补上`, "info");
+    try {
+      await upgradeChainStep({ tokenId, token });
+    } catch (e) {
+      log(token.name, `升星链异常（继续走钻石箱兜底）：${String(e?.message || e).slice(0, 80)}`, "warning");
+    }
+    let role = await fetchRoleWithLimit(tokenId, token);
+    let diamond = Number(role?.diamond ?? 0) || 0;
+    need = Math.max(0, Number.isFinite(Number(deficit)) ? Number(deficit) - diamond : need);
+    if (need <= 0) {
+      log(token.name, `✅ 升星链补足金砖（现有 ${fmtNum(diamond)}）`, "success");
+      return { ok: true, upgraded: true, openedBoxes: 0, diamond };
+    }
+
+    // ② 钻石宝箱兜底：预判「全开也不够」就直接失败，不白开
+    const boxes = readItemCount(role?.items, ITEM_DIAMOND_BOX);
+    const boxesWhole = Math.floor(boxes / OPENBOX_BATCH_SIZE) * OPENBOX_BATCH_SIZE; // 整批 10 口径
+    const estimate = boxesWhole * DIAMOND_BOX_GOLD;
+    log(
+      token.name,
+      `升星链后仍缺 ${fmtNum(need)}；钻石宝箱 ${fmtNum(boxes)} 个（整批可开 ${fmtNum(boxesWhole)}），` +
+        `按 ${fmtNum(DIAMOND_BOX_GOLD)}/个估算可补 ${fmtNum(estimate)}`,
+      "info",
+    );
+    if (estimate < need) {
+      log(
+        token.name,
+        `❌ 金砖不足且无其他途径（升星链 + 钻石宝箱全开也只有 ${fmtNum(estimate)} < 缺 ${fmtNum(need)}）⇒ 标记该角色失败`,
+        "error",
+      );
+      return { ok: false, reason: "gold-shortfall", upgraded: true, openedBoxes: 0, diamond };
+    }
+
+    // 整批 10 个一帧，开到够为止（实际产出以服务端为准，所以迭代核实）
+    let openedBoxes = 0;
+    for (let i = 0; i < 200; i += 1) {
+      if (shouldStop.value) break;
+      const r = await fetchRoleWithLimit(tokenId, token);
+      diamond = Number(r?.diamond ?? 0) || 0;
+      if (diamond >= Number(deficit)) break;
+      const left = Math.floor(readItemCount(r?.items, ITEM_DIAMOND_BOX) / OPENBOX_BATCH_SIZE) * OPENBOX_BATCH_SIZE;
+      if (left <= 0) break;
+      await sendWithRateLimit(
+        tokenId,
+        "item_openbox",
+        { itemId: ITEM_DIAMOND_BOX, number: OPENBOX_BATCH_SIZE },
+        token,
+      );
+      openedBoxes += OPENBOX_BATCH_SIZE;
+      await sleep();
+    }
+    role = await fetchRoleWithLimit(tokenId, token);
+    diamond = Number(role?.diamond ?? 0) || 0;
+    const ok = diamond >= Number(deficit);
+    log(
+      token.name,
+      ok
+        ? `✅ 钻石宝箱补足金砖：开 ${fmtNum(openedBoxes)} 个，现有金砖 ${fmtNum(diamond)}`
+        : `❌ 钻石宝箱已开尽 ${fmtNum(openedBoxes)} 个仍差（金砖 ${fmtNum(diamond)}）⇒ 标记该角色失败`,
+      ok ? "success" : "error",
+    );
+    return {
+      ok,
+      reason: ok ? undefined : "gold-shortfall",
+      upgraded: true,
+      openedBoxes,
+      diamond,
+    };
+  };
 
   /** 读一次收尾判定状态（5288 数量 / 金砖 / 鱼竿 / 活动进度） */
   const readFinishState = async (tokenId, token) => {
@@ -2025,13 +2116,29 @@ export function createTasksGoldenfish(deps) {
     }
 
     const rodsTotal = goldToRods(needGold, F.rodPrice);
-    if (state.diamond < rodsTotal * F.rodPrice) {
-      log(
-        token.name,
-        `⚠️ 买竿金砖不足：需 ${fmtNum(rodsTotal * F.rodPrice)}（${fmtNum(rodsTotal)} 根），` +
-          `现有 ${fmtNum(state.diamond)}`,
-        "warning",
-      );
+    const required = rodsTotal * F.rodPrice;
+    if (state.diamond < required) {
+      // 🔴 master 2026-10-01：金砖不足不许卡住 —— 先升星链、再钻石宝箱，都不行就标失败跳过
+      const rescued = await ensureGoldForRods({
+        tokenId,
+        token,
+        deficit: required - state.diamond,
+        config,
+      });
+      if (!rescued.ok) {
+        log(
+          token.name,
+          `❌ 买竿中止：金砖不足且无补救途径（需 ${fmtNum(required)}，现有 ${fmtNum(rescued.diamond)}）`,
+          "error",
+        );
+        return {
+          ok: false,
+          bought: 0,
+          goldNow,
+          goldAfter: goldNow,
+          reason: "gold-shortfall",
+        };
+      }
     }
     log(
       token.name,
@@ -2133,6 +2240,24 @@ export function createTasksGoldenfish(deps) {
     const F = GOLDENFISH_FINISH_TARGETS;
     const cfg = config || {};
 
+    // 🔴 前置判断（master 2026-10-01）：5288 已达标 ⇒ **整个收尾直接跳过**，
+    //    不再消耗宝箱/招募令/金砖（此前是跑完 ①②④ 才判，等于白烧资源）。
+    const pre = await readFinishState(tokenId, token);
+    if (!pre || !pre.progress) {
+      log(token.name, `⏭️ 收尾跳过：活动进度不可读`, "warning");
+      recordFinishOutcome(token, { detail: "活动进度不可读" }, "claim-failed", pre?.special ?? 0);
+      return;
+    }
+    if (pre.special >= F.specialTarget) {
+      log(
+        token.name,
+        `⏭️ 5288 已达标（${fmtNum(pre.special)} ≥ ${fmtNum(F.specialTarget)}）——直接跳过收尾，不消耗任何资源`,
+        "success",
+      );
+      recordFinishOutcome(token, {}, null, pre.special);
+      return;
+    }
+
     // ①② 补齐宝箱 / 招募（复用现有消耗 step，只改 target）
     await consumeBoxesStep({ tokenId, token, config: { ...cfg, boxTarget: F.boxScore } });
     await consumeRecruitStep({ tokenId, token, config: { ...cfg, recruitTarget: F.recruit } });
@@ -2141,8 +2266,17 @@ export function createTasksGoldenfish(deps) {
     await claimProgressRewardsStep({ tokenId, token });
     await openGoldenfishPacksStep({ tokenId, token });
 
-    // ⑤ 买竿把金砖推到 42 万
-    await buyRodsStep({ tokenId, token, goldTarget: F.goldProgress, config: cfg });
+    // ⑤ 买竿把金砖推到 42 万（金砖不足时内部会走升星链/钻石箱兜底，兜底失败直接标失败）
+    const buyRes = await buyRodsStep({ tokenId, token, goldTarget: F.goldProgress, config: cfg });
+    if (buyRes && buyRes.ok === false) {
+      recordFinishOutcome(
+        token,
+        { detail: `第⑤步买竿失败：${buyRes.reason || "unknown"}` },
+        buyRes.reason || "gold-shortfall",
+        pre.special,
+      );
+      return;
+    }
 
     // ⑥ 钓鱼到 1300
     await consumeFishStep({ tokenId, token, config: { ...cfg, fishTarget: F.fishCount } });
@@ -2203,7 +2337,23 @@ export function createTasksGoldenfish(deps) {
       if (shouldStop.value) break;
       const round = await planFinishTopUpStep({ tokenId, token });
       const base = Math.max(0, Math.floor(Number(round?.state?.progress?.goldDone) || 0));
-      await buyRodsStep({ tokenId, token, goldTarget: base + planned.plan.execution.goldPerRound, config: cfg });
+      const yRes = await buyRodsStep({
+        tokenId,
+        token,
+        goldTarget: base + planned.plan.execution.goldPerRound,
+        config: cfg,
+      });
+      if (yRes && yRes.ok === false) {
+        log(token.name, `❌ 第 ${fmtNum(j + 1)} 轮金砖买竿失败（金砖不足）⇒ 标记该角色失败并跳过`, "error");
+        const nNow = await checkReached();
+        recordFinishOutcome(
+          token,
+          { detail: `第 ${j + 1} 轮买竿失败` },
+          yRes.reason || "gold-shortfall",
+          nNow,
+        );
+        return;
+      }
       await claimProgressRewardsStep({ tokenId, token });
       await openGoldenfishPacksStep({ tokenId, token });
       const n = await checkReached();

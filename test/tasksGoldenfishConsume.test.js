@@ -47,6 +47,7 @@ function createHarness({ state } = {}) {
     record: state?.record ?? {},
     boxPoint: state?.boxPoint ?? 0,
     boxPointLastReward: state?.boxPointLastReward ?? 0,
+    goldBrick: state?.goldBrick ?? 0, // 金砖（role.diamond）
     items: {
       1001: state?.recruitTickets ?? 0, // 招募令
       1012: state?.goldRods ?? 0, // 黄金鱼竿
@@ -87,6 +88,9 @@ function createHarness({ state } = {}) {
       items: JSON.parse(JSON.stringify(st.items)),
       boxPoint: st.boxPoint,
       boxPointLastReward: st.boxPointLastReward,
+      // 金砖（顶层字段，不在 items 里）——收尾买竿要看余额。
+      // ⚠️ 注意与 items[2005]（钻石宝箱）区分：那个选项叫 state.diamond，这里叫 state.goldBrick
+      diamond: st.goldBrick ?? 0,
       statistics: {
         "today:open:box": openboxCallStat,
         "activity:open:box": openboxScoreStat,
@@ -1642,7 +1646,8 @@ test("收尾：5288 已达标 → 达成即停，结果记为 success", async ()
 
 test("收尾：第 ① 步宝箱目标用 10 万（不是第一阶段的 99000）", async () => {
   const h = createHarness({
-    state: { boxScoreDone: 99500, recruitDone: 4000, fishDone: 1300, goldDone: 420000, extraItems: { 5288: 250 } },
+    // 5288 用 249（未达标）——250 会命中新的「前置判断」直接跳过整个收尾
+    state: { boxScoreDone: 99500, recruitDone: 4000, fishDone: 1300, goldDone: 420000, extraItems: { 5288: 249 } },
   });
   await h.tasks.goldenfishFinish({});
   // 目标 100000 ⇒ 日志里应出现 /100,000；99500 起手应触发开箱
@@ -1650,6 +1655,27 @@ test("收尾：第 ① 步宝箱目标用 10 万（不是第一阶段的 99000�
     h.logs.some((l) => l.message.includes("宝箱消耗开始")),
     "宝箱未到 10 万时应进入消耗流程",
   );
+});
+
+test("收尾：前置判断——5288 已达标则整个收尾跳过，不消耗任何资源", async () => {
+  const h = createHarness({
+    state: {
+      boxScoreDone: 50000, // 远未到 10 万
+      recruitDone: 1000,
+      fishDone: 100,
+      goldDone: 100000,
+      extraItems: { 5288: 250 },
+    },
+  });
+  await h.tasks.goldenfishFinish({});
+
+  // 一步都不该跑：没有开箱、没有招募、没有买竿
+  assert.equal(h.sent.filter((s) => s.cmd === "item_openbox").length, 0);
+  assert.equal(h.sent.filter((s) => s.cmd === "hero_recruit").length, 0);
+  assert.equal(h.sent.filter((s) => s.cmd === "system_buyitem").length, 0);
+  assert.ok(h.logs.some((l) => l.message.includes("直接跳过收尾")));
+  assert.equal(h.tasks.getGoldenfishFinishOutcomes()[0].outcome, "success");
+  assert.equal(h.errorLogs().length, 0);
 });
 
 test("收尾：买竿走 system_buyitem 一帧买完（不分批）", async () => {
@@ -1661,7 +1687,8 @@ test("收尾：买竿走 system_buyitem 一帧买完（不分批）", async () =
       fishDone: 1300,
       goldDone: 380000,
       goldRods: 0,
-      extraItems: { 5288: 250 },
+      goldBrick: 999999, // 金砖充足 ⇒ 不走升星链/钻石箱兜底
+      extraItems: { 5288: 249 },
     },
   });
   await h.tasks.goldenfishFinish({});
@@ -1671,4 +1698,58 @@ test("收尾：买竿走 system_buyitem 一帧买完（不分批）", async () =
   assert.deepEqual(buys[0], { itemId: 1012, buyNum: 67 });
   // 一帧买完 ⇒ 同轮不应出现第二帧同参请求
   assert.equal(buys.length, 1);
+});
+
+test("收尾：金砖不足 → 先升星链、再钻石宝箱兜底（300 金砖/个）", async () => {
+  // 需 67 根 = 40200 金砖；手里只有 10,200 ⇒ 缺 30,000
+  // 钻石宝箱 120 个 ⇒ 整批可开 120 ⇒ 估算 120×300 = 36,000 ≥ 30,000 ⇒ 够补
+  const h = createHarness({
+    state: {
+      boxScoreDone: 100000,
+      recruitDone: 4000,
+      fishDone: 1300,
+      goldDone: 380000,
+      goldBrick: 10200,
+      extraItems: { 5288: 249, 2005: 120 },
+      heroUpOk: 1,
+      bookUpOk: 1,
+      starClaimOk: 1,
+    },
+  });
+  await h.tasks.goldenfishFinish({});
+
+  assert.ok(h.logs.some((l) => l.message.includes("先跑升星链")), "应触发升星链兜底");
+  assert.ok(h.logs.some((l) => l.message.includes("钻石宝箱")), "应进入钻石宝箱兜底");
+  // 开钻石箱必须整批 10 个一帧
+  const diamondOpens = h.sent.filter((s) => s.cmd === "item_openbox" && s.params?.itemId === 2005);
+  assert.ok(diamondOpens.length >= 1, "应开钻石宝箱");
+  assert.ok(diamondOpens.every((s) => s.params.number === 10));
+});
+
+test("收尾：金砖不足且钻石宝箱全开也不够 → 标记失败并跳过（不空转）", async () => {
+  // 缺 30,000；钻石宝箱只有 10 个 ⇒ 估算 3,000 < 30,000 ⇒ 直接失败，一个箱子都不开
+  const h = createHarness({
+    state: {
+      boxScoreDone: 100000,
+      recruitDone: 4000,
+      fishDone: 1300,
+      goldDone: 380000,
+      goldBrick: 10200,
+      extraItems: { 5288: 249, 2005: 10 },
+      heroUpOk: 1,
+      bookUpOk: 1,
+      starClaimOk: 1,
+    },
+  });
+  await h.tasks.goldenfishFinish({});
+
+  assert.equal(
+    h.sent.filter((s) => s.cmd === "item_openbox" && s.params?.itemId === 2005).length,
+    0,
+    "预判不够就不该白开钻石箱",
+  );
+  assert.ok(h.logs.some((l) => l.message.includes("标记该角色失败")));
+  const outcome = h.tasks.getGoldenfishFinishOutcomes()[0];
+  assert.equal(outcome.outcome, "failed");
+  assert.equal(outcome.reason, "gold-shortfall");
 });
