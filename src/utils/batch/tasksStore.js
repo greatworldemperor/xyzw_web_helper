@@ -1,6 +1,6 @@
 /**
  * 商店类任务
- * 包含: legion_storebuygoods, legionStoreBuySkinCoins, store_purchase, collection_claimfreereward, activityBuyRecruitWeekReward, activityClaimBoxWeekFreeRewards, activityBuyBlackMarketWeek, fetchBlackMarketGoods, activityBuyBlackMarketWeek
+ * 包含: legion_storebuygoods, legionStoreBuySkinCoins, store_purchase, collection_claimfreereward, activityBuyRecruitWeekReward, activityClaimBoxWeekFreeRewards, activityClaimBoxWeekMilestoneRewards, activityBuyBlackMarketWeek, fetchBlackMarketGoods, activityBuyBlackMarketWeek
  */
 import { executeSmartBlackMarketPurchase } from "../smartBlackMarket.js";
 
@@ -580,6 +580,167 @@ export function createTasksStore(deps) {
   };
 
   /**
+   * 宝箱周**达标**奖励（4 轮 → 珍珠）
+   *
+   * 协议（`local-data/misc/clear_inventory.jsonl`，2026-09-28 真实客户端抓包）：
+   *   SEND activity_claimweekactreward
+   *        { typ: 2, selectRewardsMap: Map{ 5 => 4 } }          （125 bytes / scheme=x）
+   *   RECV Activity_ClaimWeekActRewardResp
+   *        reward: [ { type:3, itemId:1013, value:4 } ]         → 4 × 珍珠(1013)
+   *        role.statistics["week:act:cr:cnt:2"] = 4              → 本周期已兑次数
+   *        role.statisticsTime["week:act:cr:cnt:2"] = 1790308800 → 周期锚点(秒)
+   *
+   * 口径（master 2026-10-01：「获取 4 轮宝箱活动的奖励（4 个珍珠）」）：
+   * - 宝箱达标 = activityId 2 / type 2（`activity_get` 里 `data.rounds = 4`，每 8000 积分 1 轮、最多 4 轮）；
+   * - 一次请求 = 领周奖励 + 兑换，服务端一并回 `reward` 与最新 `statistics`；
+   * - `selectRewardsMap` 的 key/value **照抄抓包**（key=整数 5 = 珍珠档，value=4 = 轮数），不自行推算。
+   *
+   * ⚠️ 与 `activityClaimBoxWeekFreeRewards`（宝箱周**免费**奖励：`activity_buystoregoods{activityId:7}`
+   *    + `activity_claimredquenchreward` 红淬）**不是同一个功能**，勿混。
+   *
+   * 幂等 / 容错口径（对齐 2026-10-01 金鱼「以服务端响应为准」）：
+   * - 领取前 `role_getroleinfo` 读 `week:act:cr:cnt:2` **仅作日志**（读不到不阻断、不当失败）；
+   * - 不做本地拦截，直接发一帧，由服务端仲裁；
+   * - 响应无 `reward` ⇒ 记「本期无可领/已达上限」info 跳过，**不算失败**；
+   * - 报「已领取 / 未达标」类错误 ⇒ info 跳过；其余错误 ⇒ failed。
+   *
+   * ⚠️ 若批量页 / authuser 会话下被服务端**静默丢弃**（超时无响应），参照
+   *    `tasksGoldenfish.GOLDENFISH_ENTER_GAME_SEQUENCE`（进主城 36 帧序列）排查——金鱼
+   *    `activity_claimtaskreward` 就是这个毛病（docs/goldenfish-claim-session-gap-analysis.md）。
+   */
+  const BOX_WEEK_MILESTONE_CNT_KEY = "week:act:cr:cnt:2";
+
+  const activityClaimBoxWeekMilestoneRewards = async () => {
+    if (selectedTokens.value.length === 0) return;
+
+    isRunning.value = true;
+    shouldStop.value = false;
+
+    selectedTokens.value.forEach((id) => {
+      tokenStatus.value[id] = "waiting";
+    });
+
+    const isAlreadyClaimed = (messageText) =>
+      [
+        "1100010",
+        "已领取",
+        "重复领取",
+        "超出上限",
+        "超出限制",
+        "未达标",
+        "条件不满足",
+        "活动未开启",
+      ].some((text) => messageText.includes(text));
+
+    const readCnt = (role) => {
+      const raw = role?.statistics?.[BOX_WEEK_MILESTONE_CNT_KEY];
+      if (raw == null) return null;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    const taskPromises = selectedTokens.value.map(async (tokenId) => {
+      if (shouldStop.value) return;
+
+      tokenStatus.value[tokenId] = "running";
+
+      const token = tokens.value.find((t) => t.id === tokenId);
+      const log = (text, type = "info") =>
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${token.name} ${text}`,
+          type,
+        });
+
+      try {
+        log(`=== 开始领取宝箱周达标奖励（珍珠）: ${token.name} ===`);
+
+        await ensureConnection(tokenId);
+
+        // 领取前读数：诊断用。读不到就明说「读不到」，不要显示成 0（会误导）
+        let cntBefore = null;
+        try {
+          const roleRes = await tokenStore.sendMessageWithPromise(
+            tokenId,
+            "role_getroleinfo",
+            {},
+            8000,
+          );
+          cntBefore = readCnt(roleRes?.role ?? roleRes);
+          if (cntBefore == null) {
+            log(
+              `领取前 ${BOX_WEEK_MILESTONE_CNT_KEY} 读不到（不影响领取，继续）`,
+              "info",
+            );
+          } else {
+            log(`领取前 ${BOX_WEEK_MILESTONE_CNT_KEY} = ${cntBefore}`);
+          }
+        } catch (error) {
+          log(
+            `领取前读数失败（继续领取）: ${error?.message || String(error)}`,
+            "warning",
+          );
+        }
+
+        await new Promise((resolve) =>
+          setTimeout(resolve, delayConfig.action),
+        );
+
+        // body 用注册表默认值（`{typ:2, selectRewardsMap: Map{5=>4}}`），
+        // 单一真相源 = xyzwWebSocket.registerDefaultCommands
+        const result = await tokenStore.sendMessageWithPromise(
+          tokenId,
+          "activity_claimweekactreward",
+          {},
+          8000,
+        );
+
+        if (result?.error) {
+          throw new Error(result.error);
+        }
+
+        const reward = Array.isArray(result?.reward) ? result.reward : [];
+        const cntAfter = readCnt(result?.role);
+        const cntText =
+          cntAfter == null ? "" : `（${BOX_WEEK_MILESTONE_CNT_KEY} = ${cntAfter}）`;
+
+        if (reward.length > 0) {
+          const rewardText = reward
+            .map((item) => `itemId ${item.itemId} ×${item.value}`)
+            .join("、");
+          log(`领取成功: ${rewardText}${cntText}`, "success");
+        } else {
+          log(`本期无可领奖励（已达上限 / 未达标）${cntText}`);
+        }
+        tokenStatus.value[tokenId] = "completed";
+      } catch (error) {
+        const errorMessage = error?.message || String(error);
+        if (isAlreadyClaimed(errorMessage)) {
+          log(`本期已领取或无可领，跳过: ${errorMessage}`);
+          tokenStatus.value[tokenId] = "completed";
+        } else {
+          log(`领取失败: ${errorMessage}`, "error");
+          tokenStatus.value[tokenId] = "failed";
+        }
+      } finally {
+        tokenStore.closeWebSocketConnection(tokenId);
+        releaseConnectionSlot();
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${token.name} 连接已关闭  (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
+          type: "info",
+        });
+      }
+    });
+
+    await Promise.all(taskPromises);
+
+    currentRunningTokenId.value = null;
+    isRunning.value = false;
+    shouldStop.value = false;
+  };
+
+  /**
    * 黑市周奖励（江湖黑市 activityId=9 + 金砖商店免费项 activityId=5/0）
    *
    * 协议（见 docs/weekly-event-blackmarket-analysis.md，抓包已逐字节验证）：
@@ -1071,6 +1232,7 @@ export function createTasksStore(deps) {
     legionStoreBuySkinCoins,
     activityBuyRecruitWeekReward,
     activityClaimBoxWeekFreeRewards,
+    activityClaimBoxWeekMilestoneRewards,
     activityBuyBlackMarketWeek,
     fetchBlackMarketGoods,
     store_purchase,

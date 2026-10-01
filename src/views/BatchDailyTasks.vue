@@ -816,6 +816,13 @@
                 </n-button>
                 <n-button
                   size="small"
+                  @click="activityClaimBoxWeekMilestoneRewards"
+                  :disabled="isRunning || selectedTokens.length === 0"
+                >
+                  宝箱周达标奖励
+                </n-button>
+                <n-button
+                  size="small"
                   @click="openBlackMarketModal"
                   :disabled="
                     isRunning ||
@@ -8244,6 +8251,7 @@ const {
   legionStoreBuySkinCoins,
   activityBuyRecruitWeekReward,
   activityClaimBoxWeekFreeRewards,
+  activityClaimBoxWeekMilestoneRewards,
   activityBuyBlackMarketWeek,
   fetchBlackMarketGoods,
   store_purchase,

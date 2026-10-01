@@ -87,6 +87,9 @@ export const flexibleTaskGroups = [
       batchTask("appointPkRoomForGoldBrick", "预约比赛拿金砖"),
       batchTask("activityBuyRecruitWeekReward", "招募周一次性奖励"),
       batchTask("activityClaimBoxWeekFreeRewards", "宝箱周免费奖励"),
+      // 宝箱周「达标」奖励（4 轮 → 4×珍珠）：2026-10-01 新增，抓包实证
+      // local-data/misc/clear_inventory.jsonl（activity_claimweekactreward）
+      batchTask("activityClaimBoxWeekMilestoneRewards", "宝箱周达标奖励（珍珠）"),
       batchTask("activityBuyBlackMarketWeek", "黑市周奖励"),
       batchTask("batchOpenBox", "批量开箱", { scheduledArgument: true }),
       batchTask("batchSmartOpenBox", "智能开箱"),

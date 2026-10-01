@@ -54,6 +54,8 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "appointPkRoomForGoldBrick",
     "activityBuyRecruitWeekReward",
     "activityClaimBoxWeekFreeRewards",
+    // 2026-10-01 新增：宝箱周达标奖励（4 轮 → 4×珍珠），抓包实证 activity_claimweekactreward
+    "activityClaimBoxWeekMilestoneRewards",
     "activityBuyBlackMarketWeek",
     "climbTower",
     "skinChallenge",

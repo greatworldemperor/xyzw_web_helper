@@ -374,6 +374,17 @@ export function registerDefaultCommands(reg) {
       buyNum: 1,
     }) // 招募周一次性奖励（5个招募令）
     .register("activity_claimredquenchreward")
+    // 宝箱周**达标**奖励（4 轮 → 珍珠）：抓包实证 local-data/misc/clear_inventory.jsonl（2026-09-28）。
+    //   SEND Activity_ClaimWeekActRewardResp resp=39 对应本帧 seq=39（可 Promise 匹配）。
+    //   RECV reward:[{type:3,itemId:1013,value:4}] = 4× 珍珠(1013)；
+    //        role.statistics["week:act:cr:cnt:2"] = 本期已兑次数，statisticsTime 为周期锚点(秒)。
+    // 🔴 selectRewardsMap 的 key 是 **BON 整数 5**，不是字符串 "5" —— BON 的 object 分支只能写
+    //    字符串键，整数键必须用 **Map**。写成 `{ 5: 4 }` 会编码成 `05 01 35`（字符串），
+    //    与抓包差 2 字节。逐字节复现脚本：local-data/misc/_verify_weekact.mjs（body / frame 均 ✅）。
+    .register("activity_claimweekactreward", {
+      typ: 2,
+      selectRewardsMap: new Map([[5, 4]]),
+    })
     // 周一白玉（免费卡包）：服务端按 statisticsTime["night:mare:buy:<id>"] 判「每周一」，
     // 客户端无需判星期，重复领由服务端挡。见 docs/monday-jade-and-pkroom-appoint-protocol.md
     .register("activity_claimrolluppack", { id: 17 })
@@ -1219,6 +1230,8 @@ export class XyzwWebSocketClient {
       // 逍遥津（限时临时活动）响应映射
       activity_warordergetresp: "activity_warorderget",
       activity_rewardresp: ["activity_claimsignreward", "activity_claimtaskreward"],
+      // 宝箱周达标奖励：响应 Activity_ClaimWeekActRewardResp（抓包 resp=seq 可匹配）
+      activity_claimweekactrewardresp: "activity_claimweekactreward",
       activity_getlotteryinforesp: "activity_getlotteryinfo",
       activity_lotteryresp: "activity_lottery",
       activity_claimlotterycumulativeresp: "activity_claimlotterycumulative",
