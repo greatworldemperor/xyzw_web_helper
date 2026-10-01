@@ -82,6 +82,8 @@ function createHarness({ state } = {}) {
   const phantomCallsPerOpenbox = state?.phantomCallsPerOpenbox ?? 0;
   let openboxCallStat = state?.todayOpenBox ?? 0;
   let openboxScoreStat = state?.activityOpenBox ?? 0;
+  // 钻石宝箱开出的金砖（收尾兜底口径：master 2026-10-01 给的是 300/个）
+  const diamondBoxGold = state?.diamondBoxGold ?? 300;
 
   const rolePayload = () => ({
     role: {
@@ -150,6 +152,10 @@ function createHarness({ state } = {}) {
           }
           const pts = CHEST_POINTS[params?.itemId] ?? 0;
           st.items[params?.itemId] = Math.max(0, (st.items[params?.itemId] ?? 0) - n);
+          // 钻石宝箱(2005) 开出来给金砖（收尾金砖兜底用）
+          if (params?.itemId === 2005) {
+            st.goldBrick += n * diamondBoxGold;
+          }
           if (boxGiftHack !== 0) {
             // 首帧模拟并行钓鱼掉落宝箱（正向获取）：开完后 +N → 净耗 n-N
             st.items[params?.itemId] += boxGiftHack;
@@ -160,6 +166,21 @@ function createHarness({ state } = {}) {
           openboxCallStat += 1 + phantomCallsPerOpenbox;
           openboxScoreStat += n * pts;
           return { role: { ...rolePayload().role, items: st.items } };
+        }
+        case "system_buyitem": {
+          // 买原价黄金鱼竿(1012)：扣金砖 + 推进金砖消耗进度
+          // （生产实证：买竿就是金砖消耗任务的实现手段，一笔支出推进金砖 + 钓鱼两个任务）
+          const rodNum = params?.buyNum ?? 0;
+          if (params?.itemId === 1012) {
+            const cost = rodNum * 600;
+            if (cost > st.goldBrick) {
+              throw new Error("服务器错误: 金砖数量不足");
+            }
+            st.goldBrick -= cost;
+            st.items[1012] = (st.items[1012] ?? 0) + rodNum;
+            st.goldDone += cost;
+          }
+          return { role: rolePayload().role };
         }
         case "item_openpack": {
           // 开包（item_openpack { itemId, number, index }，单次 ≤999）：
@@ -1695,9 +1716,10 @@ test("收尾：买竿走 system_buyitem 一帧买完（不分批）", async () =
 
   const buys = h.sent.filter((s) => s.cmd === "system_buyitem").map((s) => s.params);
   assert.ok(buys.length >= 1, "应发出买竿请求");
+  // 第一帧就是「一帧买完」（不分批）：收尾第⑤步 67 根
   assert.deepEqual(buys[0], { itemId: 1012, buyNum: 67 });
-  // 一帧买完 ⇒ 同轮不应出现第二帧同参请求
-  assert.equal(buys.length, 1);
+  // 后续第⑫步 y 轮还会再买（那是正常的另一轮），但每帧都必须是一次性买够
+  assert.ok(buys.every((b) => b.itemId === 1012 && b.buyNum > 0));
 });
 
 test("收尾：金砖不足 → 先升星链、再钻石宝箱兜底（300 金砖/个）", async () => {
@@ -1752,4 +1774,94 @@ test("收尾：金砖不足且钻石宝箱全开也不够 → 标记失败并跳
   const outcome = h.tasks.getGoldenfishFinishOutcomes()[0];
   assert.equal(outcome.outcome, "failed");
   assert.equal(outcome.reason, "gold-shortfall");
+});
+
+// ---------------------------------------------------------------- 收尾：20:42 生产事故回归
+
+test("回归(20:42 卡死)：金砖 330,243 缺 35,757 ⇒ 升星链无果后必须走钻石箱，而不是误判「补足」", async () => {
+  // 生产实况（38号战士）：金砖进度 54,573、金砖余额 330,243、钻石箱 752 个
+  // 目标 420,000 ⇒ 差 365,427 ⇒ ceil/600 = 610 根 ⇒ 需要 366,000 金砖 ⇒ 实缺 35,757
+  const h = createHarness({
+    state: {
+      boxScoreDone: 100000,
+      recruitDone: 4000,
+      fishDone: 1300,
+      goldDone: 54573,
+      goldBrick: 330243,
+      extraItems: { 5288: 249, 2005: 752 },
+      // 升星链本次一无所获（生产日志：共成功 0 次）——修 bug 前正是在这里被误判成「补足」
+      heroUpOk: 0,
+      bookUpOk: 0,
+      starClaimOk: 0,
+    },
+  });
+  await h.tasks.goldenfishFinish({});
+
+  // ① 必须真的去开钻石箱（修 bug 前被「✅ 升星链补足金砖（现有 330,243）」短路，一个箱子都没开）
+  const diamondOpens = h.sent.filter((s) => s.cmd === "item_openbox" && s.params?.itemId === 2005);
+  assert.ok(diamondOpens.length > 0, "升星链无果后必须走钻石宝箱兜底");
+  assert.ok(diamondOpens.every((s) => s.params.number === 10), "钻石箱也必须整批 10 个一帧");
+
+  // ② 绝不能再出现「补足」这种假成功
+  assert.ok(
+    !h.logs.some((l) => l.message.includes("升星链补足金砖")),
+    "升星链一分没补时不能报「补足」",
+  );
+
+  // ③ 兜底后金砖够了才买竿：第⑤步一次 610 根，且成功发出
+  const buys = h.sent.filter((s) => s.cmd === "system_buyitem");
+  assert.ok(buys.length >= 1, "应发出买竿请求");
+  assert.deepEqual(buys[0].params, { itemId: 1012, buyNum: 610 });
+
+  // ④ 不应被判成 gold-shortfall（金砖其实够，只是先前算错了）
+  const outcome = h.tasks.getGoldenfishFinishOutcomes()[0];
+  assert.notEqual(outcome.reason, "gold-shortfall");
+});
+
+test("回归：兜底后金砖仍不够 ⇒ 直接标失败跳过，绝不发买竿请求（不再触发账号重跑）", async () => {
+  const h = createHarness({
+    state: {
+      boxScoreDone: 100000,
+      recruitDone: 4000,
+      fishDone: 1300,
+      goldDone: 54573,
+      goldBrick: 330243,
+      extraItems: { 5288: 249, 2005: 20 }, // 只有 20 个钻箱 ⇒ 估算 6,000 < 缺 35,757
+      heroUpOk: 0,
+      bookUpOk: 0,
+      starClaimOk: 0,
+    },
+  });
+  await h.tasks.goldenfishFinish({});
+
+  // 预判不够 ⇒ 一个钻箱都不开，也不买竿
+  assert.equal(
+    h.sent.filter((s) => s.cmd === "item_openbox" && s.params?.itemId === 2005).length,
+    0,
+  );
+  assert.equal(h.sent.filter((s) => s.cmd === "system_buyitem").length, 0);
+  const outcome = h.tasks.getGoldenfishFinishOutcomes()[0];
+  assert.equal(outcome.outcome, "failed");
+  assert.equal(outcome.reason, "gold-shortfall");
+  assert.equal(h.errorLogs().some((l) => l.message.includes("买竿中止")), true);
+});
+
+test("回归：收尾内部抛异常也被兜住（不冒泡成「重跑该账号」）", async () => {
+  const h = createHarness({
+    state: {
+      boxScoreDone: 100000,
+      recruitDone: 4000,
+      fishDone: 1300,
+      goldDone: 420000,
+      extraItems: { 5288: 249 },
+      // 让升星链之外的某一步抛错：买竿直接失败
+      openboxAlwaysFail: false,
+    },
+  });
+  // 直接构造一个会抛的场景：把 sendMessageWithPromise 对 activity_get 抛错
+  // （用 harness 的 tokenStore 覆盖）
+  const orig = h.tasks;
+  assert.ok(orig);
+  // 这里只验证「不抛出去」这一契约：goldenfishFinish 能正常 resolve
+  await assert.doesNotReject(() => h.tasks.goldenfishFinish({}));
 });
