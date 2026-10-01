@@ -103,14 +103,17 @@ L0  INDEX.md ← 你在这里（索引 + 路由 + 红线 + 当前状态）
 旧结论「账号级 bin 进不了角色会话」**已推翻**（真因是**会话被占用**；账号级 bin + serverId 注入完全可用）。
 新增自检工具 `local-data/_check_registry.mjs`（改命令后必跑）。
 
-**⚠️ GitHub 未同步（补推前禁止跑 `deploy/update.sh`）**：本地比 `myrepo` **领先 11 个提交**（见下方清单 + `c962c0a7`）。
+**GitHub 同步状态（2026-10-02 05:40 更新）**：✅ **已完全同步** —— 推送 `5032f1a7..0fc68266`（19 个提交）一次成功，
+`myrepo/personal-main-merge-main` 权威 tip = `0fc68266` = 本地 HEAD，**领先提交数 = 0**。
+⇒ 🔴 **那条"补推前禁止跑 `deploy/update.sh`"的红线已解除**，之后可以正常走 `update.sh` 部署（不必再 bundle）。
 
-**⚠️ GitHub 未同步（补推前禁止跑 `deploy/update.sh`）**：
-本地 `personal-main-merge-main` 比 `myrepo/personal-main-merge-main`(= `5032f1a7`, 09-30 14:40) **领先 11 个提交**：
-`5ff4cacf`(合并鱼) `dfd66f48`(合并鱼撤出模板) `ac85d9e0` `b3ab09ba` `75d1d936`(批量日志) `0a615a04`(滚底)
-`83156215`(金鱼以响应为准+账号级重跑) `2df6f788`(p=去roleId) `bfadd6fa`(claim按钮) `ceb1dcf3`(claim双因素)
-`c962c0a7`(补注册 claim 命令 + init 19 帧 —— **自动领取打通**)。
-工作区干净（仅剩未跟踪 `_probe_activity_full.json` / `xyzw-bin-test.zip`）。
+**本次推送的 19 个提交涵盖**：
+- 金鱼自动领取打通（`2df6f788` 去 roleId / `bfadd6fa` claim 按钮 / `ceb1dcf3` 双因素 / `c962c0a7` 补注册 claim 命令 + init 19 帧）
+- 收尾阶段第 1~16 步（`e7f4bce4`）+ 加固（`68ac34c2` 前置判断 + 金砖三级兜底）+ 修 3 个 bug（`d12129c1`）+ 钻箱按轮算帧（`1e7c3ddd`）
+- 招募「1 或 10」口径、买竿 `system_buyitem` 注册、`3f9b812d`/`61af55ee`（投道具上限，master 自提）
+- **知识库迁入仓库 `docs/kb/` + skill 存档 `docs/skills/`（`0fc68266`）**
+
+工作区：仅剩未跟踪的 `_probe_activity_full.json`（可删）。
 
 **金鱼第一阶段**：
 - ✅ 已攻克并上线：进度奖领取挂死 ROOT CAUSE = **①进主城初始化序列(36帧) + ②首帧口径对齐游戏本体(h5/1.89.8-wx / scene:"")** 双因素（`ceb1dcf`）。四次实证 E4/E7/E9/E10。
