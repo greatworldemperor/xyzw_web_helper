@@ -268,6 +268,14 @@ const ACCOUNT_RERUN_MAX = 2;
 const NON_RERUNNABLE_STEPS = ["useOneItem"];
 
 /**
+ * 投道具（`autumn_useitem { itemNum }`）单发上限（master 2026-10-01 拍板：3000）
+ *
+ * 与批量日常页「金鱼」栏那个输入框的 `:max` 保持同一口径：
+ * 页面挡的是手输，这里挡的是所有绕过 UI 的调用路径（定时任务 / 直接调 API）。
+ */
+const USE_ITEM_MAX = 3000;
+
+/**
  * 页面级「金鱼任务」运行标志（**跨 createTasksGoldenfish 实例共享**）
  *
  * 为什么不能只靠注入的 `isRunning`：页面会给「自由模板」的每个任务各建一份 deps
@@ -370,6 +378,12 @@ export function createTasksGoldenfish(deps) {
     return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1;
   };
 
+  /**
+   * 投道具数量专用夹取：下限 1、上限 USE_ITEM_MAX
+   * （与页面输入框 `:max="3000"` 同源；这里兜底是为了绕过 UI 直接调用时也发不出超限 itemNum）
+   */
+  const clampItemCount = (raw) => Math.min(clampCount(raw), USE_ITEM_MAX);
+
   /** 道具余额快照 → 可读文案（resp.role.items: { itemId: { quantity } }） */
   const itemsText = (response) => {
     const items = response?.role?.items;
@@ -383,7 +397,7 @@ export function createTasksGoldenfish(deps) {
   /** 投 N 个道具：autumn_useitem { itemNum: N }，响应里带回进度/奖励/余额
    *  ⚠️ 抓包只实测过 itemNum:1；N>1 是否单次生效待活动开放时间验证（见 docs 待验证清单） */
   const useOneItem = async ({ tokenId, token, count }) => {
-    const n = clampCount(count);
+    const n = clampItemCount(count);
     const response = await tokenStore.sendMessageWithPromise(
       tokenId,
       "autumn_useitem",
@@ -923,7 +937,7 @@ export function createTasksGoldenfish(deps) {
   };
 
   const goldenfishUseItem = (count = 1) =>
-    runGoldenfish(["useOneItem"], "金鱼投道具", clampCount(count));
+    runGoldenfish(["useOneItem"], "金鱼投道具", clampItemCount(count));
 
   const goldenfishSetShopList = (config) =>
     runGoldenfish(["setShopList"], "金鱼商店购物列表", 1, config);

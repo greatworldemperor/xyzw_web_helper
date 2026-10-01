@@ -963,7 +963,7 @@
                     class="xiaoyaojin-draws-input"
                     size="small"
                     :min="1"
-                    :max="999"
+                    :max="3000"
                     :precision="0"
                     :show-button="false"
                     placeholder="投掷数量"
