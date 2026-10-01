@@ -151,8 +151,13 @@ export const transformToken = async (arrayBuffer: ArrayBuffer) => {
     const sessId = currentTime * 100 + Math.floor(Math.random() * 100);
     const connId = currentTime + Math.floor(Math.random() * 10);
 
+    // 🔴 实验F（claim 会话缺口分析 docs/goldenfish-claim-session-gap-analysis.md §4）：
+    // 游戏原生客户端 WS 连接参数固定四字段 {roleToken, sessId, connId, isRestore}
+    // （游戏 SDK src/xyzw/index.js _connParam + master 2026-10-01 27c DevTools 实抓），
+    // 从不发送 roleId；此前 `...data` 把 authuser 响应里的 roleId(=uid) 也塞进 p=，
+    // 是批量页与游戏本体会话在握手 URL 上的唯一差异。manual.vue 手动导入格式本就是四字段。
     return JSON.stringify({
-      ...data,
+      roleToken: (data as { roleToken?: string }).roleToken,
       sessId,
       connId,
       isRestore: 0,
