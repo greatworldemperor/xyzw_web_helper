@@ -80,6 +80,70 @@
 
 ---
 
+# 二·B、怪异塔俱乐部 legion buff（俱乐部人数档位）
+
+> 抓包：`local-data/weird_tower/evotower_get_buff.jsonl`（2026-10-02，38 帧，9730 服「第二批」21 人）
+> 文档：`docs/weird-tower-legion-privilege-analysis.md`
+> 解码脚本：`local-data/weird_tower/_decode_get_buff.mjs`
+
+## 状态：✅ 已接线 —— **爬塔时自动领取**（无需手动按钮）
+
+> 逻辑：`src/utils/weirdTowerLegionBuff.js`（`autoClaimLegionBuffDuringClimb`）
+> 入口A：`src/utils/batch/tasksTower.js` L784（批量爬塔）· 入口 B：`src/components/Tower/WeirdTowerStatus.vue` L525（单号爬塔）
+> 展示：`src/components/Club/ClubWeirdTowerLegionBuff.vue`（**只读**四档卡片）
+> 测试：`test/weirdTowerLegionBuff.test.js`（41 例）+ `tools/weirdtower/legion-buff-replay.mjs`（真实抓包回放 21 例）
+
+## 🔴 业务口径（master 2026-10-03 定）
+
+**领取是爬塔的前置步骤，不是独立按钮。** 爬塔本来就要拉 `memberScores`（人数已在手），
+能领就领、领不到直接爬塔。与既有的 `claimPendingEvoTowerRewards`（爬塔前补领章节奖励，
+否则 `readyfight` 被拒 12200020）同一模式。
+
+**判据不能用「对比已领取 vs 已解锁」** —— 顶层 `legionPrivilege` 领取前是 `{}`、
+领取后给全量，无法区分二者。改用**发空 body 试探**：服务端给档位就继续领，给空就收手。
+判断权完全交给服务端。
+
+**任何失败都不阻塞爬塔**（buff 是增益不是前置条件）：
+- `getinfo` 失败 → 跳过
+- `claim` 失败 → 保留已领档位，继续爬塔
+- 硬上界 `for i < 4`（4 档到顶），不可能死循环
+
+## 规则
+
+- buff 档位由**本俱乐部本期已参与怪异塔战斗的角色数**决定，4 档：**10/15/20/25 人**。
+- 俱乐部归属**首次战斗时绑定**（`bindLegionId` 由 0 变真实 id），绑定前拿不到 buff。
+
+## 命令
+
+| 命令 | body | 响应关键字段 |
+|---|---|---|
+| `evotower_getlegionjoinmembers` | `{}` | `memberScores` = `{roleId: 最高层数}`，**key 数 = 参与人数** |
+| `evotower_claimlegionprivilege` | `{}` | 顶层 `legionPrivilege` = **已解锁全量档位**；`body.evoTower.legionPrivilege` = **本次新领档位** |
+| `evotower_getinfo` | `{}` | `evoTower.legionPrivilege`（领取前为 `{}`）、`evoTower.bindLegionId` |
+
+## 🔴 两条关键口径
+
+1. **`claimlegionprivilege` 一次只领一档**，21 人需连点 **3 次**（seq 50/52/53 分别领到 `{1:1}`/`{2:1}`/`{3:1}`）。请求体**无参数**，服务端决定给哪档。
+2. **顶层 `legionPrivilege` 不是本次结果**，三次调用恒为 `{1:1,2:1,3:1}`。拿它做增量判断会误判「已全领完」。
+
+## 证据（21 人 → 命中 1/2/3 档，第 4 档 25 人未达）
+
+| seq | cmd | 响应 |
+|---|---|---|
+| 43/47 | `evotower_getinfo` | `legionPrivilege: {}`（领取前空）· `bindLegionId: 7203672` |
+| 49/51/54 | `getlegionjoinmembers` | 21 个 key，三次完全一致（稳定快照） |
+| 50 | `claimlegionprivilege` | `evoTower: {1:1}` |
+| 52 | `claimlegionprivilege` | `evoTower: {2:1}` |
+| 53 | `claimlegionprivilege` | `evoTower: {3:1}` |
+
+## 缺口
+
+- 阈值 10/15/20/25 **协议不下发**（服务端内部维护）⇒ 前端硬编码在 `weirdTowerLegionBuff.js`，已标注来源为活动规则。
+- 第 4 档（25 人）**抓包未覆盖**（当时俱乐部只有 21 人）⇒ 逻辑与前三档同构，由 25 人边界用例覆盖；真机满级验证待下次活动。
+- ⚠️ 抓包信封有**两层**：业务字段在 `envelope.body`，不是 `envelope`。写回放断言前先log 真实结构。
+
+---
+
 # 三、两者红线
 
 1. 蟠桃 `legion_getpayload*` **只覆盖查询和奖励**，不能替代船上的动作接口。
@@ -87,3 +151,5 @@
 3. 蟠桃 `payload_setbattleteam` 在 h5 口径被拒；**别在非活动窗口盲试**。
 4. 怪异塔领奖参数未知前**不要启用自动领奖**。
 5. `legionmatch_rolesignup` ≠ 盐场/蟠桃报名。
+6. 怪异塔 `claimlegionprivilege` **顶层 `legionPrivilege` ≠ 本次结果**（是已解锁全量档位），自动领取循环必须看 `body.evoTower.legionPrivilege`。
+7. 怪异塔 `claimlegionprivilege` **顶层 `legionPrivilege` 领取前为空、领取后给全量** ⇒ **不能**用它做「已解锁 vs 已领取」的增量判断（会第一次就误判领完）。判据只能用「发空body 试探 + 看嵌套字段」。

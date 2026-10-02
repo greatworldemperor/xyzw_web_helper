@@ -24,6 +24,12 @@
       </div> -->
 
       <div class="weird-tower-content">
+        <!-- 俱乐部 buff 档位（10/15/20/25 人 四档） -->
+        <ClubWeirdTowerLegionBuff
+          :token-id="tokenStore.selectedToken?.id || ''"
+          :member-scores="rawMemberScores"
+        />
+
         <!-- 加载状态 -->
         <div v-if="loading" class="loading-state">
           <n-spin size="large">
@@ -74,6 +80,12 @@
       </template>
 
       <div class="weird-tower-content">
+        <!-- 俱乐部 buff 档位（10/15/20/25 人 四档） -->
+        <ClubWeirdTowerLegionBuff
+          :token-id="tokenStore.selectedToken?.id || ''"
+          :member-scores="rawMemberScores"
+        />
+
         <!-- 加载状态 -->
         <div v-if="loading" class="loading-state">
           <n-spin size="large">
@@ -116,6 +128,7 @@ import {
   DocumentText
 } from '@vicons/ionicons5'
 import { gettoday } from '@/utils/clubWarrankUtils'
+import ClubWeirdTowerLegionBuff from './ClubWeirdTowerLegionBuff.vue'
 const props = defineProps({
   visible: {
     type: Boolean,
@@ -141,6 +154,8 @@ const showModal = computed({
 
 const loading = ref(false)
 const memberScores = ref([])
+/** 原始 { roleId: towerCount }，供俱乐部 buff 组件算参与人数（避免重复请求） */
+const rawMemberScores = ref(null)
 
 // 表格列定义
 const columns = computed(() => {
@@ -345,6 +360,9 @@ const fetchWeirdTowerInfo = async () => {
          participantMap.set(parseInt(roleId), towerCount);
        });
     }
+
+    // 原始 { roleId: towerCount } 交给俱乐部 buff 组件算参与人数（人数 = key 数）
+    rawMemberScores.value = result?.memberScores || null;
 
     if (allMembers.length > 0) {
       // 合并数据：优先使用俱乐部成员列表

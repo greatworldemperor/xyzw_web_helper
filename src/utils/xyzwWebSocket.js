@@ -270,6 +270,11 @@ export function registerDefaultCommands(reg) {
     .register("evotower_getshareinfo")
     .register("evotower_getsharecode")
     .register("evotower_acceptsharebycode", { shareCode: "" })
+    // 怪异咸将塔 · 俱乐部 legion buff（俱乐部人数档位 10/15/20/25）
+    // 🔴 body 为空 {}，服务端决定给哪一档；**一次只领一档**，领满 N 档要连调 N 次。
+    //    响应顶层 legionPrivilege = 已解锁全量档位；本次结果在 body.evoTower.legionPrivilege。
+    //    详见 docs/weird-tower-legion-privilege-analysis.md
+    .register("evotower_claimlegionprivilege")
 
     // 瓶子机器人
     .register("bottlehelper_claim")
@@ -1176,6 +1181,8 @@ export class XyzwWebSocketClient {
       evotower_getshareinforesp: "evotower_getshareinfo",
       evotower_getsharecoderesp: "evotower_getsharecode",
       evotower_acceptsharebycoderesp: "evotower_acceptsharebycode",
+      // 俱乐部 legion buff：响应 cmd = EvoTower_ClaimLegionPrivilegeResp → 小写去下划线
+      evotower_claimlegionprivilegeresp: "evotower_claimlegionprivilege",
       item_openpackresp: "item_openpack",
       equipment_quenchresp: "equipment_quench",
       rank_getserverrankresp: "rank_getserverrank",

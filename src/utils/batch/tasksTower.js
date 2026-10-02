@@ -8,6 +8,7 @@ import { getTowerActId } from "../towerActId.js";
  * 本模块不再自行捕获/重试 400340。
  */
 import { normalizeWeirdTowerMaxClimb } from "../towerClimbLimit.js";
+import { autoClaimLegionBuffDuringClimb } from "../weirdTowerLegionBuff.js";
 import {
   normalizeSkinChallengeTargets,
   selectSkinChallengeTargets,
@@ -777,6 +778,17 @@ export function createTasksTower(deps) {
             type,
           }),
         );
+
+        // 爬塔前自动补领俱乐部 legion buff（能领就领，领不到直接爬塔）
+        // 详见 docs/weird-tower-legion-privilege-analysis.md
+        await autoClaimLegionBuffDuringClimb({
+          send: (cmd, body, timeout) => tokenStore.sendMessageWithPromise(tokenId, cmd, body, timeout),
+          onLog: (message, type) => addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `${token.name} ${message}`,
+            type,
+          }),
+        });
 
         let count = 0;
         const MAX_CLIMB = normalizeWeirdTowerMaxClimb(

@@ -106,6 +106,7 @@ import {
   DEFAULT_WEIRD_TOWER_MAX_CLIMB,
   normalizeWeirdTowerMaxClimb,
 } from "@/utils/towerClimbLimit.js";
+import { autoClaimLegionBuffDuringClimb } from "@/utils/weirdTowerLegionBuff.js";
 
 const tokenStore = useTokenStore();
 const message = useMessage();
@@ -518,6 +519,18 @@ const startTowerClimb = async () => {
     const tokenId = tokenStore.selectedToken.id;
     // 爬塔前先补领未领取的章节奖励，否则 evotower_readyfight 会被拒绝（12200020）
     await claimPendingChapterRewards(tokenId);
+
+    // 爬塔前自动补领俱乐部 legion buff（能领就领，领不到直接爬塔）
+    // 详见 docs/weird-tower-legion-privilege-analysis.md
+    await autoClaimLegionBuffDuringClimb({
+      send: (cmd, body, timeout) =>
+        tokenStore.sendMessageWithPromise(tokenId, cmd, body, timeout),
+      onLog: (msg, type) => {
+        if (type === "success") message.success(msg);
+        else if (type === "warning") message.warning(msg);
+        else message.info(msg);
+      },
+    });
 
     for (let i = 0; i < maxClimb; i++) {
       if (stopFlag) break;
