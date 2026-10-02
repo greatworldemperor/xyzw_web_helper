@@ -9,10 +9,14 @@
  *     游戏档位 AFKGapConfig=[30秒,3分钟,5分钟,永不]；写 "AFK_GAP"=3（永不档，time=-1 →
  *     startTiming 里 e<=0 直接 return，定时器根本不装）。另探测模块管理器拿 AFKModule
  *     实例调 stopTiming() 清掉已装上的旧定时器（避免启动后头三分钟弹一次）。
- *  3. battleSpeed — PVE 战斗本地加速（默认十殿 Nightmare）。
- *     manager-factory.BATTLE_SPEED_BY_TYPE(type, speed) → battle 实例 timeScale
- *     → 战斗 update 里 dt *= timeScale。只影响本地动画播放节奏，不发任何协议帧；
- *     战斗胜负由服务端计算并下发（与微信端改 js 文件加速同一原理）。
+ *  3. battleSpeed — 战斗本地加速（默认 x100，全部战斗）。
+ *     hook BattleManager.instance._battleFactory/_serverBattleFactory 的 createBattle/
+ *     createBattleById 入参：opts.timeScale 强制改为目标速度 → battle 出生即加速。
+ *     timeScale 只缩放本地动画播放节奏（battle update 里 dt *= timeScale），不发任何
+ *     协议帧；战斗胜负由服务端计算并下发（与微信端改 js 文件加速同一原理）。
+ *     ⚠️ v2 根因修复：v1 依赖 data-index（BattleType 枚举）做类型过滤，但该模块定义在
+ *     跨 bundle 模块（game bundle 只有 void 0 引用），运行时解析不到 → 静默失败。
+ *     v2 与类型枚举完全解耦；console 打印每次创建的 battleData.mode，供 excludeModes 精确排除。
  *
  * 注入方式：游戏本体 bundle（game/index.*.jsc 解密后 eval 执行）自带模块加载器
  * window.__require，本脚本在 cc 引擎加载后立即 hook 引擎音频，然后轮询模块就绪再操作。
@@ -26,10 +30,9 @@
   "use strict"
 
   var STORAGE_KEY = "xyzwGameTweaks"
-  var VERSION = "20261002.1"
+  var VERSION = "20261002.2"
   var MODULE_POLL_INTERVAL = 500
   var MODULE_POLL_MAX = 120 // 500ms * 120 = 60s
-  var BATTLE_POLL_INTERVAL = 800
 
   var PAGE_PARAMS = new URLSearchParams(window.location.search)
 
@@ -55,8 +58,9 @@
       battleSpeed: {
         enabled: true,
         speed: 100,
-        // BattleType 成员名的正则（不区分大小写）；^nightmare$ 精确匹配十殿，排除 nightmareStar 等
-        pattern: "^nightmare$",
+        // 排除的战斗类型（battleData.mode 数字数组）；默认空 = 全部战斗加速。
+        // console 会打印每次创建战斗的 mode 值，定位十殿的数字后可精确排除其它类型。
+        excludeModes: [],
       },
     }
   }
@@ -77,14 +81,8 @@
       if (typeof bs.enabled === "boolean") base.battleSpeed.enabled = bs.enabled
       var n = Number(bs.speed)
       if (isFinite(n)) base.battleSpeed.speed = Math.min(100, Math.max(1, n))
-      if (typeof bs.pattern === "string" && bs.pattern.length > 0) {
-        try {
-          new RegExp(bs.pattern, "i")
-          base.battleSpeed.pattern = bs.pattern
-        } catch (e) {
-          /* 非法正则保持默认 */
-        }
-      }
+      if (Array.isArray(bs.excludeModes))
+        base.battleSpeed.excludeModes = bs.excludeModes.map(Number).filter(isFinite)
     }
     return base
   }
@@ -175,32 +173,6 @@
 
   // ---------- 2) 模块级应用（游戏 bundle 就绪后一次性） ----------
 
-  // 探测 AFKModule 实例并停掉已装的屏保定时器（防启动后头几分钟弹一次）
-  function tryStopAfkTimer(di) {
-    try {
-      var moduleType = di && di.ModuleType && di.ModuleType.AFK
-      if (moduleType == null) return false
-      var indexUi = requireModule("index-ui")
-      var afkModule =
-        indexUi && typeof indexUi.GET_MODULE === "function"
-          ? indexUi.GET_MODULE(moduleType)
-          : null
-      if (afkModule && typeof afkModule.stopTiming === "function") {
-        afkModule.stopTiming()
-        return true
-      }
-      // 兜底：AFKModule 模块若直接导出实例/带 stopTiming 的对象
-      var mod = requireModule("AFKModule")
-      if (mod && typeof mod.stopTiming === "function") {
-        mod.stopTiming()
-        return true
-      }
-    } catch (e) {
-      /* 降级：最坏情况 = 启动后头几分钟屏保可能弹一次，点掉即不再弹 */
-    }
-    return false
-  }
-
   function applyModuleLevel() {
     if (status.moduleApplied) return true
     var LS = requireModule("LocalStorage")
@@ -230,8 +202,7 @@
       // ② 省电模式（屏保）→ 官方"永不"档
       if (cfg.disablePowerSave) {
         LS.instance.setNumber("AFK_GAP", 3)
-        var di = requireModule("data-index")
-        status.afkTimerStopped = tryStopAfkTimer(di)
+        status.afkTimerStopped = disableAfkModule()
       }
 
       status.moduleApplied = true
@@ -244,7 +215,7 @@
           afkTimerStopped: status.afkTimerStopped,
         }),
       )
-      startBattleSpeedPoller()
+      startBattleSpeedHookPoller()
       return true
     } catch (e) {
       status.moduleApplyError = e && e.message
@@ -253,79 +224,109 @@
     }
   }
 
-  // ---------- 3) PVE 战斗加速轮询 ----------
-
-  function resolveBattleTargets(di, patternStr) {
-    var targets = []
+  // 省电模式禁用第 2 步：patch AFKModule 原型，startTiming/_onTiming 双双置空。
+  // （AFKModule 类在 game bundle 内可直接 require；不依赖跨 bundle 的 data-index）
+  function disableAfkModule() {
     try {
-      if (!di || !di.BattleType) return targets
-      var re = new RegExp(patternStr, "i")
-      var keys = Object.keys(di.BattleType)
-      for (var i = 0; i < keys.length; i++) {
-        var k = keys[i]
-        if (/^\d+$/.test(k)) continue // TS enum 反向映射（数字 key）
-        var v = di.BattleType[k]
-        if (typeof v === "number" && re.test(k)) targets.push({ key: k, value: v })
+      var AFKModuleClass = requireModule("AFKModule")
+      if (!AFKModuleClass || !AFKModuleClass.prototype) return false
+      if (!AFKModuleClass.prototype.__xyzwTweaksDisabled) {
+        AFKModuleClass.prototype.startTiming = function () {}
+        AFKModuleClass.prototype._onTiming = function () {}
+        AFKModuleClass.prototype.__xyzwTweaksDisabled = true
       }
+      return true
     } catch (e) {
-      /* 忽略 */
+      warn("AFKModule 禁用失败（忽略）:", e && e.message)
+      return false
     }
-    return targets
   }
 
-  function startBattleSpeedPoller() {
+  // ---------- 3) PVE 战斗加速：hook battle 创建 ----------
+
+  // v2 根因修复：原方案依赖 data-index（BattleType 枚举）做类型过滤，但 data-index
+  // 定义在跨 bundle 的模块里（game bundle 只有 void 0 引用），运行时 __require 解析
+  // 不到 → 静默失败。v2 改为 hook battle 创建入参（opts.timeScale），与类型枚举完全解耦。
+  // battleData.mode 会在 console 打印，用于后续按 mode 精确排除（excludeModes）。
+
+  function shouldSpeedMode(mode, excludeModes) {
+    if (mode == null) return true
+    for (var i = 0; i < excludeModes.length; i++)
+      if (Number(excludeModes[i]) === Number(mode)) return false
+    return true
+  }
+
+  function hookOneFactory(factory, speed, excludeModes) {
+    if (!factory || factory.__xyzwTweaksHooked) return false
+    var hooked = false
+    for (var i = 0; i < 2; i++) {
+      var fn = i === 0 ? "createBattle" : "createBattleById"
+      if (typeof factory[fn] !== "function") continue
+      ;(function (fnName, origFn) {
+        factory[fnName] = function () {
+          try {
+            var opts = arguments[0]
+            if (opts && typeof opts === "object" && "timeScale" in opts) {
+              var bd = (opts && opts.battleData) || {}
+              var mode = bd.mode
+              if (shouldSpeedMode(mode, excludeModes)) {
+                log(
+                  "battle 创建: mode=" +
+                    mode +
+                    " id=" +
+                    bd.id +
+                    " timeScale " +
+                    opts.timeScale +
+                    " -> " +
+                    speed,
+                )
+                opts.timeScale = speed
+                status.battleSpeedSets++
+                status.lastBattleSpeedAt = new Date().toISOString()
+              } else {
+                log("battle 创建（mode=" + mode + " 在排除列表，保持 x" + opts.timeScale + "）")
+              }
+            }
+          } catch (e) {
+            /* 参数改写失败不拦截创建 */
+          }
+          var result = origFn.apply(this, arguments)
+          try {
+            if (
+              result &&
+              typeof result === "object" &&
+              "timeScale" in result &&
+              result.timeScale !== speed
+            ) {
+              result.timeScale = speed
+            }
+          } catch (e) {
+            /* 忽略 */
+          }
+          return result
+        }
+        hooked = true
+      })(fn, factory[fn])
+    }
+    factory.__xyzwTweaksHooked = hooked
+    return hooked
+  }
+
+  function startBattleSpeedHookPoller() {
     if (status.battleSpeedActive || !cfg.battleSpeed.enabled) return
     var mf = requireModule("manager-factory")
-    var di = requireModule("data-index")
-    if (!mf || !di || !di.BattleType) return
-    if (
-      typeof mf.GET_BATTLES_BY_TYPE !== "function" ||
-      typeof mf.BATTLE_SPEED_BY_TYPE !== "function"
-    ) {
-      warn("manager-factory 缺少速度 API（跳过战斗加速）")
-      return
-    }
+    if (!mf || !mf.BattleManager || !mf.BattleManager.instance) return // 未就绪，等待下轮
+    var bm = mf.BattleManager.instance
+    // _battleFactory 在游戏主界面 init 时创建，可能晚于模块就绪 → 由外层轮询驱动
     var speed = cfg.battleSpeed.speed
-    var targets = resolveBattleTargets(di, cfg.battleSpeed.pattern)
-    if (!targets.length) {
-      warn("battleSpeed pattern 未匹配到任何 BattleType:", cfg.battleSpeed.pattern)
-      return
+    var excludeModes = cfg.battleSpeed.excludeModes
+    var hookedAny =
+      hookOneFactory(bm._battleFactory, speed, excludeModes) ||
+      hookOneFactory(bm._serverBattleFactory, speed, excludeModes)
+    if (hookedAny) {
+      status.battleSpeedActive = true
+      log("战斗加速已生效（hook battle 创建，x" + speed + "）")
     }
-    log(
-      "战斗加速启动:",
-      JSON.stringify({
-        speed: speed,
-        types: targets.map(function (t) {
-          return t.key + "=" + t.value
-        }),
-      }),
-    )
-    status.battleSpeedActive = true
-    setInterval(function () {
-      try {
-        for (var i = 0; i < targets.length; i++) {
-          var t = targets[i].value
-          var battles = mf.GET_BATTLES_BY_TYPE(t)
-          if (!battles || !battles.length) continue
-          var dirty = false
-          for (var j = 0; j < battles.length; j++) {
-            var b = battles[j]
-            if (b && b.timeScale !== speed) {
-              dirty = true
-              break
-            }
-          }
-          if (dirty) {
-            mf.BATTLE_SPEED_BY_TYPE(t, speed)
-            status.battleSpeedSets++
-            status.lastBattleSpeedAt = new Date().toISOString()
-            log("已设置战斗速度 x" + speed + "（type=" + targets[i].key + "）")
-          }
-        }
-      } catch (e) {
-        /* 单轮失败静默，下轮再试 */
-      }
-    }, BATTLE_POLL_INTERVAL)
   }
 
   // ---------- 宿主 API ----------
@@ -348,7 +349,7 @@
     // 测试钩子（纯函数）
     _internal: {
       normalizeConfig: normalizeConfig,
-      resolveBattleTargets: resolveBattleTargets,
+      shouldSpeedMode: shouldSpeedMode,
       defaultConfig: defaultConfig,
     },
   }
@@ -381,6 +382,20 @@
       warn("等待游戏模块超时（60s），模块级配置未应用；引擎 hook 仍有效")
     }
   }, MODULE_POLL_INTERVAL)
+
+  // battle 工厂在主界面 init 时才创建（晚于模块就绪）→ 独立轮询直到 hook 装上
+  if (cfg.battleSpeed.enabled) {
+    var bfPolls = 0
+    var bfTimer = setInterval(function () {
+      bfPolls++
+      startBattleSpeedHookPoller()
+      if (status.battleSpeedActive || bfPolls >= MODULE_POLL_MAX) {
+        clearInterval(bfTimer)
+        if (!status.battleSpeedActive)
+          warn("等待 battle 工厂超时（60s），战斗加速未生效（进一场战斗后重载窗口重试）")
+      }
+    }, MODULE_POLL_INTERVAL)
+  }
 
   log("已加载 v" + VERSION, JSON.stringify(cfg))
 })()
