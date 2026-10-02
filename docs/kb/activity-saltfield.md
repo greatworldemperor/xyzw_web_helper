@@ -114,4 +114,7 @@
 **等待方式审计**：登场链路全部事件驱动（帧到即过，timeout 仅为放弃上限）；剩余 sleep 均为节奏/重试/本地信号量；`isMemberSettled` 的时钟成分用的是服务器预告的 `teamLimitTime` 截止时刻（帧优先、时钟兜底），保留。
 
 **离线复刻验证法（可重建）**：真实抓包帧 → 驱动真实 `legionWarState` 状态机 → 模拟时钟=帧时间戳 → `runUntil(全员就位)` 就地暂停评估两版判据（不偷看未来帧）→ 与抓包实录逐项硬对照。09-26/27 实测：4 名队员模拟就位时刻 vs 抓包 notify 误差 ≤42ms（轮询粒度）；登场确认 12:54:54.810 vs 真帧 54.790；旧判据三次假成功全部复刻。
-⚠️ 原始抓包与复刻脚本（`local-data/saltfield/260926_data/`）曾在 09-28~10-01 清理中丢失，**10-02 已从 master 的 09-27 全量备份（`D:\documents\xyzw\web\xyzw_web_helper260927_kai`）原样恢复**（含 `_tls_probe.mjs`），复刻当场重跑与 09-26/27 结论逐项一致——这批文件是「成功基准」，**后续清理勿动**；下次盐场实战录制的新抓包将作为新成功基准的补充。
+⚠️ 原始抓包与复刻脚本（`local-data/saltfield/260926_data/`）曾在 09-28~10-01 清理中丢失，10-02 从 master 的 09-27 全量备份原样恢复、复刻重跑逐项一致。**10-02 起分层固化（备份目录会轮换删除，勿依赖）**：
+- 脚本（随 git 走，双机同步）：`tools/saltfield/` —— `saltfield-offline-replay-test.mjs`（离线复刻回归，数据目录自动探测+可传参）、`saltfield-runtime-analyze.mjs`（runtime jsonl 解码+按 seq 配对）、`tls-probe.mjs`（GitHub TLS 探针，push 前筛可用 IP）。
+- 抓包（**不进 git**：12MB 游戏数据含他人玩家信息）：仓库同级 `../captures_keep/saltfield_260926/`（成功基准 + 失败实录 + README，**清理豁免区**）。
+- 复刻脚本缺省自动探测 `local-data/saltfield/260926_data/` → `../captures_keep/saltfield_260926/`，也可显式传数据目录；下次盐场实战录制的新抓包放入 `captures_keep/` 同级新目录，即为新成功基准。
