@@ -71,18 +71,21 @@ function makeRequireStub(overrides = {}) {
   };
   AFKModuleClass.prototype._onTiming = function () {};
 
-  // BattleManager：_battleFactory 挂在单例上（第二次轮询才就绪可选）
-  const factory = {
-    createBattle(opts) {
+  // battle launcher 类（v3：hook 类原型，不触碰 BattleManager.instance）
+  function makeLauncherClass() {
+    function LauncherClass() {}
+    LauncherClass.prototype.createBattle = function (opts) {
       calls.battleCreations.push({ opts: { ...opts } });
       return { timeScale: opts?.timeScale, battleData: opts?.battleData };
-    },
-    createBattleById(opts) {
+    };
+    LauncherClass.prototype.createBattleById = function (opts) {
       calls.battleCreations.push({ opts: { ...opts } });
       return { timeScale: opts?.timeScale, battleData: opts?.battleData };
-    },
-  };
-  const managerInstance = { _battleFactory: overrides.factoryReady ? factory : null };
+    };
+    return LauncherClass;
+  }
+  const ClientBattleLauncher = makeLauncherClass();
+  const ServerBattleLauncher = makeLauncherClass();
 
   const modules = {
     LocalStorage: {
@@ -100,14 +103,14 @@ function makeRequireStub(overrides = {}) {
       },
     },
     AFKModule: AFKModuleClass,
-    "manager-factory": { BattleManager: { instance: managerInstance } },
-    "manager-battle": {},
+    "launcher-client": { ClientBattleLauncher },
+    "launcher-server": { ServerBattleLauncher },
   };
   const requireFn = (name) => {
     if (missing[name]) throw new Error("module not found: " + name);
     return modules[name] || null;
   };
-  return { calls, requireFn, AFKModuleClass, factory };
+  return { calls, requireFn, AFKModuleClass, ClientBattleLauncher, ServerBattleLauncher };
 }
 
 test("normalizeConfig: 默认值完整（speed=100, excludeModes=[]）且夹在 1~100", () => {
@@ -166,46 +169,44 @@ test("applyModuleLevel: 静音存储 + AFK_GAP=3 + AFKModule 原型 patch", () =
   assert.equal(stub.AFKModuleClass.prototype.__xyzwTweaksDisabled, true);
 });
 
-test("battleSpeed v2: hook createBattle 改写 opts.timeScale（factory 就绪后）", () => {
-  const stub = makeRequireStub({ factoryReady: false });
+test("battleSpeed v3: hook 类原型改写 opts.timeScale，不触碰 BattleManager.instance", () => {
+  const stub = makeRequireStub();
   const { api, runIntervals } = makeSandbox({ requireFn: stub.requireFn });
 
   api.applyNow();
-  assert.equal(api.status.battleSpeedActive, false); // factory 未就绪
-
-  // 轮询若干轮后 factory 就绪（模拟 BattleManager.init）
-  stub.requireFn("manager-factory").BattleManager.instance._battleFactory = stub.factory;
   runIntervals();
   assert.equal(api.status.battleSpeedActive, true);
 
-  // 创建战斗：opts.timeScale 被改写为 100，且返回对象兜底改写
-  stub.factory.createBattle({ timeScale: 1, battleData: { mode: 5, id: 77 } });
+  // 实例方法调用走类原型 hook（十殿实测 mode=13）
+  const inst = new stub.ClientBattleLauncher();
+  inst.createBattle({ timeScale: 1, battleData: { mode: 13, id: 77 } });
   assert.equal(stub.calls.battleCreations[0].opts.timeScale, 100);
   assert.equal(api.status.battleSpeedSets, 1);
+});
 
-  // excludeModes 生效：mode=5 被排除时保持原速
-  api.write({ battleSpeed: { enabled: true, speed: 50, excludeModes: [5] } });
-  const { api: api2 } = (() => {
-    // write 只改本地 cfg；重载一个新沙盒验证 excludeModes 行为
-    const s2 = makeRequireStub({ factoryReady: true });
-    const w2 = makeSandbox({
-      requireFn: s2.requireFn,
-      storage: {
-        xyzwGameTweaks: JSON.stringify({
-          battleSpeed: { enabled: true, speed: 50, excludeModes: [5] },
-        }),
-      },
-    });
-    w2.api.applyNow();
-    w2.runIntervals();
-    assert.equal(w2.api.status.battleSpeedActive, true);
-    s2.factory.createBattle({ timeScale: 1, battleData: { mode: 5, id: 1 } });
-    s2.factory.createBattle({ timeScale: 1, battleData: { mode: 9, id: 2 } });
-    assert.equal(s2.calls.battleCreations[0].opts.timeScale, 1); // 排除
-    assert.equal(s2.calls.battleCreations[1].opts.timeScale, 50); // 加速
-    return { api: w2.api };
-  })();
-  assert.ok(api2.status.battleSpeedActive);
+test("battleSpeed v3: excludeModes 精确排除 + 幂等不二次包装", () => {
+  const stub2 = makeRequireStub();
+  const w2 = makeSandbox({
+    requireFn: stub2.requireFn,
+    storage: {
+      xyzwGameTweaks: JSON.stringify({
+        battleSpeed: { enabled: true, speed: 50, excludeModes: [13] },
+      }),
+    },
+  });
+  w2.api.applyNow();
+  w2.runIntervals();
+  w2.runIntervals(); // 多轮轮询
+  w2.api.applyNow(); // 幂等
+  assert.equal(w2.api.status.battleSpeedActive, true);
+
+  new stub2.ClientBattleLauncher().createBattle({ timeScale: 1, battleData: { mode: 13, id: 1 } });
+  new stub2.ClientBattleLauncher().createBattle({ timeScale: 1, battleData: { mode: 9, id: 2 } });
+  assert.equal(stub2.calls.battleCreations[0].opts.timeScale, 1); // 排除
+  assert.equal(stub2.calls.battleCreations[1].opts.timeScale, 50); // 加速
+  // 只包装一层（多轮轮询 + 重复 apply 后仍只改写一次）
+  assert.equal(stub2.calls.battleCreations.length, 2);
+  assert.equal(w2.api.status.battleSpeedSets, 1);
 });
 
 test("单开 index.html 与多开 multi-game.html 均已接线 runtime-tweaks", async () => {

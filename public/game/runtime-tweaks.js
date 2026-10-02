@@ -10,13 +10,15 @@
  *     startTiming 里 e<=0 直接 return，定时器根本不装）。另探测模块管理器拿 AFKModule
  *     实例调 stopTiming() 清掉已装上的旧定时器（避免启动后头三分钟弹一次）。
  *  3. battleSpeed — 战斗本地加速（默认 x100，全部战斗）。
- *     hook BattleManager.instance._battleFactory/_serverBattleFactory 的 createBattle/
- *     createBattleById 入参：opts.timeScale 强制改为目标速度 → battle 出生即加速。
- *     timeScale 只缩放本地动画播放节奏（battle update 里 dt *= timeScale），不发任何
- *     协议帧；战斗胜负由服务端计算并下发（与微信端改 js 文件加速同一原理）。
- *     ⚠️ v2 根因修复：v1 依赖 data-index（BattleType 枚举）做类型过滤，但该模块定义在
- *     跨 bundle 模块（game bundle 只有 void 0 引用），运行时解析不到 → 静默失败。
- *     v2 与类型枚举完全解耦；console 打印每次创建的 battleData.mode，供 excludeModes 精确排除。
+ *     hook launcher-client.ClientBattleLauncher / launcher-server.ServerBattleLauncher
+ *     类原型的 createBattle/createBattleById 入参：opts.timeScale 强制改为目标速度
+ *     → battle 出生即加速。timeScale 只缩放本地动画播放节奏（battle update 里
+ *     dt *= timeScale），不发任何协议帧；战斗胜负由服务端计算并下发
+ *     （与微信端改 js 文件加速同一原理）。
+ *     ⚠️ v3 根因修复：v2 轮询访问 BattleManager.instance 会提前触发游戏 BattleManager
+ *     组件创建与 init（_getInstance 首次访问同步跑 onLoad），打乱游戏时序导致切号后
+ *     _battleFactory=null 崩溃（PAUSE_BATTLE of null）。v3 只 hook 类原型，绝不触碰
+ *     instance；console 打印每次创建的 battleData.mode，供 excludeModes 精确排除。
  *
  * 注入方式：游戏本体 bundle（game/index.*.jsc 解密后 eval 执行）自带模块加载器
  * window.__require，本脚本在 cc 引擎加载后立即 hook 引擎音频，然后轮询模块就绪再操作。
@@ -30,7 +32,7 @@
   "use strict"
 
   var STORAGE_KEY = "xyzwGameTweaks"
-  var VERSION = "20261002.2"
+  var VERSION = "20261002.3"
   var MODULE_POLL_INTERVAL = 500
   var MODULE_POLL_MAX = 120 // 500ms * 120 = 60s
 
@@ -215,7 +217,7 @@
           afkTimerStopped: status.afkTimerStopped,
         }),
       )
-      startBattleSpeedHookPoller()
+      installBattleSpeedHook()
       return true
     } catch (e) {
       status.moduleApplyError = e && e.message
@@ -242,12 +244,14 @@
     }
   }
 
-  // ---------- 3) PVE 战斗加速：hook battle 创建 ----------
+  // ---------- 3) PVE 战斗加速：hook battle launcher 类原型 ----------
 
-  // v2 根因修复：原方案依赖 data-index（BattleType 枚举）做类型过滤，但 data-index
-  // 定义在跨 bundle 的模块里（game bundle 只有 void 0 引用），运行时 __require 解析
-  // 不到 → 静默失败。v2 改为 hook battle 创建入参（opts.timeScale），与类型枚举完全解耦。
-  // battleData.mode 会在 console 打印，用于后续按 mode 精确排除（excludeModes）。
+  // v3 根因修复：v2 轮询访问 mf.BattleManager.instance —— GlobalEntityManager 的
+  // _getInstance 首次访问会 addComponent 并同步跑 onLoad → init()，提前触发游戏的
+  // BattleManager 初始化（CHECK_SWITCH/initialize 依赖登录态），打乱游戏时序 →
+  // 切号 deinitialize 置 null 后重建链路失效 → PAUSE_BATTLE 读 null 崩溃。
+  // v3 改 hook 类原型（launcher-client / launcher-server 两模块都在 game bundle 内，
+  // require 类本身不实例化），完全不触碰 BattleManager.instance。
 
   function shouldSpeedMode(mode, excludeModes) {
     if (mode == null) return true
@@ -256,22 +260,27 @@
     return true
   }
 
-  function hookOneFactory(factory, speed, excludeModes) {
-    if (!factory || factory.__xyzwTweaksHooked) return false
+  function hookBattleLauncherClass(ClassRef, label, speed, excludeModes) {
+    if (!ClassRef || !ClassRef.prototype) return false
+    var proto = ClassRef.prototype
+    if (proto.__xyzwTweaksHooked) return true
     var hooked = false
     for (var i = 0; i < 2; i++) {
       var fn = i === 0 ? "createBattle" : "createBattleById"
-      if (typeof factory[fn] !== "function") continue
-      ;(function (fnName, origFn) {
-        factory[fnName] = function () {
+      var origFn = proto[fn] // 沿原型链解析（含父类方法）
+      if (typeof origFn !== "function") continue
+      ;(function (fnName, orig) {
+        proto[fnName] = function () {
           try {
             var opts = arguments[0]
             if (opts && typeof opts === "object" && "timeScale" in opts) {
-              var bd = (opts && opts.battleData) || {}
+              var bd = opts.battleData || {}
               var mode = bd.mode
               if (shouldSpeedMode(mode, excludeModes)) {
                 log(
-                  "battle 创建: mode=" +
+                  "battle 创建[" +
+                    label +
+                    "]: mode=" +
                     mode +
                     " id=" +
                     bd.id +
@@ -284,13 +293,21 @@
                 status.battleSpeedSets++
                 status.lastBattleSpeedAt = new Date().toISOString()
               } else {
-                log("battle 创建（mode=" + mode + " 在排除列表，保持 x" + opts.timeScale + "）")
+                log(
+                  "battle 创建[" +
+                    label +
+                    "]（mode=" +
+                    mode +
+                    " 在排除列表，保持 x" +
+                    opts.timeScale +
+                    "）",
+                )
               }
             }
           } catch (e) {
             /* 参数改写失败不拦截创建 */
           }
-          var result = origFn.apply(this, arguments)
+          var result = orig.apply(this, arguments)
           try {
             if (
               result &&
@@ -306,26 +323,31 @@
           return result
         }
         hooked = true
-      })(fn, factory[fn])
+      })(fn, origFn)
     }
-    factory.__xyzwTweaksHooked = hooked
+    proto.__xyzwTweaksHooked = hooked
     return hooked
   }
 
-  function startBattleSpeedHookPoller() {
+  function installBattleSpeedHook() {
     if (status.battleSpeedActive || !cfg.battleSpeed.enabled) return
-    var mf = requireModule("manager-factory")
-    if (!mf || !mf.BattleManager || !mf.BattleManager.instance) return // 未就绪，等待下轮
-    var bm = mf.BattleManager.instance
-    // _battleFactory 在游戏主界面 init 时创建，可能晚于模块就绪 → 由外层轮询驱动
+    if (typeof window.__require !== "function") return
     var speed = cfg.battleSpeed.speed
     var excludeModes = cfg.battleSpeed.excludeModes
-    var hookedAny =
-      hookOneFactory(bm._battleFactory, speed, excludeModes) ||
-      hookOneFactory(bm._serverBattleFactory, speed, excludeModes)
-    if (hookedAny) {
+    var client = requireModule("launcher-client")
+    var server = requireModule("launcher-server")
+    if (!client && !server) return // game bundle 未就绪，等下轮
+    var hooked =
+      hookBattleLauncherClass(client && client.ClientBattleLauncher, "client", speed, excludeModes) |
+      hookBattleLauncherClass(server && server.ServerBattleLauncher, "server", speed, excludeModes)
+    if (hooked) {
       status.battleSpeedActive = true
-      log("战斗加速已生效（hook battle 创建，x" + speed + "）")
+      log("战斗加速已生效（hook launcher 类原型，x" + speed + "）")
+    } else {
+      warn("launcher 类缺少 createBattle 方法，战斗加速未安装", {
+        client: !!client,
+        server: !!server,
+      })
     }
   }
 
@@ -383,16 +405,17 @@
     }
   }, MODULE_POLL_INTERVAL)
 
-  // battle 工厂在主界面 init 时才创建（晚于模块就绪）→ 独立轮询直到 hook 装上
+  // launcher 类原型 hook：与 BattleManager.instance 完全解耦（v3），模块就绪即装；
+  // 保留轮询兜底防模块 eval 顺序意外
   if (cfg.battleSpeed.enabled) {
     var bfPolls = 0
     var bfTimer = setInterval(function () {
       bfPolls++
-      startBattleSpeedHookPoller()
+      installBattleSpeedHook()
       if (status.battleSpeedActive || bfPolls >= MODULE_POLL_MAX) {
         clearInterval(bfTimer)
         if (!status.battleSpeedActive)
-          warn("等待 battle 工厂超时（60s），战斗加速未生效（进一场战斗后重载窗口重试）")
+          warn("战斗加速 hook 安装超时（60s）——launcher 模块未就绪")
       }
     }, MODULE_POLL_INTERVAL)
   }

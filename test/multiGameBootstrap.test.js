@@ -22,7 +22,7 @@ const expectedRuntimeFiles = [
   "first-frame-spoof.js?v=20260921.1",
   "main.2a00e.js",
   "cocos2d-js-min.a5841.js",
-  "runtime-tweaks.js?v=20261002.2",
+  "runtime-tweaks.js?v=20261002.3",
   "xh.js",
   "diagnose_require.js",
   "push-level-research-bridge.js?v=20260907.13",
