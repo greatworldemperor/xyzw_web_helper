@@ -201,6 +201,16 @@
               >
                 清空状态
               </n-button>
+              <n-button
+                size="small"
+                type="primary"
+                secondary
+                :disabled="isRunning || selectedTokens.length < 2"
+                :title="selectedTokens.length < 2 ? '勾选 2 个及以上可用' : `对选中的 ${selectedTokens.length} 个账号批量设置`"
+                @click="openBatchTokenSettings"
+              >
+                批量角色设置
+              </n-button>
             </n-space>
           </div>
 
@@ -1291,6 +1301,102 @@
         <div class="modal-actions" style="margin-top: 20px; display: flex; justify-content: space-between">
           <n-button type="warning" :on-click="clearSettings">清除设置</n-button>
           <n-button type="primary" @click="saveSettings">保存设置</n-button>
+        </div>
+      </div>
+    </n-modal>
+
+    <!-- Batch Token Settings Modal：字段与单角色齿轮弹窗一致，对选中账号批量应用/清除 -->
+    <n-modal
+      v-model:show="showBatchTokenSettingsModal"
+      preset="card"
+      :title="`批量角色设置 - 已选 ${batchTokenSettingsCount} 个账号`"
+      style="width: 90%; max-width: 400px"
+    >
+      <div class="settings-content">
+        <n-alert
+          type="info"
+          :bordered="false"
+          size="small"
+          style="margin-bottom: 12px"
+        >
+          应用时会<b>整份覆盖</b>每个选中账号的独立设置（与齿轮「保存设置」一致）；
+          打开时已预填选中账号的<b>共同值</b>（有分歧的字段显示默认值）。只影响单角色独立设置，不影响模板。
+        </n-alert>
+        <div class="settings-grid">
+          <div class="setting-item">
+            <label class="setting-label">爬塔阵容</label>
+            <n-select
+              v-model:value="batchTokenSettings.towerFormation"
+              :options="currentFormationOptions"
+              size="small"
+            />
+          </div>
+          <div class="setting-item">
+            <label class="setting-label">BOSS阵容</label>
+            <n-select
+              v-model:value="batchTokenSettings.bossFormation"
+              :options="currentFormationOptions"
+              size="small"
+            />
+          </div>
+          <div class="setting-item">
+            <label class="setting-label">BOSS次数</label>
+            <n-select
+              v-model:value="batchTokenSettings.bossTimes"
+              :options="bossTimesOptions"
+              size="small"
+            />
+          </div>
+          <div class="setting-item" style="grid-column: 1 / -1">
+            <label class="setting-label">换皮闯关目标（不选则跳过）</label>
+            <n-checkbox-group v-model:value="batchTokenSettings.skinChallengeTargets">
+              <n-space :size="12" :wrap="true">
+                <n-checkbox
+                  v-for="option in skinChallengeTargetOptions"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </n-checkbox>
+              </n-space>
+            </n-checkbox-group>
+          </div>
+          <div class="setting-switches">
+            <div class="switch-row">
+              <span class="switch-label">领罐子</span
+              ><n-switch v-model:value="batchTokenSettings.claimBottle" />
+            </div>
+            <div class="switch-row">
+              <span class="switch-label">领挂机</span
+              ><n-switch v-model:value="batchTokenSettings.claimHangUp" />
+            </div>
+            <div class="switch-row">
+              <span class="switch-label">竞技场</span
+              ><n-switch v-model:value="batchTokenSettings.arenaEnable" />
+            </div>
+            <div class="switch-row">
+              <span class="switch-label">智能开箱</span
+              ><n-switch v-model:value="batchTokenSettings.openBox" />
+            </div>
+            <div class="switch-row">
+              <span class="switch-label">领取邮件奖励</span
+              ><n-switch v-model:value="batchTokenSettings.claimEmail" />
+            </div>
+            <div class="switch-row">
+              <span class="switch-label">黑市购买物品</span
+              ><n-switch v-model:value="batchTokenSettings.blackMarketPurchase" />
+            </div>
+            <div class="switch-row">
+              <span class="switch-label">付费招募</span
+              ><n-switch v-model:value="batchTokenSettings.payRecruit" />
+            </div>
+          </div>
+        </div>
+        <div class="modal-actions" style="margin-top: 20px; display: flex; justify-content: space-between">
+          <n-button type="warning" :on-click="clearBatchTokenSettings">清除全部设置</n-button>
+          <n-button type="primary" @click="applyBatchTokenSettings">
+            应用到 {{ batchTokenSettingsCount }} 个账号
+          </n-button>
         </div>
       </div>
     </n-modal>
@@ -6914,6 +7020,231 @@ const clearSettings = () => {
     message.info(`${currentSettingsTokenName.value} 原本没有独立设置`);
   }
   showSettingsModal.value = false;
+};
+
+// ===== 批量角色设置（弹窗字段与单角色齿轮完全一致）=====
+// 语义（master 2026-10-03）：
+//   · 「应用到 N 个账号」= 整份覆盖每个选中角色的 daily-settings（与齿轮「保存设置」一致）
+//   · 「清除全部设置」= 删除 localStorage 条目（与齿轮「清除设置」一致）
+//   · 只影响单角色独立配置，不碰自由/旧任务模板（两条路径独立）
+// 预填策略：逐字段统计选中账号现有值——全部一致则预填该值（可当「复制一份配置」用），
+//           有分歧则预填默认值（避免误以为分歧值是共识）。
+const showBatchTokenSettingsModal = ref(false);
+const batchTokenSettings = reactive({
+  towerFormation: "current",
+  bossFormation: 1,
+  bossTimes: 2,
+  skinChallengeTargets: [...defaultSkinChallengeTargets],
+  claimBottle: true,
+  claimHangUp: true,
+  arenaEnable: true,
+  openBox: true,
+  claimEmail: true,
+  blackMarketPurchase: true,
+  payRecruit: true,
+});
+const batchTokenSettingsCount = computed(() => (selectedTokens.value || []).length);
+
+/** 批量弹窗用的默认值（与 loadSettings 的 defaultSettings 同源口径） */
+const batchSettingsDefaults = () => ({
+  towerFormation: "current",
+  bossFormation: 1,
+  bossTimes: 2,
+  skinChallengeTargets: [...defaultSkinChallengeTargets],
+  claimBottle: true,
+  claimHangUp: true,
+  arenaEnable: true,
+  openBox: true,
+  claimEmail: true,
+  blackMarketPurchase: true,
+  payRecruit: true,
+});
+
+/** 逐字段找选中账号的「共同值」；有分歧的字段回落默认值 */
+const presetBatchTokenSettings = () => {
+  const ids = [...(selectedTokens.value || [])];
+  const defaults = batchSettingsDefaults();
+  const savedList = ids.map((id) => loadSettings(id)).filter(Boolean);
+  const next = defaults;
+
+  if (savedList.length > 0) {
+    const scalarKeys = [
+      "towerFormation",
+      "bossFormation",
+      "bossTimes",
+      "claimBottle",
+      "claimHangUp",
+      "arenaEnable",
+      "openBox",
+      "claimEmail",
+      "blackMarketPurchase",
+      "payRecruit",
+    ];
+    for (const key of scalarKeys) {
+      const values = savedList.map((s) => JSON.stringify(s[key]));
+      const unique = new Set(values);
+      if (unique.size === 1) {
+        next[key] = savedList[0][key];
+      }
+    }
+    // 换皮闯关目标：数组，需逐项比较
+    const targetSets = savedList.map((s) =>
+      JSON.stringify([...(s.skinChallengeTargets || [])].sort()),
+    );
+    if (new Set(targetSets).size === 1) {
+      next.skinChallengeTargets = [...(savedList[0].skinChallengeTargets || [])];
+    }
+  }
+
+  for (const key of Object.keys(next)) {
+    if (key === "skinChallengeTargets") {
+      batchTokenSettings[key] = [...next[key]];
+    } else {
+      batchTokenSettings[key] = next[key];
+    }
+  }
+};
+
+const openBatchTokenSettings = () => {
+  const ids = [...(selectedTokens.value || [])];
+  if (ids.length < 2) {
+    message.warning("请至少勾选 2 个账号");
+    return;
+  }
+  if (isRunning.value) {
+    message.warning("任务运行中，无法修改账号设置");
+    return;
+  }
+  presetBatchTokenSettings();
+  showBatchTokenSettingsModal.value = true;
+};
+
+/** 确认框用的设置摘要（完整列出将写入的值） */
+const describeBatchTokenSettings = () => {
+  const formationLabel = (v) =>
+    currentFormationOptions.find((o) => o.value === v)?.label ?? String(v);
+  const timesLabel = (v) => bossTimesOptions.find((o) => o.value === v)?.label ?? `${v}次`;
+  const targets = batchTokenSettings.skinChallengeTargets;
+  const targetText = targets.length
+    ? skinChallengeTargetOptions
+        .filter((o) => targets.includes(o.value))
+        .map((o) => o.label)
+        .join("、")
+    : "不选（跳过）";
+  const onOff = (v) => (v ? "开" : "关");
+  return (
+    `爬塔阵容=${formationLabel(batchTokenSettings.towerFormation)}` +
+    `，BOSS阵容=${formationLabel(batchTokenSettings.bossFormation)}` +
+    `，BOSS${timesLabel(batchTokenSettings.bossTimes)}` +
+    `，换皮目标=${targetText}` +
+    `，领罐子=${onOff(batchTokenSettings.claimBottle)}` +
+    `，领挂机=${onOff(batchTokenSettings.claimHangUp)}` +
+    `，竞技场=${onOff(batchTokenSettings.arenaEnable)}` +
+    `，智能开箱=${onOff(batchTokenSettings.openBox)}` +
+    `，领邮件=${onOff(batchTokenSettings.claimEmail)}` +
+    `，黑市=${onOff(batchTokenSettings.blackMarketPurchase)}` +
+    `，付费招募=${onOff(batchTokenSettings.payRecruit)}`
+  );
+};
+
+/**
+ * 批量应用：整份覆盖每个选中角色的独立设置。
+ * ⚠️ 与「按字段覆盖」不同——这是把弹窗里的整套值写到每个账号，
+ *    未在弹窗中展示的隐藏字段（若有）会被丢弃，与齿轮「保存设置」语义一致。
+ */
+const applyBatchTokenSettings = () => {
+  const ids = [...(selectedTokens.value || [])];
+  if (ids.length < 2) {
+    message.warning("请至少勾选 2 个账号");
+    return;
+  }
+  if (isRunning.value) {
+    message.warning("任务运行中，无法修改账号设置");
+    return;
+  }
+
+  const names = ids
+    .map((id) => tokens.value.find((t) => t.id === id)?.name || id)
+    .slice(0, 3)
+    .join("、");
+  const more = ids.length > 3 ? ` 等 ${ids.length} 个账号` : "";
+  const confirmed = window.confirm(
+    `确定把以下设置应用到 ${names}${more} 吗？\n\n【${describeBatchTokenSettings()}】\n\n` +
+      `注意：会整份覆盖这些账号的现有独立设置；只影响单角色设置，不影响模板。`,
+  );
+  if (!confirmed) {
+    message.info("已取消");
+    return;
+  }
+
+  let ok = 0;
+  let skipped = 0;
+  for (const id of ids) {
+    try {
+      const payload = {
+        ...batchTokenSettings,
+        skinChallengeTargets: [...batchTokenSettings.skinChallengeTargets],
+      };
+      localStorage.setItem(`daily-settings:${id}`, JSON.stringify(payload));
+      ok++;
+    } catch (error) {
+      console.error(`批量设置失败 ${id}:`, error);
+      skipped++;
+    }
+  }
+
+  if (skipped > 0) {
+    message.warning(`应用完成：成功 ${ok} 个，失败 ${skipped} 个`);
+  } else {
+    message.success(`已应用到 ${ok} 个账号`);
+  }
+  showBatchTokenSettingsModal.value = false;
+};
+
+/** 批量清除：删除选中账号的全部独立设置（与齿轮「清除设置」一致） */
+const clearBatchTokenSettings = () => {
+  const ids = [...(selectedTokens.value || [])];
+  if (ids.length < 2) {
+    message.warning("请至少勾选 2 个账号");
+    return;
+  }
+  if (isRunning.value) {
+    message.warning("任务运行中，无法修改账号设置");
+    return;
+  }
+
+  const names = ids
+    .map((id) => tokens.value.find((t) => t.id === id)?.name || id)
+    .slice(0, 3)
+    .join("、");
+  const more = ids.length > 3 ? ` 等 ${ids.length} 个账号` : "";
+  const confirmed = window.confirm(
+    `确定清除 ${names}${more} 的全部独立设置吗？\n\n` +
+      `清除后这些账号恢复为「未设置」状态（各字段用默认值），与单角色齿轮的「清除设置」一致。`,
+  );
+  if (!confirmed) {
+    message.info("已取消");
+    return;
+  }
+
+  let ok = 0;
+  let skipped = 0;
+  for (const id of ids) {
+    try {
+      localStorage.removeItem(`daily-settings:${id}`);
+      ok++;
+    } catch (error) {
+      console.error(`批量清除失败 ${id}:`, error);
+      skipped++;
+    }
+  }
+
+  if (skipped > 0) {
+    message.warning(`清除完成：成功 ${ok} 个，失败 ${skipped} 个`);
+  } else {
+    message.success(`已清除 ${ok} 个账号的独立设置`);
+  }
+  showBatchTokenSettingsModal.value = false;
 };
 
 // Task Template Functions
