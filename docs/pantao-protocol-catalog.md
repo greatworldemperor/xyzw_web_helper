@@ -174,12 +174,19 @@ clientVersion ≈ "2.21.2-fa918e1997301834-wx"
   两周抓包均始于登录后（batch1 首帧 = 聊天广播且 seq 已 59，wssa1 首帧 = matchteam_getroleteaminfo）⇒ **两周 hash 对比在这批数据上无从做起**，
   唯一近似 hash 的字段是 `roleInfo.platformUId`（32hex，玩家平台账号标识，非构建 hash）。
 - **时间线吻合**：2.21.2（03-30 在用）→ 2.48.2（10-02 上线，master 截图）= 27 个 minor ≈ 27 周，与"每周五更新"完全一致。
-- **身份三假设**：
-  1. *小游戏 AppID 去 `wx` 前缀*（`wx`+16hex 格式完美匹配）—— 已弱化：GameWxQRlogin 开源配置里咸鱼之王 App 的微信 OAuth appid = `wxfb0d5667e5cb1c44` ≠ 之（小游戏 appid 另有其值、未公开，未完全排除）；
-  2. *每周构建 hash*（COMMIT_ID/RESOURCES_COMMIT_ID 字段存在，周更即轮换）—— 若真，`2.48.2-fa918e…` 是从未存在过的拼装串；
-  3. *静态渠道/构建线标识*（如微端）—— 若真，等效常量。
+- **身份判定（10-04 定稿：H2 每周构建 hash，轮换实锤）**：master 提供 PC 微信小游戏包路径
+  （`%APPDATA%/Tencent/xwechat/radium/users/<user>/applet/packages/wx0840558555a454ed/`，appid 与 H5 镜像
+  `gt.APPID` 同源）→ `tools/saltfield/wxapkg-decrypt.mjs` 解密（`V1MMWX` = PBKDF2(appid,"saltiest",1000,32,sha1)
+  AES-256-CBC 前 1023B + 余量单字节 XOR（索引全量解析校验选定））→ 两代构建对照：
+  构建356 = `2.44.2-e1853b3c1fe23f57-wx`、构建361 = `2.48.2-cbe6e57c59db01c2-wx`，加上 03 月的
+  `2.21.2-fa918e1997301834-wx` —— **三代三 hash，随周五更新轮换**。tool 曾用的 `2.48.2-fa918e…` 拼装串
+  从未存在，未实测即废弃；已换官方 361 真串（commit `44d97cdf`，10-04 04:41 部署）。
+- **换版本 SOP**：PC 微信打开一次小游戏（自动更新包）→ `node tools/saltfield/wxapkg-decrypt.mjs
+  "<packages>/wx0840558555a454ed/<新构建号>/__APP__.wxapkg" <outDir>` → `grep GAME_VERSION <outDir>/game.js`
+  → 改 `src/utils/clientVersion.js` 一行 → 测试 → deploy。
+- **新字段 `BATTLE_VERSION="7f91491b47"`**：356/361 两代同值（轮换频率低于版本号），首帧不上报，暂不跟进。
 - **门模型现状**：盐场 deploy 接受过真实历史对 `2.21.2-fa918e`（10-03）⇒ 无"当前全串白名单"；盐场 PVP 拒同一串（09-19）⇒ PVP 门校验版本新鲜度且更严。
-  **判别实验 = 10-04 蟠桃**（工具 `2.48.2-fa918e…` 首测）：通过 ⇒ 门只看 semver 前缀或 hash 为常量；被拒 ⇒ hash 参与校验（周更轮换），须立刻换真串。
+  蟠桃 deploy 的门待 10-04 用官方真串 `2.48.2-cbe6e57c59db01c2-wx` 实测；若仍被拒 ⇒ 残余变量只剩"非官方设备/会话指纹"方向。
 - **真串获取路径**（若被拒）：① 模拟器 HttpCanary 抓登录首帧 `role_getroleinfo`（2 分钟，只要第一条）；② MuMu 有 root，直接从微信小游戏包目录 grep `fa918e` / `2.48.2-`（零流量）。
 
 ## 8. 待逆向 / 待确认
