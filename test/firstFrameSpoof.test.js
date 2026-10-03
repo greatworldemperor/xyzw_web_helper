@@ -19,7 +19,7 @@ const REAL_FIRST_FRAME_HEX =
 const MIX_RULES = [
   {
     cmd: "role_getroleinfo",
-    fields: { platformExt: "mix", clientVersion: "2.48.2-fa918e1997301834-wx" },
+    fields: { platformExt: "mix", clientVersion: "2.48.2-cbe6e57c59db01c2-wx" },
   },
 ];
 
@@ -95,7 +95,7 @@ test("真实首帧：platformExt / clientVersion 被改写成 mix 口径", () =>
   assert.equal(res.cmd, "role_getroleinfo");
   assert.deepEqual(
     host(res.changes.map((c) => `${c.key}:${c.from}→${c.to}`)),
-    ["platformExt:h5→mix", "clientVersion:1.89.8-wx→2.48.2-fa918e1997301834-wx"],
+    ["platformExt:h5→mix", "clientVersion:1.89.8-wx→2.48.2-cbe6e57c59db01c2-wx"],
   );
   assert.ok(res.frame, "应返回改写后的帧");
   assert.notDeepEqual(toBytes(res.frame), toBytes(frame));
@@ -112,7 +112,7 @@ test("改写后的帧仍能被项目 BON 库正确解码（tag7 长度自洽）"
 
   const body = bon.decode(msg.body);
   assert.equal(body.platformExt, "mix", "platformExt 已改写");
-  assert.equal(body.clientVersion, "2.48.2-fa918e1997301834-wx", "clientVersion 已改写");
+  assert.equal(body.clientVersion, "2.48.2-cbe6e57c59db01c2-wx", "clientVersion 已改写");
   assert.equal(body.platform, "hortor", "未配置的字段保持原值");
   assert.equal(body.scene, "", "空字符串字段保持原值");
   assert.equal(body.inviteUid, 0);
