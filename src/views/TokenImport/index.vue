@@ -1167,7 +1167,7 @@ import { NIcon, NAlert, useDialog, useMessage } from "naive-ui";
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useLocalStorage } from "@vueuse/core";
-import { transformToken, scheduleAuthUserRequest } from "@/utils/token";
+import { transformToken, scheduleAuthUserRequest, getStableTokenKey } from "@/utils/token";
 import { $emit } from "@/stores/events/index.ts";
 import useIndexedDB from "@/hooks/useIndexedDB";
 import { prepareMultiGameLaunch } from "@/utils/gameLauncher";
@@ -1193,8 +1193,8 @@ import {
   parseServerNumberInput,
 } from "@/utils/serverRole";
 import {
-  getLeaderTokenIds,
-  setLeaderTokenIds as setSaltFieldLeaderTokenIds,
+  getLeaderKeys,
+  setLeaderKeys as setSaltFieldLeaderKeys,
 } from "@/utils/saltFieldConfig";
 const { getArrayBuffer, storeArrayBuffer, deleteArrayBuffer, clearAll } =
   useIndexedDB();
@@ -1850,14 +1850,19 @@ function clearMultiGameTokenSelection() {
 
 /* ---------------- 自动盐场：把选中的角色设为队长 ---------------- */
 // 只有「队长」需要在这里选；俱乐部信息在自动盐场页同步后自动推导出来。
-const saltFieldLeaderIds = ref(getLeaderTokenIds());
-const saltFieldLeaderCount = computed(() => saltFieldLeaderIds.value.length);
-const saltFieldSelectedLeaderCount = computed(
-  () =>
-    [...multiGameSelectedTokenIds.value].filter((id) =>
-      saltFieldLeaderIds.value.includes(String(id)),
-    ).length,
-);
+// 存的是稳定键 serverId:roleId（token 重导后依然有效），不是 token id。
+const saltFieldLeaderKeys = ref(getLeaderKeys());
+const saltFieldLeaderCount = computed(() => saltFieldLeaderKeys.value.length);
+const saltFieldSelectedLeaderCount = computed(() => {
+  const byId = new Map(
+    (tokenStore.gameTokens || []).map((t) => [String(t.id), t]),
+  );
+  return [...multiGameSelectedTokenIds.value].filter((id) => {
+    const t = byId.get(String(id));
+    const key = t ? getStableTokenKey(t.serverId, t.roleId) : null;
+    return key && saltFieldLeaderKeys.value.includes(key);
+  }).length;
+});
 
 const saltFieldMenuOptions = computed(() => [
   {
@@ -1880,24 +1885,45 @@ const saltFieldMenuOptions = computed(() => [
 ]);
 
 function handleSaltFieldMenu(key) {
-  const current = getLeaderTokenIds();
+  const current = getLeaderKeys();
   if (key === "set") {
-    const next = [...new Set([...current, ...[...multiGameSelectedTokenIds.value].map(String)])];
-    setSaltFieldLeaderTokenIds(next);
+    // 勾选的是 token id → 换算成稳定键 serverId:roleId 再落库
+    const byId = new Map(
+      (tokenStore.gameTokens || []).map((t) => [String(t.id), t]),
+    );
+    const selectedKeys = [...multiGameSelectedTokenIds.value]
+      .map((id) => {
+        const t = byId.get(String(id));
+        return t ? getStableTokenKey(t.serverId, t.roleId) : null;
+      })
+      .filter(Boolean);
+    const next = [...new Set([...current, ...selectedKeys])];
+    setSaltFieldLeaderKeys(next);
     message.success(`已设为盐场队长，共 ${next.length} 个角色`);
   } else if (key === "unset") {
-    const drop = new Set([...multiGameSelectedTokenIds.value].map(String));
-    const next = current.filter((id) => !drop.has(id));
-    setSaltFieldLeaderTokenIds(next);
+    // 同样按稳定键剔除
+    const byId = new Map(
+      (tokenStore.gameTokens || []).map((t) => [String(t.id), t]),
+    );
+    const dropKeys = new Set(
+      [...multiGameSelectedTokenIds.value]
+        .map((id) => {
+          const t = byId.get(String(id));
+          return t ? getStableTokenKey(t.serverId, t.roleId) : null;
+        })
+        .filter(Boolean),
+    );
+    const next = current.filter((k) => !dropKeys.has(k));
+    setSaltFieldLeaderKeys(next);
     message.success(`已取消，剩余 ${next.length} 个队长`);
   } else if (key === "clear") {
-    setSaltFieldLeaderTokenIds([]);
+    setSaltFieldLeaderKeys([]);
     message.success("已清空全部盐场队长");
   } else if (key === "open") {
     router.push("/admin/salt-field-auto");
     return;
   }
-  saltFieldLeaderIds.value = getLeaderTokenIds();
+  saltFieldLeaderKeys.value = getLeaderKeys();
 }
 
 watch(

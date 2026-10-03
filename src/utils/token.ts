@@ -7,17 +7,8 @@ export const getTokenId = (token: string | ArrayBuffer | Uint8Array) => {
   return binHash;
 };
 
-export const getStableTokenKey = (
-  serverId: string | number | null | undefined,
-  roleId: string | number | null | undefined,
-) => {
-  const normalizedServerId = String(serverId ?? "").trim();
-  const normalizedRoleId = String(roleId ?? "").trim();
-
-  if (!normalizedServerId || !normalizedRoleId) return null;
-
-  return `${normalizedServerId}:${normalizedRoleId}`;
-};
+// 稳定身份键已抽到零依赖模块（node 测试环境 import token.ts 会因 crypto-js CJS 探测失败而崩）
+export { getStableTokenKey } from "@/utils/stableTokenKey";
 
 type WaitCallback = (waitTimeMs: number, queueSize: number) => void;
 

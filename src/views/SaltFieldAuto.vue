@@ -14,7 +14,7 @@
       </div>
     </div>
 
-    <n-alert v-if="leaderIds.length === 0" type="warning" class="tips" :show-icon="true">
+    <n-alert v-if="leaderKeys.length === 0" type="warning" class="tips" :show-icon="true">
       还没有选择队长角色。请先到
       <router-link to="/tokens">Token 管理</router-link>
       勾选角色作为队长 —— 选中的角色即一支队伍的队长，所属俱乐部会自动推导出来。
@@ -362,7 +362,7 @@ const liveByTeam = ref({});
 const lastRound = ref({ ok: 0, total: 0 });
 
 /* ------------------------------ 配置态 ------------------------------ */
-const leaderIds = ref(cfg.getLeaderTokenIds());
+const leaderKeys = ref(cfg.getLeaderKeys());
 const teams = ref(cfg.getTeams());
 const roleCache = ref(cfg.getRoleCache());
 
@@ -450,7 +450,7 @@ const downloadRecording = () => {
 
 /* ------------------------------ 派生 ------------------------------ */
 const reloadFromStorage = () => {
-  leaderIds.value = cfg.getLeaderTokenIds();
+  leaderKeys.value = cfg.getLeaderKeys();
   teams.value = cfg.getTeams();
   roleCache.value = cfg.getRoleCache();
 };
@@ -473,7 +473,7 @@ const clubGroups = computed(() => {
 const memberCount = computed(() => teams.value.reduce((n, t) => n + (t.memberRoleIds?.length || 0), 0));
 const mobileCount = computed(() => teams.value.filter((t) => t.mobile).length);
 const unsyncedCount = computed(
-  () => leaderIds.value.filter((id) => !roleCache.value[String(id)]?.legionId).length,
+  () => leaderKeys.value.filter((key) => !roleCache.value[String(key)]?.legionId).length,
 );
 const canRun = computed(() => !isRunning.value && teams.value.length > 0);
 
@@ -504,9 +504,9 @@ const candidateGroups = computed(() => {
 });
 
 /* ------------------------------ 队伍展示辅助 ------------------------------ */
-const leaderRoleId = (team) => roleCache.value[String(team.leaderTokenId)]?.roleId ?? null;
+const leaderRoleId = (team) => roleCache.value[String(team.leaderKey)]?.roleId ?? null;
 const leaderName = (team) =>
-  roleCache.value[String(team.leaderTokenId)]?.roleName || team.name || team.leaderTokenId;
+  roleCache.value[String(team.leaderKey)]?.roleName || team.name || team.leaderKey;
 
 const hasLive = (team) => !!liveByTeam.value[team.id];
 const liveCid = (team) => liveByTeam.value[team.id]?.myCid ?? null;

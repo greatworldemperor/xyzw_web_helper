@@ -6,10 +6,22 @@
  *   · 俱乐部由队长角色的 legionId 反推，不手动增删（§1.6）
  *   · 队伍 ⇔ 队长 1:1
  *   · 配置态持久化到 localStorage；运行态（cId / sid / roleMap）一律不落盘（§4）
+ *
+ * 🔴 身份键（2026-10-03 定稿，master 拍板）：一律用稳定键 `serverId:roleId`
+ *   （getStableTokenKey），**不用 token id** —— token id 是 bin 内容的 MD5，
+ *   token 一刷新/重导就变，旧记录全部悬空（本次 30 支队伍 "Token not found" 事故根因）。
+ *   运行时按稳定键反查当前 gameTokens 里的 token id 再建连；角色暂时没导入也没关系，
+ *   导入回来即自动接上。旧版（token id 主键）数据在模块首次使用时自动迁移。
  */
 
+import { getStableTokenKey } from "@/utils/stableTokenKey";
+
 export const KEYS = {
-  leaders: "saltFieldAutoLeaderTokenIds",
+  /** 队长清单：稳定键（serverId:roleId）数组 */
+  leaders: "saltFieldAutoLeaderKeys",
+  /** 旧版队长清单（token id 数组）：仅迁移用，迁完即删 */
+  legacyLeaders: "saltFieldAutoLeaderTokenIds",
+  /** 角色缓存：key = 稳定键 */
   roleCache: "saltFieldAutoRoleCache",
   clubs: "saltFieldAutoClubs",
   teams: "saltFieldAutoTeams",
@@ -45,40 +57,119 @@ function writeJson(key, value) {
   }
 }
 
+/* ------------------------------ 旧数据迁移 ------------------------------ */
+
+/**
+ * 旧版（token id 主键）→ 稳定键主键的一次性迁移。
+ * 映射来源 = 旧 roleCache 条目里的 roleId/serverId（同步成功时都会写入）；
+ * 缺这两个字段的旧记录无法识别，只能丢弃（这些队长本来也连不上）。
+ * 惰性执行：所有公共读写入口先调 ensureMigrated()，测试环境可先 mock localStorage。
+ */
+let migrated = false;
+
+function ensureMigrated() {
+  if (migrated) return;
+  migrated = true;
+  try {
+    const legacyRaw = localStorage.getItem(KEYS.legacyLeaders);
+    if (legacyRaw === null) return; // 从未用过旧版，无需迁移
+    if (localStorage.getItem(KEYS.leaders) !== null) {
+      // 已迁移过（新键存在）：清掉旧键即可
+      localStorage.removeItem(KEYS.legacyLeaders);
+      return;
+    }
+
+    const legacyLeaders = JSON.parse(legacyRaw);
+    const legacyCache = readJson(KEYS.roleCache, {});
+
+    // 旧 token id → 稳定键；roleCache 直接按稳定键重建
+    const oldIdToKey = new Map();
+    const newCache = {};
+    for (const [oldId, info] of Object.entries(legacyCache || {})) {
+      const key = getStableTokenKey(info?.serverId, info?.roleId);
+      if (key) {
+        oldIdToKey.set(String(oldId), key);
+        newCache[key] = info;
+      }
+    }
+
+    const newLeaders = [];
+    let droppedLeaders = 0;
+    for (const oldId of Array.isArray(legacyLeaders) ? legacyLeaders : []) {
+      const key = oldIdToKey.get(String(oldId));
+      if (key) newLeaders.push(key);
+      else droppedLeaders++;
+    }
+
+    // 队伍表：leaderTokenId → leaderKey，保留全部业务字段
+    const legacyTeams = readJson(KEYS.teams, []);
+    const newTeams = [];
+    let droppedTeams = 0;
+    for (const t of Array.isArray(legacyTeams) ? legacyTeams : []) {
+      const key = oldIdToKey.get(String(t?.leaderTokenId));
+      if (!key) {
+        droppedTeams++;
+        continue;
+      }
+      const { leaderTokenId: _ignored, ...rest } = t || {};
+      newTeams.push({ ...rest, leaderKey: key, id: makeTeamId(rest.legionId ?? "unknown", key) });
+    }
+
+    writeJson(KEYS.leaders, [...new Set(newLeaders)]);
+    writeJson(KEYS.roleCache, newCache);
+    writeJson(KEYS.teams, newTeams);
+    localStorage.removeItem(KEYS.legacyLeaders);
+
+    const parts = [`队长 ${newLeaders.length} 个`];
+    if (droppedLeaders) parts.push(`无法识别的旧队长 ${droppedLeaders} 个（已丢弃）`);
+    if (droppedTeams) parts.push(`无法识别的旧队伍 ${droppedTeams} 支（已丢弃）`);
+    console.info(`[盐场] 队长记录已迁移到稳定键 serverId:roleId：${parts.join("，")}`);
+  } catch (e) {
+    console.warn("[盐场] 旧队长数据迁移失败（继续用现有数据）", e);
+  }
+}
+
 /* ------------------------------ 队长清单 ------------------------------ */
 
-export function getLeaderTokenIds() {
+/** 队长清单：稳定键（serverId:roleId）数组 */
+export function getLeaderKeys() {
+  ensureMigrated();
   const list = readJson(KEYS.leaders, []);
   return Array.isArray(list) ? list.map(String) : [];
 }
 
-export function setLeaderTokenIds(ids) {
-  const uniq = [...new Set((ids || []).map(String))];
+export function setLeaderKeys(keys) {
+  ensureMigrated();
+  const uniq = [...new Set((keys || []).map(String))];
   return writeJson(KEYS.leaders, uniq);
 }
 
-export function addLeaderTokenIds(ids) {
-  return setLeaderTokenIds([...getLeaderTokenIds(), ...(ids || [])]);
+export function addLeaderKeys(keys) {
+  return setLeaderKeys([...getLeaderKeys(), ...(keys || [])]);
 }
 
-export function removeLeaderTokenId(id) {
-  return setLeaderTokenIds(getLeaderTokenIds().filter((x) => x !== String(id)));
+export function removeLeaderKey(key) {
+  return setLeaderKeys(getLeaderKeys().filter((x) => x !== String(key)));
 }
 
 /* ------------------------------ 角色缓存 ------------------------------ */
 
 export function getRoleCache() {
+  ensureMigrated();
   const cache = readJson(KEYS.roleCache, {});
   return cache && typeof cache === "object" ? cache : {};
 }
 
-export function setRoleCacheEntry(tokenId, info) {
+/** key = 稳定键 serverId:roleId */
+export function setRoleCacheEntry(key, info) {
+  ensureMigrated();
   const cache = getRoleCache();
-  cache[String(tokenId)] = { ...(cache[String(tokenId)] || {}), ...info, updatedAt: Date.now() };
+  cache[String(key)] = { ...(cache[String(key)] || {}), ...info, updatedAt: Date.now() };
   return writeJson(KEYS.roleCache, cache);
 }
 
 export function clearRoleCache() {
+  ensureMigrated();
   return writeJson(KEYS.roleCache, {});
 }
 
@@ -98,16 +189,19 @@ export function setClubEnabled(legionId, enabled) {
 /* ------------------------------ 队伍 ------------------------------ */
 
 export function getTeams() {
+  ensureMigrated();
   const list = readJson(KEYS.teams, []);
   return Array.isArray(list) ? list : [];
 }
 
 export function setTeams(teams) {
+  ensureMigrated();
   return writeJson(KEYS.teams, Array.isArray(teams) ? teams : []);
 }
 
-export function makeTeamId(legionId, leaderTokenId) {
-  return `${legionId}-${leaderTokenId}`;
+/** 队伍 id = `<legionId>-<leaderKey>`（leaderKey = 稳定键，跨 token 重导稳定） */
+export function makeTeamId(legionId, leaderKey) {
+  return `${legionId}-${leaderKey}`;
 }
 
 /**
@@ -116,25 +210,26 @@ export function makeTeamId(legionId, leaderTokenId) {
  * @returns {{teams: Array, added: Array, removed: Array}}
  */
 export function reconcileTeams() {
-  const leaders = getLeaderTokenIds();
+  ensureMigrated();
+  const leaders = getLeaderKeys();
   const cache = getRoleCache();
   const existing = getTeams();
-  const byLeader = new Map(existing.map((t) => [String(t.leaderTokenId), t]));
+  const byLeader = new Map(existing.map((t) => [String(t.leaderKey), t]));
 
   const teams = [];
   const added = [];
   // 先按当前队长清单顺序重建（保证顺序稳定 = 用户在 token 页勾选的顺序）
-  for (const leaderTokenId of leaders) {
-    const info = cache[leaderTokenId] || {};
+  for (const leaderKey of leaders) {
+    const info = cache[leaderKey] || {};
     const legionId = info.legionId ?? null;
-    const prev = byLeader.get(leaderTokenId);
+    const prev = byLeader.get(leaderKey);
     if (prev) {
       teams.push({ ...prev, legionId: legionId ?? prev.legionId ?? null });
     } else {
       const t = {
-        id: makeTeamId(legionId ?? "unknown", leaderTokenId),
+        id: makeTeamId(legionId ?? "unknown", leaderKey),
         legionId,
-        leaderTokenId,
+        leaderKey,
         name: info.roleName || "队伍",
         enabled: true,
         memberRoleIds: [],
@@ -147,7 +242,7 @@ export function reconcileTeams() {
   }
 
   const leaderSet = new Set(leaders);
-  const removed = existing.filter((t) => !leaderSet.has(String(t.leaderTokenId)));
+  const removed = existing.filter((t) => !leaderSet.has(String(t.leaderKey)));
 
   setTeams(teams);
   return { teams, added, removed };
@@ -166,12 +261,13 @@ export function isClubEnabled(legionId) {
 export function groupTeamsByLegion(teams = getTeams(), cache = getRoleCache()) {
   const groups = new Map();
   for (const team of teams) {
-    const legionId = team.legionId ?? cache[String(team.leaderTokenId)]?.legionId ?? null;
+    const leaderKey = String(team.leaderKey || "");
+    const legionId = team.legionId ?? cache[leaderKey]?.legionId ?? null;
     const key = legionId === null || legionId === undefined ? "unknown" : String(legionId);
     if (!groups.has(key)) {
       groups.set(key, {
         legionId: key === "unknown" ? null : Number(key),
-        legionName: cache[String(team.leaderTokenId)]?.legionName || (key === "unknown" ? "未同步" : `俱乐部 ${key}`),
+        legionName: cache[leaderKey]?.legionName || (key === "unknown" ? "未同步" : `俱乐部 ${key}`),
         teams: [],
       });
     }
@@ -186,10 +282,12 @@ export function groupTeamsByLegion(teams = getTeams(), cache = getRoleCache()) {
 /* ------------------------------ 设置 ------------------------------ */
 
 export function getSettings() {
+  ensureMigrated();
   return { ...DEFAULT_SETTINGS, ...readJson(KEYS.settings, {}) };
 }
 
 export function setSettings(patch) {
+  ensureMigrated();
   return writeJson(KEYS.settings, { ...getSettings(), ...(patch || {}) });
 }
 

@@ -99,27 +99,20 @@ export function buildGroupExport({
   }
 
   if (includeSaltFieldTeams) {
-    const tokenById = new Map(
-      (gameTokens.value || []).map((t) => [t.id, t]),
-    );
-    payload.saltFieldTeams = (getTeams() || []).map((t) => {
-      const leader = tokenById.get(t.leaderTokenId);
-      const leaderKey = leader
-        ? getStableTokenKey(leader.serverId, leader.roleId)
-        : null;
-      return {
-        id: t.id,
-        name: t.name,
-        enabled: !!t.enabled,
-        mode: t.mode || "immediate",
-        mobile: !!t.mobile,
-        memberRoleIds: Array.isArray(t.memberRoleIds)
-          ? [...t.memberRoleIds]
-          : [],
-        legionId: t.legionId ?? null,
-        leaderKey,
-      };
-    });
+    // 2026-10-03 起队伍主键就是稳定键 leaderKey（serverId:roleId），
+    // 直接导出即可，不再反查 token 存不存在
+    payload.saltFieldTeams = (getTeams() || []).map((t) => ({
+      id: t.id,
+      name: t.name,
+      enabled: !!t.enabled,
+      mode: t.mode || "immediate",
+      mobile: !!t.mobile,
+      memberRoleIds: Array.isArray(t.memberRoleIds)
+        ? [...t.memberRoleIds]
+        : [],
+      legionId: t.legionId ?? null,
+      leaderKey: t.leaderKey || null,
+    }));
   }
 
   payload.keyIndex = buildKeyIndex();
@@ -337,23 +330,17 @@ export function applyGroupImport(payload, { mode = "merge" } = {}) {
     ? payload.saltFieldTeams
     : [];
   if (incomingTeams.length) {
-    // 本机：稳定键 → token id（用于反查队长）
-    const keyToTokenId = new Map();
-    for (const t of gameTokens.value || []) {
-      const key = getStableTokenKey(t.serverId, t.roleId);
-      if (key) keyToTokenId.set(key, t.id);
-    }
+    // 本机 token 稳定键集合：只用于报告「该队长角色本机还没导入」，不阻断导入
+    const localKeys = new Set(
+      (gameTokens.value || [])
+        .map((t) => getStableTokenKey(t.serverId, t.roleId))
+        .filter(Boolean),
+    );
     // 本机：队长稳定键 → 现有队伍（用于合并去重，保证一队长一队）
     const existingTeams = getTeams() || [];
-    const tokenById = new Map(
-      (gameTokens.value || []).map((t) => [t.id, t]),
-    );
     const existingKeyToTeam = new Map();
     for (const t of existingTeams) {
-      const lead = tokenById.get(t.leaderTokenId);
-      if (!lead) continue;
-      const k = getStableTokenKey(lead.serverId, lead.roleId);
-      if (k) existingKeyToTeam.set(k, t);
+      if (t?.leaderKey) existingKeyToTeam.set(normalizeKey(t.leaderKey), t);
     }
 
     const next = mode === "overwrite" ? [] : [...existingTeams];
@@ -363,19 +350,18 @@ export function applyGroupImport(payload, { mode = "merge" } = {}) {
         report.skippedTeams++;
         continue;
       }
-      const leaderTokenId = keyToTokenId.get(normalizeKey(t.leaderKey));
-      if (!leaderTokenId) {
+      const leaderKey = normalizeKey(t.leaderKey);
+      // 稳定键直通落库：角色即使当前没导入也照写，导入回来即自动接上
+      if (!localKeys.has(leaderKey)) {
         report.unresolvedLeaders.push({
-          leaderKey: normalizeKey(t.leaderKey),
+          leaderKey,
           teamName: t.name || "",
         });
-        report.skippedTeams++;
-        continue;
       }
       const newTeam = {
-        id: t.id || makeTeamId(t.legionId ?? "unknown", leaderTokenId),
+        id: t.id || makeTeamId(t.legionId ?? "unknown", leaderKey),
         legionId: t.legionId ?? null,
-        leaderTokenId,
+        leaderKey,
         name: t.name || "队伍",
         enabled: t.enabled !== false,
         memberRoleIds: Array.isArray(t.memberRoleIds)
@@ -385,7 +371,7 @@ export function applyGroupImport(payload, { mode = "merge" } = {}) {
         mode: t.mode || "immediate",
       };
 
-      const match = existingKeyToTeam.get(normalizeKey(t.leaderKey));
+      const match = existingKeyToTeam.get(leaderKey);
       if (match && mode !== "overwrite") {
         Object.assign(match, newTeam);
         report.updatedTeams++;

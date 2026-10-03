@@ -11,6 +11,7 @@
  */
 import { LegionWarSession, buildLegionWarUrl } from "@/utils/legionWarSession";
 import { getInviteReadiness, getTeamMemberCids, getUnsettledMembers } from "@/utils/legionWarState";
+import { getStableTokenKey } from "@/utils/token";
 import * as cfg from "@/utils/saltFieldConfig";
 
 /** 战场连接槽位（与批量主连接的 maxActive 分开限流） */
@@ -91,9 +92,17 @@ export function createTasksSaltField(deps) {
 
   const settings = () => cfg.getSettings();
   const tokenList = () => toArray(tokens) || [];
-  const findToken = (tokenId) =>
-    tokenList().find((t) => String(t.id) === String(tokenId)) ||
-    toArray(tokenStore?.gameTokens).find((t) => String(t.id) === String(tokenId)) ||
+
+  /** token 对象 → 稳定键 serverId:roleId */
+  const tokenKeyOf = (t) => getStableTokenKey(t?.serverId, t?.roleId);
+
+  /**
+   * 按稳定键找 token：配置层存的是 serverId:roleId，运行时在这里反查
+   * 当前 token id（token 重导/刷新后 id 会变，稳定键不会）。
+   */
+  const findTokenByKey = (key) =>
+    tokenList().find((t) => tokenKeyOf(t) === String(key)) ||
+    toArray(tokenStore?.gameTokens).find((t) => tokenKeyOf(t) === String(key)) ||
     null;
 
   /**
@@ -101,15 +110,15 @@ export function createTasksSaltField(deps) {
    * role token 生命周期很短，BIN 导入时不会预取，只在建立连接时按需刷新，
    * 所以传进来的旧引用上 token 字段可能还是空的。
    */
-  const findFreshToken = (tokenId) =>
-    toArray(tokenStore?.gameTokens).find((t) => String(t.id) === String(tokenId)) ||
-    findToken(tokenId) ||
+  const findFreshTokenByKey = (key) =>
+    toArray(tokenStore?.gameTokens).find((t) => tokenKeyOf(t) === String(key)) ||
+    findTokenByKey(key) ||
     null;
 
   const log = (text, type = "info") =>
     addLog?.({ time: new Date().toLocaleTimeString(), message: text, type });
 
-  const tag = (team) => `[${team?.legionId ?? "?"} / ${team?.name || team?.leaderTokenId}]`;
+  const tag = (team) => `[${team?.legionId ?? "?"} / ${team?.name || team?.leaderKey}]`;
 
   /* -------------------- 战场连接槽位 -------------------- */
 
@@ -128,12 +137,13 @@ export function createTasksSaltField(deps) {
   /* -------------------- ① 同步角色信息 -------------------- */
 
   /**
-   * 遍历「队长清单」里的 token，读取 roleId / legionId / legionName / 角色名并写入缓存。
+   * 遍历「队长清单」（稳定键 serverId:roleId）里的角色，读取
+   * roleId / legionId / legionName / 角色名并写入缓存。
    * 这是把「俱乐部」推导出来的唯一来源，用户不需要手填 legionId。
    */
   const syncSaltFieldRoles = async () => {
-    const leaderIds = cfg.getLeaderTokenIds();
-    if (leaderIds.length === 0) {
+    const leaderKeys = cfg.getLeaderKeys();
+    if (leaderKeys.length === 0) {
       message?.warning?.("还没有选择任何队长角色，请先在 Token 管理里勾选");
       return { ok: 0, failed: 0 };
     }
@@ -141,24 +151,27 @@ export function createTasksSaltField(deps) {
     if (isRunning) isRunning.value = true;
     if (shouldStop) shouldStop.value = false;
 
-    log(`=== 开始同步 ${leaderIds.length} 个队长角色 ===`, "info");
+    log(`=== 开始同步 ${leaderKeys.length} 个队长角色 ===`, "info");
     let ok = 0;
     let failed = 0;
 
     await Promise.all(
-      leaderIds.map(async (tokenId) => {
+      leaderKeys.map(async (leaderKey) => {
         if (shouldStop?.value) return;
-        const token = findToken(tokenId);
-        const label = token?.name || tokenId;
+        const token = findTokenByKey(leaderKey);
+        const label = token?.name || leaderKey;
         try {
-          await ensureConnection(tokenId);
-          const role = await loadRoleInfo(tokenStore, tokenId);
+          if (!token) {
+            throw new Error(`该角色不在当前 Token 列表（${leaderKey}），请先到 Token 管理导入该角色`);
+          }
+          await ensureConnection(token.id);
+          const role = await loadRoleInfo(tokenStore, token.id);
           if (!role) throw new Error("role_getroleinfo 未返回角色");
 
           let legionName = "";
           let legionId = Number(role.legionId || 0);
           try {
-            const legion = await loadOwnLegion(tokenStore, tokenId);
+            const legion = await loadOwnLegion(tokenStore, token.id);
             if (legion) {
               legionId = Number(legion.id ?? legionId) || legionId;
               legionName = legion.name || "";
@@ -167,7 +180,7 @@ export function createTasksSaltField(deps) {
             log(`${label} 读取俱乐部名失败（不致命）: ${e?.message || e}`, "warning");
           }
 
-          cfg.setRoleCacheEntry(tokenId, {
+          cfg.setRoleCacheEntry(leaderKey, {
             roleId: Number(role.roleId || 0),
             roleName: role.name || token?.name || "",
             legionId,
@@ -181,10 +194,12 @@ export function createTasksSaltField(deps) {
           failed++;
           log(`${label} 同步失败: ${e?.message || e}`, "error");
         } finally {
-          try {
-            tokenStore.closeWebSocketConnection(tokenId);
-          } catch {
-            /* ignore */
+          if (token) {
+            try {
+              tokenStore.closeWebSocketConnection(token.id);
+            } catch {
+              /* ignore */
+            }
           }
           releaseConnectionSlot?.();
         }
@@ -212,23 +227,22 @@ export function createTasksSaltField(deps) {
    */
   const loadSaltFieldRoster = async (team) => {
     const t = tag(team);
-    const tokenId = team.leaderTokenId;
-    const token = findToken(tokenId);
-    if (!token) throw new Error(`找不到队长 token: ${tokenId}`);
+    const token = findTokenByKey(team.leaderKey);
+    if (!token) throw new Error(`队长的角色不在当前 Token 列表: ${team.leaderKey}（先到 Token 管理导入）`);
 
     try {
-      await ensureConnection(tokenId);
-      const role = await loadRoleInfo(tokenStore, tokenId);
+      await ensureConnection(token.id);
+      const role = await loadRoleInfo(tokenStore, token.id);
       if (!role) throw new Error("role_getroleinfo 未返回角色");
 
-      const legion = await loadOwnLegion(tokenStore, tokenId);
+      const legion = await loadOwnLegion(tokenStore, token.id);
       if (!legion) throw new Error("legion_getinfo 未返回俱乐部信息");
 
       const legionId = Number(legion.id || role.legionId || 0);
       const legionName = legion.name || "";
       const roster = rosterToArray(legion.members);
 
-      cfg.setRoleCacheEntry(tokenId, {
+      cfg.setRoleCacheEntry(team.leaderKey, {
         roleId: Number(role.roleId || 0),
         roleName: role.name || token.name,
         legionId,
@@ -238,10 +252,10 @@ export function createTasksSaltField(deps) {
       });
 
       log(`${t} 名册加载完成：${legionName || legionId} 共 ${roster.length} 人（仅主连接，未进战场）`, "info");
-      return { tokenId, roleId: Number(role.roleId || 0), legionId, legionName, roster };
+      return { leaderKey: team.leaderKey, roleId: Number(role.roleId || 0), legionId, legionName, roster };
     } finally {
       try {
-        tokenStore.closeWebSocketConnection(tokenId);
+        tokenStore.closeWebSocketConnection(token.id);
       } catch {
         /* ignore */
       }
@@ -257,21 +271,20 @@ export function createTasksSaltField(deps) {
    */
   const probeSaltFieldTeam = async (team, { logPrefix = "" } = {}) => {
     const t = tag(team);
-    const tokenId = team.leaderTokenId;
-    const token = findToken(tokenId);
-    if (!token) throw new Error(`找不到队长 token: ${tokenId}`);
+    const token = findTokenByKey(team.leaderKey);
+    if (!token) throw new Error(`队长的角色不在当前 Token 列表: ${team.leaderKey}（先到 Token 管理导入）`);
 
-    await ensureConnection(tokenId);
-    const role = await loadRoleInfo(tokenStore, tokenId);
+    await ensureConnection(token.id);
+    const role = await loadRoleInfo(tokenStore, token.id);
     if (!role) throw new Error("role_getroleinfo 未返回角色");
 
-    const legion = await loadOwnLegion(tokenStore, tokenId);
+    const legion = await loadOwnLegion(tokenStore, token.id);
     const legionId = Number(legion?.id || role.legionId || 0);
     const legionName = legion?.name || "";
     const roster = rosterToArray(legion?.members);
     const lineup = pickLineup(role);
 
-    const bf = await tokenStore.sendMessageWithPromise(tokenId, "legion_getbattlefield", {}, 10000);
+    const bf = await tokenStore.sendMessageWithPromise(token.id, "legion_getbattlefield", {}, 10000);
     const info = bf?.info || null;
     if (!info?.battlefieldId) throw new Error("legion_getbattlefield 未返回 battlefieldId");
     if (info.canEnterWar === false) {
@@ -281,7 +294,7 @@ export function createTasksSaltField(deps) {
     await waitBattlefieldSlot();
     // role token 可能是「连接时才按需刷新」出来的：必须重新取一次最新值，
     // 不能用 ensureConnection 之前的旧引用（那时 token 字段还是空的）
-    const freshToken = findFreshToken(tokenId) || token;
+    const freshToken = findFreshTokenByKey(team.leaderKey) || token;
     if (!freshToken.token) {
       releaseBattlefieldSlot();
       throw new Error("Token 为空且自动刷新失败，请重新导入 BIN");
@@ -290,7 +303,7 @@ export function createTasksSaltField(deps) {
       teamId: team.id,
       teamName: team.name,
       legionId,
-      leaderTokenId: tokenId,
+      leaderKey: team.leaderKey,
       battlefieldId: info.battlefieldId,
     });
     const session = new LegionWarSession({
@@ -338,7 +351,7 @@ export function createTasksSaltField(deps) {
       const ownRoleId = Number(role.roleId || 0);
       const roleMap = session.roleMap || {};
 
-      cfg.setRoleCacheEntry(tokenId, {
+      cfg.setRoleCacheEntry(team.leaderKey, {
         roleId: ownRoleId,
         roleName: role.name || token.name,
         legionId,
@@ -349,7 +362,9 @@ export function createTasksSaltField(deps) {
 
       return {
         ok: true,
-        tokenId,
+        leaderKey: team.leaderKey,
+        /** 运行时连接句柄（仅本次会话有效；身份请用 leaderKey） */
+        tokenId: token.id,
         tokenName: token.name,
         roleId: ownRoleId,
         roleName: role.name,
@@ -372,7 +387,7 @@ export function createTasksSaltField(deps) {
       session.close();
       releaseBattlefieldSlot();
       try {
-        tokenStore.closeWebSocketConnection(tokenId);
+        tokenStore.closeWebSocketConnection(token.id);
       } catch {
         /* ignore */
       }
@@ -407,11 +422,11 @@ export function createTasksSaltField(deps) {
     try {
       const teams = cfg.getTeams();
       const siblingOccupied = teams
-        .filter((x) => String(x.leaderTokenId) !== String(team.leaderTokenId))
+        .filter((x) => String(x.leaderKey) !== String(team.leaderKey))
         .filter((x) => Number(x.legionId) === Number(probe.legionId))
         .flatMap((x) => [...(x.memberRoleIds || [])]);
       const cache = cfg.getRoleCache();
-      const ownRoleId = Number(cache[String(team.leaderTokenId)]?.roleId || 0);
+      const ownRoleId = Number(cache[String(team.leaderKey)]?.roleId || 0);
       const pool = cfg.buildCandidatePool({
         roster: probe.roster,
         roleMap: probe.roleMap,
@@ -476,7 +491,7 @@ export function createTasksSaltField(deps) {
     const result = {
       teamId: team.id,
       legionId: team.legionId,
-      leaderTokenId: team.leaderTokenId,
+      leaderKey: team.leaderKey,
       mode,
       ok: false,
       stage: "init",
@@ -507,7 +522,7 @@ export function createTasksSaltField(deps) {
 
       const teams = cfg.getTeams();
       const siblingOccupied = teams
-        .filter((x) => String(x.leaderTokenId) !== String(team.leaderTokenId))
+        .filter((x) => String(x.leaderKey) !== String(team.leaderKey))
         .filter((x) => Number(x.legionId) === Number(legionId))
         .flatMap((x) => [...(x.memberRoleIds || [])]);
 
