@@ -58,7 +58,7 @@
 | `hero_calcpowerbyteam` | `{battleTeam, lordWeaponId, petUId}` | 算战力，返回 `{power}` |
 | `payload_enterbf` | `{bfId}` | **进战场** |
 | `payload_ping` | `{bfId}` | 心跳，20s |
-| `payload_setbattleteam` | `{bfId, battleTeam, lordWeaponId, petUId}` | **布阵/上阵**（runtime h5/1.89.8 被 3000070；官方模拟器 mix/2.21.2 成功——同战场 13059 对照，见 §7 修正） |
+| `payload_setbattleteam` | `{bfId, battleTeam, lordWeaponId, petUId}` | **布阵/上阵**（runtime h5/1.89.8 被 3000070；官方模拟器成功——同战场 13059 对照，见 §7 修正；**模拟器版本串未捕获**） |
 | `payload_startmarch` | — | 行军 |
 | `payload_useitem` | — | 用道具（→ `Payload_UseItemResp`） |
 
@@ -149,7 +149,7 @@ clientVersion ≈ "2.21.2-fa918e1997301834-wx"
 - `platform-spoof.js` 只覆写 `window.PLATFORM`，网页可登录值只有 `h5/h5web` → **无论怎么选都还是网页口径**
 
 ⇒ 服务端据此把连接标记为 `loginPlatform: hortor-h5`，并在**战斗类动作**上拦截：
-- 蟠桃 `payload_setbattleteam` → 3000070（**仅 h5/1.89.8 口径**；官方模拟器 mix/2.21.2 同战场成功——10-04 从 pantao.7z/wssa5+batch3 证实，§7 的『mix 未实测』已闭环）
+- 蟠桃 `payload_setbattleteam` → 3000070（**仅 h5/1.89.8 口径**；官方模拟器同战场成功——10-04 从 pantao.7z/wssa5+batch3 证实，§7 的『mix 未实测』已闭环；**模拟器版本串未捕获**）
 - 盐场 `war_startbattle`（PVP）→ 3000070
 - 而 `payload_enterbf` / `payload_ping` / 盐场 `war_startattackbuilding` / 组队 → **正常**
 
@@ -161,6 +161,23 @@ clientVersion ≈ "2.21.2-fa918e1997301834-wx"
    ```
    直接实现蟠桃：`payload_enterbf` → `payload_setbattleteam` → `payload_startmarch`。
 2. **继续用 runtime**：需要把上报口径改成 mix，且**不能改 `PLATFORM`**（wx 会切 App SDK 登录分支卡死，mix 不是 key 会崩）。可行做法是 patch `_platformExtMapping` 实例表或 hook WS send 改写 `role_getroleinfo` body（`platformExt:"mix"`、`clientVersion:"2.21.2-fa918e1997301834-wx"`），登录分支保持 h5 不变。
+
+### 7.5 clientVersion 中段 16hex（`fa918e1997301834`）身份研究（10-04）
+
+- **组装结构**（从官方 web 构建 `game-defines.a175e.js` 反推）：`clientVersion = CODE_VERSION + ['-' + 构建标识] + '-wx'`。
+  web 通道无中段（`gt.CODE_VERSION='1.89.8'` → `'1.89.8-wx'`，`VERSION_POSTFIX=''/COMMIT_ID=''/RESOURCES_COMMIT_ID=''`）；
+  原生/小游戏通道带 16hex 中段；**`-wx` 后缀全通道常量**（web 构建也有，不是"微信"的意思）。
+- **出身**：串随上游开源项目进入工具（git -S 首现 commit `59058ca6`，2026-03-30，2.21.2 为当时版本），上游也无出处记载。
+  ⚠️ **local-data 全量扫描：我们从未捕获过任何真实原生客户端首帧** —— 唯一真实客户端串 = 冻结镜像的 `1.89.8-wx`（9 处，全是 runtime 自己发的）；
+  E4/E7 文档"真机 2.21.2-…-wx"是从工具自用串反推的假设，非解码证据（goldenfish 领奖抓包里根本没有 clientVersion 帧）。
+- **时间线吻合**：2.21.2（03-30 在用）→ 2.48.2（10-02 上线，master 截图）= 27 个 minor ≈ 27 周，与"每周五更新"完全一致。
+- **身份三假设**：
+  1. *小游戏 AppID 去 `wx` 前缀*（`wx`+16hex 格式完美匹配）—— 已弱化：GameWxQRlogin 开源配置里咸鱼之王 App 的微信 OAuth appid = `wxfb0d5667e5cb1c44` ≠ 之（小游戏 appid 另有其值、未公开，未完全排除）；
+  2. *每周构建 hash*（COMMIT_ID/RESOURCES_COMMIT_ID 字段存在，周更即轮换）—— 若真，`2.48.2-fa918e…` 是从未存在过的拼装串；
+  3. *静态渠道/构建线标识*（如微端）—— 若真，等效常量。
+- **门模型现状**：盐场 deploy 接受过真实历史对 `2.21.2-fa918e`（10-03）⇒ 无"当前全串白名单"；盐场 PVP 拒同一串（09-19）⇒ PVP 门校验版本新鲜度且更严。
+  **判别实验 = 10-04 蟠桃**（工具 `2.48.2-fa918e…` 首测）：通过 ⇒ 门只看 semver 前缀或 hash 为常量；被拒 ⇒ hash 参与校验（周更轮换），须立刻换真串。
+- **真串获取路径**（若被拒）：① 模拟器 HttpCanary 抓登录首帧 `role_getroleinfo`（2 分钟，只要第一条）；② MuMu 有 root，直接从微信小游戏包目录 grep `fa918e` / `2.48.2-`（零流量）。
 
 ## 8. 待逆向 / 待确认
 
