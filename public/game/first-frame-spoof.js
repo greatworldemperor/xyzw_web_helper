@@ -3,7 +3,7 @@
  *
  * 背景（2026-09-20 抓包实锤）：
  *   - 官方 H5 入口在 WS 首帧 role_getroleinfo 里上报 platformExt:"h5" / clientVersion:"1.89.8-wx"；
- *     真实客户端（项目协议客户端注册口径）上报的是 platformExt:"mix" / clientVersion:"2.21.2-fa918e1997301834-wx"。
+ *     真实客户端（项目协议客户端注册口径）上报的是 platformExt:"mix" / clientVersion:"2.48.2-fa918e1997301834-wx"。
  *   - 猜测：服务端 3000070（客户端数据异常）按这个上报口径拦战斗类动作
  *     （盐场 war_startbattle PVP 全败、蟠桃 payload_setbattleteam 全败，而进场/攻击建筑都成功）。
  *   - platform-spoof.js 只改 window.PLATFORM，网页环境可登录的只有 h5/h5web（mix 不是映射表 key、wx 会切 App SDK），
@@ -24,7 +24,7 @@
  *     "enabled": true,
  *     "observeOnly": false,
  *     "rules": [{ "cmd": "role_getroleinfo",
- *                 "fields": { "platformExt": "mix", "clientVersion": "2.21.2-fa918e1997301834-wx" } }]
+ *                 "fields": { "platformExt": "mix", "clientVersion": "2.48.2-fa918e1997301834-wx" } }]
  *   }
  *   - enabled=false 或缺省 → 完全不干预。
  *   - observeOnly=true → 只记录命中的帧与字段现值，不改字节（先用来确认字段确实在帧里）。
@@ -45,7 +45,7 @@
       cmd: "role_getroleinfo",
       fields: {
         platformExt: "mix",
-        clientVersion: "2.21.2-fa918e1997301834-wx",
+        clientVersion: "2.48.2-fa918e1997301834-wx",
       },
     },
   ];

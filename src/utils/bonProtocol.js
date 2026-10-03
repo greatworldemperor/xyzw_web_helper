@@ -3,6 +3,7 @@
  * 基于提供的真实 BON 源码重新实现
  */
 import lz4 from "lz4js";
+import { CLIENT_VERSION } from "./clientVersion.js";
 
 // -----------------------------
 // BON 编解码器核心实现
@@ -871,7 +872,7 @@ export const GameMessages = {
     cmd: "role_getroleinfo",
     body: encode(
       {
-        clientVersion: "2.21.2-fa918e1997301834-wx",
+        clientVersion: CLIENT_VERSION,
         inviteUid: 0,
         platform: "hortor",
         platformExt: "mix",

@@ -4,6 +4,7 @@
 // 导入依赖模块
 import { a$ as createRef, G as createApp } from "./DpD38Hq9.js";
 import { c as useI18n, u as useState } from "./BUzHT0Ek.js";
+import { CLIENT_VERSION } from "./clientVersion.js";
 
 // 字符串相似度计算函数 (Levenshtein Distance 算法)
 const calculateStringSimilarity = (() => {
@@ -219,7 +220,7 @@ const gameMessageTemplates = {
   role_getroleinfo: (client, ack, seq, params) => ({
     cmd: "role_getroleinfo",
     body: client.bon.encode({
-      clientVersion: "2.21.2-fa918e1997301834-wx",
+      clientVersion: CLIENT_VERSION,
       inviteUid: 0,
       platform: "hortor",
       platformExt: "mix",

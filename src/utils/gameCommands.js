@@ -4,6 +4,7 @@
  */
 
 import { g_utils } from "./bonProtocol.js";
+import { CLIENT_VERSION } from "./clientVersion.js";
 
 // 生成随机数工具函数
 function randomInt(min, max) {
@@ -39,7 +40,7 @@ export class GameCommands {
     return {
       cmd: "role_getroleinfo",
       body: this.g_utils.bon.encode({
-        clientVersion: "2.21.2-fa918e1997301834-wx",
+        clientVersion: CLIENT_VERSION,
         inviteUid: 0,
         platform: "hortor",
         platformExt: "mix",

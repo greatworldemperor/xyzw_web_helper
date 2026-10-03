@@ -306,7 +306,7 @@ const frameSpoofExtOptions = [
 const frameSpoofStatus = ref("未读取");
 const frameSpoofClientVersion = computed(() =>
   frameSpoofExt.value === "mix"
-    ? "clientVersion: 2.21.2-fa918e1997301834-wx"
+    ? "clientVersion: 2.48.2-fa918e1997301834-wx"
     : "clientVersion: 1.89.8-wx（保持原值）"
 );
 const frameSpoofTagType = computed(() => {
@@ -340,7 +340,7 @@ function persistFrameSpoof() {
             fields: {
               platformExt: frameSpoofExt.value,
               clientVersion:
-                frameSpoofExt.value === "mix" ? "2.21.2-fa918e1997301834-wx" : "1.89.8-wx",
+                frameSpoofExt.value === "mix" ? "2.48.2-fa918e1997301834-wx" : "1.89.8-wx",
             },
           },
         ],
