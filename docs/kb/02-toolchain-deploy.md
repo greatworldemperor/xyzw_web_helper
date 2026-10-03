@@ -46,12 +46,17 @@ $SSH "cd /opt/xyzw_web_helper && git log -1 --oneline"
 # ② 本地打 bundle（从服务器 HEAD 到本地 HEAD）
 git bundle create local-data/_deploy.bundle <server_HEAD>..HEAD
 
-# ③ scp（🔴 多文件 scp 有时传旧包！务必单独重传 bundle 并 verify）
-scp -i $KEY local-data/_deploy.bundle local-data/_remote_deploy.sh root@111.229.64.152:/tmp/
+# ③ scp（🔴 bundle 必须传成 /tmp/deploy.bundle —— _remote_deploy.sh 读的就是这个名字！
+#    2026-10-03 事故：传成 /tmp/_deploy.bundle ⇒ 脚本 fetch 到上次遗留的旧 bundle ⇒
+#    线上被 reset --hard 回退 5 个提交。脚本现已兼容两个名字，但仍统一传 deploy.bundle 最稳）
+scp -i $KEY local-data/_deploy.bundle local-data/_remote_deploy.sh root@111.229.64.152:/tmp/deploy.bundle
+#    _remote_deploy.sh 另传一份到 /tmp/_remote_deploy.sh（脚本读的名字）：
+scp -i $KEY local-data/_remote_deploy.sh root@111.229.64.152:/tmp/_remote_deploy.sh
 
 # ④ 服务器构建
 $SSH "cp /tmp/_remote_deploy.sh /tmp/deploy_build.sh && bash /tmp/deploy_build.sh"
 #   脚本内部：fetch bundle → reset --hard FETCH_HEAD → pnpm i → build → nginx reload
+#   🔴 末行「完成：… commit=<short>」必须与本次要上的 HEAD 一致，不一致 = 上错了（立即查 bundle 文件名）
 ```
 
 **服务器**：`111.229.64.152`（腾讯云 OpenCloudOS 9.4）｜仓库 `/opt/xyzw_web_helper`｜分支 `personal-main-merge-main`｜nginx root = `dist/`
