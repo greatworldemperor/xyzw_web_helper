@@ -61,7 +61,7 @@
 ## 6. 🔴 3000070 现状与归因
 
 - **只有 `war_startbattle`(PVP) 触发**；`war_enterbattlefield` / `teamsetbattleteam` / `invitejointeam` / `setbattleteam` / `startmarch` / `speedup` **均成功** ⇒ **非"h5 平台整体禁用"**。
-- 归因：本号是全场唯一 `platformExt: "h5web"`（非官方 H5 入口）；`hortor-h5` 平台有 6 次正常发起战斗。
+- 归因演进：~~平台门~~ → **版本新鲜度**（当前主假设）。10-04 用 09-26 全场抓包（520 人）证伪平台门：野外 `hortor-h5` 207 人里 192 登场、167 combat、**28 人成功开战**（StartBattleResp 平台分布 mix 65 / h5 28 / qq 5）；`hortor-h5web` 2 人也全能登场行军 ⇒ **3000070 不按平台拦**。野外 h5 = 官方最新 bundle（每周五更新），我们镜像冻结 `1.89.8`、工具冻结 `2.21.2`（落后 27 版）⇒ 与「请使用官方**最新**客户端」字面吻合。反例保留：工具 startbattle 在 09-19（2.21.2 当时最新）即被拒 ⇒ PVP 门可能 = 版本 + 其他（设备证明/会话指纹）。分析工具：`tools/saltfield/saltfield-platform-achievement.mjs`。
 - 待验证：`public/game/first-frame-spoof.js` 把首帧口径改成 `mix` / `h5` 后 PVP 是否恢复（**仅当将来需要攻击时才做**）。
 - 09-26 runtime 补充：**官方 H5 客户端**在我们 runtime 里登场/打建筑/邀请全成功，唯 `war_startbattle` 同样被 3000070 拒（请求体与协议客户端逐字段一致）⇒ **命令结构非差异点**，拦的是会话口径或客户端完整性（runtime 里 PLATFORM 被覆写、WebSocket 构造器带 `__pushResearchWrapped` 标记、`prototype.send` 非 native，全是可检点）。
 - 🔴 测量陷阱：runtime 抓包 tap 在**实例层**包 `socket.send`（先执行），first-frame-spoof 在**原型层** hook（后执行）⇒ 抓包显示的 h5 口径是**改写前字节**，不能当 spoof 未生效的证据；判定必须读页面「读取改写状态」→ `__xyzwFrameSpoof.stats.patched`。
