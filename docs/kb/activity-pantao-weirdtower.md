@@ -31,7 +31,7 @@
 
 ## ⚠️ 卡点
 
-- `payload_setbattleteam` 在 **h5 口径被 3000070 拒绝**（混用 `mix` 口径未实测；**仅周日活动窗口可验**）。
+- `payload_setbattleteam` 在 **h5/1.89.8 口径被 3000070 拒绝**；**mix 口径已实测通过（10-04 定稿）**：09-13 batch3 与 09-20 wssa5 官方客户端（MuMu 模拟器，mix/2.21.2）布阵均 `state:idle` 成功（09-20 还是与 h5 被拒**同一战场 13059**、晚 76 分钟），官方全程 0 次 3000070 ⇒ 门=『h5/1.89.8 口径』而非命令本身；工具为 mix 口径（现已升 2.48.2，f5332a8e）⇒ 预期通过。证据：`local-data/pantao/pantao_success_extract/` + `_wssa_decoded.txt`/`_batch_decoded.txt`。
 - `payload_startmarch` / `payload_startbattle` 请求体**未抓到**（按响应反推，实现提供了覆写口）。
 
 ## 相关源码脚本（协议线索，非主项目封装）

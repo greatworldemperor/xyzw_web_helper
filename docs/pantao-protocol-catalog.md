@@ -58,7 +58,7 @@
 | `hero_calcpowerbyteam` | `{battleTeam, lordWeaponId, petUId}` | 算战力，返回 `{power}` |
 | `payload_enterbf` | `{bfId}` | **进战场** |
 | `payload_ping` | `{bfId}` | 心跳，20s |
-| `payload_setbattleteam` | `{bfId, battleTeam, lordWeaponId, petUId}` | **布阵/上阵**（runtime 在此被 3000070） |
+| `payload_setbattleteam` | `{bfId, battleTeam, lordWeaponId, petUId}` | **布阵/上阵**（runtime h5/1.89.8 被 3000070；官方模拟器 mix/2.21.2 成功——同战场 13059 对照，见 §7 修正） |
 | `payload_startmarch` | — | 行军 |
 | `payload_useitem` | — | 用道具（→ `Payload_UseItemResp`） |
 
@@ -149,7 +149,7 @@ clientVersion ≈ "2.21.2-fa918e1997301834-wx"
 - `platform-spoof.js` 只覆写 `window.PLATFORM`，网页可登录值只有 `h5/h5web` → **无论怎么选都还是网页口径**
 
 ⇒ 服务端据此把连接标记为 `loginPlatform: hortor-h5`，并在**战斗类动作**上拦截：
-- 蟠桃 `payload_setbattleteam` → 3000070
+- 蟠桃 `payload_setbattleteam` → 3000070（**仅 h5/1.89.8 口径**；官方模拟器 mix/2.21.2 同战场成功——10-04 从 pantao.7z/wssa5+batch3 证实，§7 的『mix 未实测』已闭环）
 - 盐场 `war_startbattle`（PVP）→ 3000070
 - 而 `payload_enterbf` / `payload_ping` / 盐场 `war_startattackbuilding` / 组队 → **正常**
 
