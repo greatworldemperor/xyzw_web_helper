@@ -185,6 +185,7 @@ clientVersion ≈ "2.21.2-fa918e1997301834-wx"
   "<packages>/wx0840558555a454ed/<新构建号>/__APP__.wxapkg" <outDir>` → `grep GAME_VERSION <outDir>/game.js`
   → 改 `src/utils/clientVersion.js` 一行 → 测试 → deploy。
 - **新字段 `BATTLE_VERSION="7f91491b47"`**：356/361 两代同值（轮换频率低于版本号），首帧不上报，暂不跟进。
+- 🔑 **hash 是构建期静态字面量，不是运行时计算**（10-05 定稿）：解密后的 game.js 全文仅 2 处 `GAME_VERSION=` 赋值且都是**字符串常量**（一处 `"dev"` 占位、一处真实值 `"2.48.2-cbe6e57c59db01c2-wx"`），无任何拼接/哈希函数参与，`VERSION_POSTFIX=""`（hash 直接烧在字面量里）⇒ **客户端只读不算，「算法」在官方 CI 打包线上，无需逆向任何算法**。每周换串 = 解包读新常量（5 分钟机械操作）。旁证：BATTLE_VERSION 跨代不变（若是内容摘要早该随代码变了）。若未来服务端改要求"运行时计算的签名"，那才是新逆向课题——目前零证据。
 - **门模型现状**：盐场 deploy 接受过真实历史对 `2.21.2-fa918e`（10-03）⇒ 无"当前全串白名单"；盐场 PVP 拒同一串（09-19）⇒ PVP 门校验版本新鲜度且更严。
   蟠桃 deploy 的门待 10-04 用官方真串 `2.48.2-cbe6e57c59db01c2-wx` 实测；若仍被拒 ⇒ 残余变量只剩"非官方设备/会话指纹"方向。
 - **每周换串 SOP**（见上）：PC 微信打开小游戏触发更新 → `wxapkg-decrypt.mjs` 解新构建 → 改 `clientVersion.js` 一行；HttpCanary 抓登录首帧是等价备选。
