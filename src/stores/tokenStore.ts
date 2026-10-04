@@ -552,7 +552,10 @@ export const useTokenStore = defineStore("tokens", () => {
     if (gameToken.importMethod === "url" && gameToken.sourceUrl) {
       // URL形式token刷新
       const token = await scheduleAuthUserRequest(async () => {
-        const response = await fetch(gameToken.sourceUrl);
+        // 🔴 带 15s 超时：刷新接口悬挂时快速失败（走 ensureTokenAvailable 的兜底）
+        const response = await fetch(gameToken.sourceUrl, {
+          signal: AbortSignal.timeout(15000),
+        });
         if (!response.ok) {
           throw new Error(`Token刷新接口请求失败: ${response.status}`);
         }
@@ -1412,6 +1415,7 @@ export const useTokenStore = defineStore("tokens", () => {
 
     let retryCount = 0;
     let rateLimitStartedAt = 0; // 本轮限流重试的起点（用于 15 分钟上限）
+    let lastDeadConnNotifyAt = 0; // 限流恢复中连接死亡时的上次通报时刻（60s 节流）
 
     while (true) {
       // 每轮重新取连接：用户换 IP 重建后要拿到新的 client，不能缓存旧的
@@ -1421,7 +1425,34 @@ export const useTokenStore = defineStore("tokens", () => {
         if (retryCount === 0) {
           return Promise.reject(new Error(`WebSocket未连接 [${tokenId}]`));
         }
-        // 限流恢复中连接正在重建：等下一轮再试
+        // 限流恢复中连接正在重建：等下一轮再试。
+        // 🔴 此路径原先没有 15 分钟上限（cap 只存在于下方 catch 里）——限流等待期间
+        //    连接一旦死亡，每轮只在 status 检查处 continue，永远到不了 cap，
+        //    形成「无限静默循环」（2026-10-04 蟠桃 19 分钟零日志事故的根因）。
+        //    现与 catch 路径共用同一截止时刻，并把状态持续通报到限流弹窗。
+        if (
+          rateLimitStartedAt &&
+          Date.now() - rateLimitStartedAt >= RATE_LIMIT_MAX_WAIT_MS
+        ) {
+          clearRateLimitPause();
+          wsLogger.error(
+            `🚦 [限流] ${cmd} [${tokenId}] 限流恢复等待超过 15 分钟且连接未恢复，强制放弃该命令`,
+          );
+          throw rateLimitTimeoutError();
+        }
+        if (Date.now() - (lastDeadConnNotifyAt ?? 0) >= 60_000) {
+          lastDeadConnNotifyAt = Date.now();
+          notifyRateLimit({
+            tokenId,
+            tokenName: gameTokens.value.find((t) => t.id === tokenId)?.name,
+            cmd,
+            retryCount,
+            code: "conn-lost",
+          });
+          wsLogger.warn(
+            `🚦 [限流] ${cmd} [${tokenId}] 限流恢复等待中连接已断开，持续等待重建（已等 ${Math.round((Date.now() - rateLimitStartedAt) / 1000)}s / 上限 15min）`,
+          );
+        }
         const reason = await waitNextRateLimitRetry(RATE_LIMIT_RETRY_DELAY_MS);
         if (reason === "abort") throw rateLimitAbortError();
         continue;

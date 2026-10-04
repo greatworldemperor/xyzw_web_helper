@@ -134,6 +134,8 @@ export const transformToken = async (arrayBuffer: ArrayBuffer) => {
           referrerPolicy: "no-referrer",
         },
         responseType: "arraybuffer",
+        // 🔴 无 timeout 的 axios 在服务端悬挂时会无限等待（建连链路全部静默卡死）
+        timeout: 15000,
       },
     );
     const msg = g_utils.parse(res.data);

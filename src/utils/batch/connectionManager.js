@@ -120,6 +120,11 @@ export function createConnectionManager({ tokenStore, batchSettings, addLog }) {
     // 连接成功，槽位保持占用，直到任务完成后手动释放
 
     // Initialize Game Data (Critical for Battle Version and Session)
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `连接成功，初始化会话数据（role_getroleinfo → fight_startlevel）……若长时间停留在此条 = 命中服务器限流恢复循环，请看限流弹窗`,
+      type: "info",
+    });
     try {
       // Fetch Role Info first (Standard flow)
       await tokenStore.sendMessageWithPromise(
