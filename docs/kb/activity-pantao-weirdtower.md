@@ -153,3 +153,31 @@
 5. `legionmatch_rolesignup` ≠ 盐场/蟠桃报名。
 6. 怪异塔 `claimlegionprivilege` **顶层 `legionPrivilege` ≠ 本次结果**（是已解锁全量档位），自动领取循环必须看 `body.evoTower.legionPrivilege`。
 7. 怪异塔 `claimlegionprivilege` **顶层 `legionPrivilege` 领取前为空、领取后给全量** ⇒ **不能**用它做「已解锁 vs 已领取」的增量判断（会第一次就误判领完）。判据只能用「发空body 试探 + 看嵌套字段」。
+
+## 官方成功战斗基准（261004 战场，2026-10-04 实测）
+
+来源：模拟器 HttpCanary 抓包 `captures_keep/pantao_261004/`（wss1/2/3_partial=主连接+首战场连接，wss5_partial=重连后战场连接）。
+⚠️ 排时间线的坑：**HttpCanary 文件名时间戳 = 手动保存时刻（晚 ~36min），帧内 `time` 字段才是真实收发时刻**。
+解码器：`local-data/pantao/_decode_261004.mjs`（全量解码 + 关键帧 + 导出 `_decoded_full.txt` / `_decoded_wss5.txt`）。
+
+### 官方时间线（帧内 time 还原）
+
+| 时刻 | 动作 | 备注 |
+|---|---|---|
+| 19:55:15 | `legion_getinfo/getpayloadtask/getpayloadbf` | 与工具 probe 流同构 |
+| 19:55:23 | `payload_enterbf`（bfId 261004:12982，ready 期进场） | |
+| **19:56:11** | 双连接 `_sys/error conn timeout` 断线 | **官方也断线重连** |
+| 19:57:17 | 新主连接 `fight_startlevel`（Resp `battleData.version=240518`）+ hall/legion/activity | |
+| 19:57:32 | 第二战场连接 `payload_enterbf`（同 bfId 重进） | |
+| 19:58:47 | `Payload_EnterBfResp` ×3（战场快照：legions/roles/tileData） | |
+| 20:00:00 | `Payload_StateChangeNotify {state:"started"}` ×2 | 开打信号 |
+| 20:00:01 | `hero_calcpowerbyteam` ×2（第二次带 `petUId:"247-KyX"`）+ `presetteam_getinfo` | 登场前算战力 |
+| **20:00:14** | **`Payload_SetBattleTeamResp`：130301444（本号）`state:idle` + petUId 247-KyX**（同秒 132025603/139073239 也 idle）| **登场确认 = 开打后 ~14s** |
+| 20:00:20+ | `Payload_StartMarchResp`（marchId 逐格）→ `Payload_EndMarchNotify`（每格一帧）→ 上船（`carMap`）→ `Payload_CarMoveNotify` | 行军→登船流 |
+
+### 对工具的校验结论
+
+- 工具流程（probe → enterbf → setbattleteam → planTurn 行军/上船）与官方序列**一致**，petUId 透传 ✓。
+- 官方 ready 期就 enterbf 挂着等开打；工具可参考：进场不必等开打。
+- 蟠桃战场广播依旧**零平台/版本字段**；官方客户端全程 0 次 3000070。
+- 缺帧：官方自己的 `payload_setbattleteam` SEND 帧（手存遗漏，Resp 已足够）；登录首帧（需冷启动重抓）。
