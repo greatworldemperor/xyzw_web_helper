@@ -13,6 +13,7 @@ import { CommandRegistry, XyzwLegionWarWebSocketClient } from "./xyzwLegionWarWe
 import { describeServerError } from "./protocolError.js";
 import {
   applyPantaoFrame,
+  buildMarchPath,
   createPantaoState,
   getMyMarch,
   getMyRole,
@@ -293,7 +294,16 @@ export class PantaoSession {
    * @param {object} [bodyOverride] 抓到真实帧后直接覆写请求体
    */
   async startMarch(target = {}, bodyOverride = null, timeoutMs = 8000) {
-    const body = bodyOverride || { bfId: this.bfId, ...target };
+    let body = bodyOverride || { bfId: this.bfId, ...target };
+    // 🔴 10-05 官方实抓：startmarch 必须带 path（含起点的逐格路由，末格=船位）。
+    //    之前推断体只有 {bfId, carId}，path 由 BFS 自动补齐（我的位置 → 船的当前位置）。
+    //    寻路失败（拿不到位置）时退回无 path 发送，让服务端给答案。
+    if (!bodyOverride && body.carId && !Array.isArray(body.path)) {
+      const path = buildMarchPath(this.state, Number(body.carId));
+      if (Array.isArray(path) && path.length) {
+        body = { ...body, path };
+      }
+    }
     this.client.send("payload_startmarch", body);
     const ok = await this.waitForState((s) => !!getMyMarch(s), timeoutMs);
     return { ok, march: getMyMarch(this.state), error: ok ? "" : this.lastErrorText() };

@@ -192,11 +192,12 @@ clientVersion ≈ "2.21.2-fa918e1997301834-wx"
 
 ## 8. 待逆向 / 待确认
 
-- ⚠️ **`payload_startmarch` 请求体**（send 侧一次都没抓到，wssa* + batch* 共 460+ 帧里只有 Resp/Notify）
-  - 响应证明「目标是一艘船」：`Payload_StartMarchResp.body.tileDataMap.tileData["22_10"].marches[214] = { id, codeId, legionId, group, from, to, startTime, endTime, carId:15, path[16] }`
-  - UI 行为是「选中船 → 点移动」⇒ 推测请求体 `{ bfId, carId }`（备选 `{bfId, x, y}`）
-  - 代码里已做成可覆写：`PantaoSession.startMarch(target, bodyOverride)`
-- ⚠️ **攻击动作**：到底有没有 `payload_startbattle` 这个 send？
+- ✅ **`payload_startmarch` 请求体已实抓**（10-04 官方 wss_pantao_start，13 次 send 全量）：
+  `{ bfId, carId, path[] }` —— **path 为含起点的逐格路由**（`path[0]`=我所在格、末格=船位），每格 `{x,y}`。
+  官方示例（20:00:18 seq=11）：`{"bfId":"261004:12982","carId":1,"path":[{20,21},{20,20},{21,19},{21,18},{21,17},{21,16},{20,16},{20,15}]}`
+  ⇒ 此前推测 `{bfId, carId}` **少了 path**；工具已修复：`PantaoSession.startMarch` 自动 BFS 补 path
+  （`pantaoState.buildMarchPath`，格面近似全通航最短路，测试 `test/pantaoMarchPath.test.js` 7 例）。
+- ⚠️ **攻击动作**：到底有没有 `payload_startbattle` 这个 send？（官方 10-04 流 19:57~20:21 窗口内**未出现攻击 send**——31 帧业务命令里只有布阵/行军/查阵容；剩余窗口在 HttpCanary 缓存，若下次实战需要攻击再补抓）
   - `Payload_StartBattleResp` 抓到的帧是 `seq:12, ack:0`（**不像对请求的应答**，更像广播）
   - 但盐场经验是「war_* 响应 ack 常为 0，不能据此判定是广播」→ 结论未定
   - 若实测是「位置重叠自动开战」，则「攻击」应实现为「行军到敌人所在格」，70% 阈值就变成「选船/选格子」的判据

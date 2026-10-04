@@ -152,6 +152,59 @@ export function getMyMarch(state) {
   return null;
 }
 
+/** 指定船的当前坐标（bf.carMap[].position，CarMoveNotify 会更新） */
+export function getCarPosition(state, carId) {
+  const bf = state?.bf;
+  const car = isObj(bf?.carMap) ? bf.carMap[String(carId)] : null;
+  if (isObj(car?.position)) {
+    return { x: Number(car.position.x), y: Number(car.position.y) };
+  }
+  return null;
+}
+
+/**
+ * BFS 寻路：我的位置 → 船的当前坐标（含起终点）。
+ * 🔴 10-05 官方实抓（wss_pantao_start）：`payload_startmarch` 请求体 = {bfId, carId, path[]}，
+ *    path 为**含起点的逐格路由**（首元素=当前所在格，末元素=船所在格）——不带 path 服务端
+ *    是否自动寻路未知，官方每帧都带，工具必须带上。
+ * 格面近似全通航（官方路径偶有绕行，先给最短路；若服务端校验障碍再补障碍表）。
+ */
+export function buildMarchPath(state, carId, { max = 36 } = {}) {
+  const from = getMyPosition(state);
+  const to = getCarPosition(state, carId);
+  if (!from || !to) return null;
+  const key = (x, y) => `${x}_${y}`;
+  if (from.x === to.x && from.y === to.y) return [{ x: to.x, y: to.y }];
+  const prev = new Map([[key(from.x, from.y), null]]);
+  const queue = [[from.x, from.y]];
+  while (queue.length) {
+    const [x, y] = queue.shift();
+    if (x === to.x && y === to.y) break;
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ]) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || ny < 0 || nx > max || ny > max) continue;
+      const k = key(nx, ny);
+      if (prev.has(k)) continue;
+      prev.set(k, [x, y]);
+      queue.push([nx, ny]);
+    }
+  }
+  if (!prev.has(key(to.x, to.y))) return null;
+  const path = [];
+  let cur = [to.x, to.y];
+  while (cur) {
+    path.unshift({ x: cur[0], y: cur[1] });
+    cur = prev.get(key(cur[0], cur[1]));
+  }
+  return path;
+}
+
 /** 给 UI/日志用的战场摘要 */
 export function summarizePantao(state) {
   const bf = state?.bf;
