@@ -90,6 +90,15 @@ createWebSocketConnection(tokenId)
 - ✅ **账号级 bin 完全可用**：`gh_repo/mobile.bin`（账号级，DID `9fd311e9…`）+ 注入 `serverId` → 9767 冒烟通过、
   自动领奖 77/77 成功。所谓"角色级 bin"本质就是「账号 info + serverId」（实测四个不同服的 bin `info` 完全相同）。
   ⚠️ 但 `local-data/login_bin/mobile.bin`（DID `e7d3f629…`）是**另一环境**的 bin，不可混用比较。
+- 🔴→✅ **限流恢复无限静默循环**（2026-10-04 蟠桃事故，`63fd7ad9` 修复）：`sendMessageWithPromise` 的
+  `while(true)` 重试结构里，"限流等待中连接死亡"路径（`status!=='connected'` → `waitNextRateLimitRetry` → `continue`）
+  **到不了 catch 里的 15 分钟 cap** ⇒ 无限静默循环——页面日志零输出、执行日志只见"正在连接"后永久卡死
+  （10-04 蟠桃实战：探测阶段 108 角色 ≈300 条命令打满 per-IP 限流 → 开打后首批首条 `role_getroleinfo` 吃
+  400340 → 进入重试 → 连接死亡 → 19 分钟零日志）。修复：该路径与 catch 共用同一 15 分钟截止时刻 +
+  60s 节流通报限流弹窗 + console 取证日志；`ensureConnection` 建连成功后新增初始化进度日志；
+  authuser 刷新 axios/fetch 补 15s 超时。**教训：重试循环的每一跳都必须可达终止条件。**
+- 📋 排障备忘：批量页"正在连接后长时间无日志" ⇒ ①看限流弹窗在不在；②console 里 `🚦 [限流]` 日志；
+  ③连接诊断开关（tokenStore `connectionDiagnosticsEnabled`）可在 token 管理页打开，含 refresh.req/refresh.token/ws.connect 埋点。
 
 ## 10. bin → WSS 实测链路（skill `xyzw-bin-test`）
 
