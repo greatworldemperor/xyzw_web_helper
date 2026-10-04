@@ -181,3 +181,11 @@
 - 官方 ready 期就 enterbf 挂着等开打；工具可参考：进场不必等开打。
 - 蟠桃战场广播依旧**零平台/版本字段**；官方客户端全程 0 次 3000070。
 - 缺帧：官方自己的 `payload_setbattleteam` SEND 帧（手存遗漏，Resp 已足够）；登录首帧（需冷启动重抓）。
+
+### ✅ 官方 `payload_setbattleteam` SEND 帧实抓（10-04 补全，wss_pantao_start/）
+
+20:00:13 seq=10（开打后 13s，Resp 前 1s）：
+```json
+{"bfId":"261004:12982","battleTeam":{"0":108,"1":120,"2":116,"3":112,"4":109},"lordWeaponId":8,"petUId":"247-KyX"}
+```
+→ 1 秒后（20:00:14）Resp：本号 `state:idle` + petUId 回读。**与工具 `PantaoSession.setBattleTeam` 的命令结构逐字段一致**（{bfId, battleTeam, lordWeaponId, petUId}）—— 命令层零差异，工具唯一曾输在口径版本与静默 bug（均已修）。时序：开打 20:00:00 → 客户端算战力+查预设（~13s）→ 20:00:13 发布阵 → 20:00:14 确认 idle → 20:00:15 GenCarNotify（船生成）→ 20:00:20 startmarch（2s/格）。
