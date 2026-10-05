@@ -119,3 +119,14 @@
 - 脚本（随 git 走，双机同步）：`tools/saltfield/` —— `saltfield-offline-replay-test.mjs`（离线复刻回归，数据目录自动探测+可传参）、`saltfield-runtime-analyze.mjs`（runtime jsonl 解码+按 seq 配对）、`tls-probe.mjs`（GitHub TLS 探针，push 前筛可用 IP）。
 - 抓包（**不进 git**：12MB 游戏数据含他人玩家信息）：仓库同级 `../captures_keep/saltfield_260926/`（成功基准 + 失败实录 + README，**清理豁免区**）。
 - 复刻脚本缺省自动探测 `local-data/saltfield/260926_data/` → `../captures_keep/saltfield_260926/`，也可显式传数据目录；下次盐场实战录制的新抓包放入 `captures_keep/` 同级新目录，即为新成功基准。
+
+### runtime 身份策略定稿（10-06 深夜，master 二次定性）
+
+`/h5web/` = 已封存死通道（1.90.3 = 临终版，公告期后永久停更）。**死通道临终版 ≠ 官方期待值** ——
+服务器新鲜度门对着活通道现行串（2.48.2+，周更）查，1.90.3-h5web 照样是"陈旧身份"。
+⇒ runtime 首帧身份策略：**first-frame-spoof 默认启用**（无 localStorage 配置即生效），
+DEFAULT_RULES = `platformExt:mix + clientVersion:2.48.2-cbe6e57c…`（= 工具同款身份，真实官方串）；
+显式 `enabled:false` 可关。改写只动 WS 首帧字节，不碰 game-defines ⇒ **零热更风险**。
+⇒ 每周 SOP（runtime+工具 共 2 行）：微信包解出本周串 → 改 `clientVersion.js` + `first-frame-spoof.js` 各一行。
+⇒ 周六盐场 PVP = 判决实验：镜像页（spoof 默认开）以 mix/2.48.2 真串打 PVP——
+过 ⇒ 3000070 版本门全面突破（runtime+工具双路通）；拒 ⇒ 门含设备/会话指纹（下一战场）。
