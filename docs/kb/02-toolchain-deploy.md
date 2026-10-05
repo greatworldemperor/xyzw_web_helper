@@ -95,3 +95,39 @@ bash local-data/_fetch_branch.sh <branch>  # 看分叉：left/right 计数 + 双
 - `pnpm exec tsc --noEmit -p tsconfig.app.json`：14 文件 139 错（历史债，非本次引入）。
 - `pnpm exec eslint`：当前安装**找不到 eslint 命令** ⇒ lint 无法执行。
 - `git diff --check` 在 Windows 上可能因 CRLF 噪音失败；`git diff --check -- ':!*.md'` 更clean。
+
+## 7. [h5web-proxy] 官方 H5 实时反代（三路线，2026-10-06）
+
+**目的**：官方现行 H5（`https://xxz-xyzw-res.hortorgames.com/h5web/`）反代到本站 `/h5web-proxy/`，
+HTML 注入本地镜像同款辅助脚本（同源=注入有效）→ **版本永远自动跟随官方周更**，
+消灭「每周改 game-defines 两行」的 runtime 校准 SOP。本地 `/game/` 镜像保留为回退。
+
+**注入语义（三端共用，唯一权威 = `scripts/h5web-inject.mjs`）**：
+- 唯一锚点 = 完整标签 `<script src="main.2a00e.js" charset="utf-8"></script>`，单次替换注入：
+  `[platform-spoof][first-frame-spoof][boot-shim] main标签 [runtime-tweaks][xh][diagnose][push-level-research-bridge]`
+- ⚠️ **必须单锚点单规则**：nginx sub_filter 多条规则在**原始流**上匹配，锚点重叠时后一条被抑制
+  （10-06 生产踩坑：A 锚点吞了 `main.2a00e.js` 文本导致 B 永不生效；JS 顺序 replace 是链式的，无此问题）。
+- boot-shim：`Object.defineProperty(window,'boot',…)` 包装 setter/getter，官方 boot 调用前等
+  `__pushResearchSh1Ready`（桥 sha1 就绪），复刻本地镜像内联 boot 的等待语义。
+- 注入脚本从 `/game/*` 加载（nginx=本机镜像 / vite=public/game / CF Pages=env.ASSETS 的 dist/game）。
+
+**三条路线**：
+1. **nginx（生产，已上线）**：`deploy/nginx-xyzw.conf` → `/etc/nginx/conf.d/xyzw.conf`（备份在服务器同名 .bak.<ts>）。
+   `proxy_cache_path /var/cache/nginx/h5web` + `map $upstream_http_content_type $h5web_cache_ctl`
+   （HTML→no-cache，其余→immutable 一年）都在 conf.d（http 上下文）里，无需动 nginx.conf。
+   缓存目录需预建：`mkdir -p /var/cache/nginx/h5web`（否则 nginx -t emerg）。
+2. **Cloudflare Worker（随下次 push 生效）**：`worker.js` proxies 表新增 `/h5web-proxy` 表项
+   （`pathPrefix:'/h5web'` + `injectH5Web:true` + `Accept-Encoding: identity`），HTML 注入 /
+   非 HTML 走 `caches.default` 边缘缓存；`/game/*` 由 `env.ASSETS`（dist/game）同源服务。
+3. **vite dev（本地测试）**：`vite.config.js` 的 `h5webProxyPlugin()` 中间件，dev server 起 `/h5web-proxy/*`。
+
+**GamePlayer**：右上角「镜像 / 官方反代」切换（localStorage `gameplayer:source`），反代=`/h5web-proxy/index.html`。
+
+**限流红线**：只代理静态资源。游戏 WS（wss://xxz-xyzw-new…/agent）与 authuser 登录**浏览器直连官方**
+（WS 无同源限制，每用户出口 IP=自己）—— 全员协议流量过服务器 = 单 IP 秒限流 + 封号风险，绝不反代协议。
+静态资源加缓存后官方 CDN 每文件只见 1 次请求（比每用户直连更省）。
+
+**验证清单**（三端通用）：`/h5web-proxy/` 200 且 HTML 含 6 个 `/game/*` 注入 + boot-shim；
+顺序 A(spoof) < main < B(bridge) < 内联 boot(var debug)；settings/game-defines/main 均 200；
+HTML `Cache-Control: no-cache`、资源 `immutable`；`X-H5Web-Inject: on`（vite/worker）/`X-H5Web-Proxy: 1`（nginx）。
+**锚点自检**：官方 bundle 若改结构（main hash 变化），三端锚点同步更新（grep `main.2a00e.js`）。

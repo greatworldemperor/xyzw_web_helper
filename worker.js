@@ -4,6 +4,47 @@ const SMS_REQUEST_MAX_BYTES = 4096;
 const COMB_LOGIN_REQUEST_MAX_BYTES = 16384;
 const SMS_RESPONSE_MAX_BYTES = 65536;
 
+// ============================================================
+// [h5web-proxy] 官方 H5 实时反代 + 桥注入（路线②）
+// 语义与 scripts/h5web-inject.mjs 保持同步（worker 无法 import，此处内联副本）。
+// 只代理静态页面/资源；游戏 WS 与 authuser 由浏览器直连官方（每用户出口 IP=自己）。
+// 注入脚本 /game/* 由本 Worker 的 env.ASSETS 服务（dist/game/*，同源）。
+// ============================================================
+const H5WEB_UPSTREAM = 'https://xxz-xyzw-res.hortorgames.com';
+const H5WEB_PROXY_PREFIX = '/h5web-proxy';
+
+const H5WEB_SCRIPT_A = [
+  '<script src="/game/platform-spoof.js?v=20260916.2" charset="utf-8"></script>',
+  '<script src="/game/first-frame-spoof.js?v=20260921.1" charset="utf-8"></script>',
+  '<script>/* [h5web-proxy] boot-shim: official boot waits for bridge sha1 ready (same as local mirror) */' +
+    '(function(){var _b=null;try{Object.defineProperty(window,"boot",{configurable:true,' +
+    'get:function(){if(!_b)return void 0;return function(){var a=arguments,s=this;' +
+    'Promise.resolve(window.__pushResearchSh1Ready||!0).then(function(){_b.apply(s,a)})}},' +
+    'set:function(v){_b=v}})}catch(e){}})();</script>',
+].join('');
+const H5WEB_SCRIPT_B = [
+  '<script src="/game/runtime-tweaks.js?v=20261002.3" charset="utf-8"></script>',
+  '<script src="/game/xh.js" charset="utf-8"></script>',
+  '<script src="/game/diagnose_require.js" charset="utf-8"></script>',
+  '<script src="/game/push-level-research-bridge.js?v=20260907.13" charset="utf-8"></script>',
+].join('');
+// 单锚点 = 完整 main 标签（与 scripts/h5web-inject.mjs 保持同步；nginx sub_filter
+// 多规则锚点重叠会被抑制，故三端统一单锚点单次替换）
+const H5WEB_ANCHOR_MAIN_TAG = '<script src="main.2a00e.js" charset="utf-8"></script>';
+
+function applyH5WebInjection(html) {
+  if (typeof html !== 'string' || !html.includes(H5WEB_ANCHOR_MAIN_TAG)) return html;
+  return html.replace(H5WEB_ANCHOR_MAIN_TAG, H5WEB_SCRIPT_A + H5WEB_ANCHOR_MAIN_TAG + H5WEB_SCRIPT_B);
+}
+
+function mapH5WebUpstreamPath(pathname) {
+  let rest = pathname.startsWith(H5WEB_PROXY_PREFIX)
+    ? pathname.slice(H5WEB_PROXY_PREFIX.length)
+    : pathname;
+  if (!rest || rest === '/') rest = '/index.html';
+  return '/h5web' + rest;
+}
+
 function getRequestOrigin(request) {
   const origin = request.headers.get('Origin');
   try {
@@ -253,6 +294,17 @@ export default {
           'Origin': 'https://open.weixin.qq.com',
           'Referer': 'https://open.weixin.qq.com/'
         }
+      },
+      {
+        // [h5web-proxy] 官方 H5 实时反代（静态资源；HTML 注入桥脚本；不可变资源边缘缓存）
+        prefix: H5WEB_PROXY_PREFIX,
+        target: H5WEB_UPSTREAM,
+        pathPrefix: '/h5web',
+        injectH5Web: true,
+        headers: {
+          'Accept-Encoding': 'identity',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        }
       }
     ].sort((a, b) => b.prefix.length - a.prefix.length); // Sort by length descending to match longest prefix first
 
@@ -260,7 +312,7 @@ export default {
     const proxy = proxies.find(p => url.pathname.startsWith(p.prefix));
 
     if (proxy) {
-      const upstreamPath = url.pathname.replace(proxy.prefix, '') || '/';
+      const upstreamPath = (proxy.pathPrefix || '') + (url.pathname.replace(proxy.prefix, '') || '/');
       if (proxy.allowedPath && upstreamPath !== proxy.allowedPath) {
         return new Response('Not Found', { status: 404, headers: corsHeaders });
       }
@@ -306,6 +358,31 @@ export default {
 
       try {
         const response = await fetch(newRequest);
+
+        // [h5web-proxy] HTML 注入桥脚本；不可变静态资源走边缘缓存
+        if (proxy.injectH5Web) {
+          const contentType = response.headers.get('content-type') || '';
+          if (/text\/html/i.test(contentType)) {
+            const html = applyH5WebInjection(await response.text());
+            return new Response(html, {
+              status: response.status,
+              headers: {
+                'Content-Type': contentType,
+                'Cache-Control': 'no-cache',
+                'X-H5Web-Inject': html.includes('push-level-research-bridge') ? 'on' : 'anchor-miss',
+              },
+            });
+          }
+          if (request.method === 'GET') {
+            const cache = caches.default;
+            const hit = await cache.match(request);
+            if (hit) return hit;
+            const cached = new Response(response.body, response);
+            cached.headers.set('Cache-Control', 'public, max-age=86400');
+            ctx.waitUntil(cache.put(request, cached.clone()));
+            return cached;
+          }
+        }
 
         if (
           proxy.prefix === '/api/hortor-ucenter' ||

@@ -3,10 +3,65 @@ import vue from "@vitejs/plugin-vue";
 import path from "path";
   import fs from "fs";
 import { fileURLToPath } from "url";
+import {
+  H5WEB_UPSTREAM,
+  H5WEB_PROXY_PREFIX,
+  applyH5WebInjection,
+  mapProxyPathToUpstream,
+} from "./scripts/h5web-inject.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const saltFieldScriptSource = path.resolve(__dirname, "scripts/自动盐场.js");
 const saltFieldScriptPath = "/game/salt-field-auto.js";
+
+/**
+ * [h5web-proxy] 路线③：vite dev 本地测试代理。
+ * 把官方现行 H5 反代到 /h5web-proxy/*（HTML 注入辅助脚本，其余原样透传）。
+ * 与 nginx（路线①）/ Cloudflare Worker（路线②）共用 scripts/h5web-inject.mjs 的注入语义。
+ * 游戏 WS / authuser 不经过这里（浏览器直连官方，WS 无同源限制）。
+ */
+function h5webProxyPlugin() {
+  async function handle(req, res) {
+    const pathname = String(req.url || "").split("?", 1)[0];
+    const upstreamUrl = H5WEB_UPSTREAM + mapProxyPathToUpstream(pathname);
+    try {
+      const upstream = await fetch(upstreamUrl, {
+        headers: { "accept-encoding": "identity" }, // 便于对 HTML 做注入
+        redirect: "follow",
+      });
+      const contentType = upstream.headers.get("content-type") || "";
+      const isHtml = /text\/html/i.test(contentType);
+      res.statusCode = upstream.status;
+      res.setHeader("Content-Type", contentType || "application/octet-stream");
+      if (!isHtml) {
+        res.end(new Uint8Array(await upstream.arrayBuffer()));
+        return;
+      }
+      const html = await upstream.text();
+      const injected = applyH5WebInjection(html);
+      res.setHeader("X-H5Web-Inject", injected !== html ? "on" : "anchor-miss");
+      res.end(injected);
+    } catch (e) {
+      res.statusCode = 502;
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.end(`[h5web-proxy] upstream error: ${e?.message || e}`);
+    }
+  }
+
+  return {
+    name: "h5web-proxy",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const pathname = String(req.url || "").split("?", 1)[0];
+        if (!pathname.startsWith(H5WEB_PROXY_PREFIX)) {
+          next();
+          return;
+        }
+        handle(req, res).catch(next);
+      });
+    },
+  };
+}
 
 function saltFieldRuntimePlugin() {
   return {
@@ -130,6 +185,7 @@ export default defineConfig(async () => {
     componentsPlugin,
     vueI18nPlugin,
     saltFieldRuntimePlugin(),
+    h5webProxyPlugin(),
     {
       name: "copy-worker",
       closeBundle() {
