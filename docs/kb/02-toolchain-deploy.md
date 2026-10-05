@@ -155,3 +155,12 @@ sh1 兜底改为 `location =`（精确匹配，优先级最高）。
 无关闭按钮（死端设计），登录流关闭 → 反代页卡死在公告。镜像（xyzw_mix + 1.90.3-h5web）登录实测通过
 ⇒ 同代码不同通道行为不同。修复：注入 A 的**第一个脚本** `window.GAME_ID="xyzw_mix"`（game-defines 之后、
 main 之前执行，gt===globalThis 故覆盖生效），版本串保持官方现行 —— 即镜像已验证的组合。
+
+### 7.4 HORTOR SDK 必须剥离（10-06 生产四测，GAME_ID 覆盖无效的真正原因）
+
+镜像 index.html **根本没有 HORTOR SDK**（sdk_agent/apm/thinkingdata/内联初始化全部被原作者剥掉）——
+游戏对 SDK 缺失有守卫，走 token 注入路径（镜像登录实测通过）。反代页保留 SDK 时，SDK 在 **head 阶段**
+（早于 game-defines/注入点）完成初始化并驱动官方**退役的原生登录流** → 公告死端弹窗（GAME_ID 覆盖无效）。
+修复：4 条单行 sub_filter 剥离 SDK（sdk_agent→注释、apm/thinkingdata→data URI、内联初始化首行→注释），
+剥离后内联因 HORTOR_AGENT 未定义自毁（一条 console TypeError，无害）——`__HORTOR_SDK__===undefined`
+与镜像完全一致。**教训：反代官方页时，先 diff 镜像版的 head，镜像剥了什么就剥什么。**

@@ -48,6 +48,32 @@ const SCRIPT_B = [
 ].join("");
 
 /**
+ * SDK 剥离（镜像形态对齐）：镜像 index.html 根本没有 HORTOR SDK（sdk_agent/apm/thinkingdata 全无），
+ * 游戏对此有守卫、走 token 注入路径（镜像登录实测通过）。反代页若保留 SDK，会走官方退役的
+ * 原生登录流（公告死端弹窗，GAME_ID 覆盖无效——SDK 在 head 更早初始化）→ 必须剥离。
+ * 剥离后 head 内联初始化脚本会因 HORTOR_AGENT 未定义自我中止（一条 console TypeError，无害，
+ * 与镜像形态完全一致：__HORTOR_SDK__ === undefined）。
+ */
+const SDK_STRIP_RULES = [
+  [
+    `<script src="https://cdn.hortor.net/sdk/sdk_agent.min.js"></script>`,
+    `<script>/* [h5web-proxy] HORTOR SDK stripped (mirror parity) */</script>`,
+  ],
+  [
+    `src="https://cdn.hortor.net/sdk/lib/web-apm-iife.bundle.js"`,
+    `src="data:text/javascript,//"`,
+  ],
+  [
+    `src="https://cdn.hortor.net/sdk/lib/thinkingdata.umd.min.js"`,
+    `src="data:text/javascript,//"`,
+  ],
+  [
+    `window.HORTOR_AGENT.tga = thinkingdata;`,
+    `/* [h5web-proxy] HORTOR SDK stripped (mirror parity) */`,
+  ],
+];
+
+/**
  * 唯一锚点 = 完整 main 标签（官方 index.html 中精确出现一次）。
  * ⚠️ 必须单锚点单次替换：nginx sub_filter 的多条规则在原始流上匹配，
  *    两条锚点重叠时后一条会被抑制（10-06 生产踩坑）——JS 顺序 replace 无此问题，
@@ -64,7 +90,11 @@ export const H5WEB_ANCHOR_EXPECT = { ANCHOR_MAIN_TAG };
  */
 export function applyH5WebInjection(html) {
   if (typeof html !== "string" || !html.includes(ANCHOR_MAIN_TAG)) return html;
-  return html.replace(
+  let out = html;
+  for (const [find, replace] of SDK_STRIP_RULES) {
+    out = out.replace(find, replace);
+  }
+  return out.replace(
     ANCHOR_MAIN_TAG,
     SCRIPT_A + ANCHOR_MAIN_TAG + SCRIPT_B,
   );

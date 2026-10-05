@@ -36,9 +36,26 @@ const H5WEB_SCRIPT_B = [
 // 多规则锚点重叠会被抑制，故三端统一单锚点单次替换）
 const H5WEB_ANCHOR_MAIN_TAG = '<script src="main.2a00e.js" charset="utf-8"></script>';
 
+// SDK 剥离（与 scripts/h5web-inject.mjs 同步）：镜像无 SDK、游戏有守卫走 token 路径（已验证）；
+// 反代页保留 SDK 会走官方退役原生登录流（公告死端）。剥离后 head 内联自毁（一条 TypeError，无害）。
+const H5WEB_SDK_STRIP_RULES = [
+  ['<script src="https://cdn.hortor.net/sdk/sdk_agent.min.js"></script>',
+   '<script>/* [h5web-proxy] HORTOR SDK stripped (mirror parity) */</script>'],
+  ['src="https://cdn.hortor.net/sdk/lib/web-apm-iife.bundle.js"',
+   'src="data:text/javascript,//"'],
+  ['src="https://cdn.hortor.net/sdk/lib/thinkingdata.umd.min.js"',
+   'src="data:text/javascript,//"'],
+  ['window.HORTOR_AGENT.tga = thinkingdata;',
+   '/* [h5web-proxy] HORTOR SDK stripped (mirror parity) */'],
+];
+
 function applyH5WebInjection(html) {
   if (typeof html !== 'string' || !html.includes(H5WEB_ANCHOR_MAIN_TAG)) return html;
-  return html.replace(H5WEB_ANCHOR_MAIN_TAG, H5WEB_SCRIPT_A + H5WEB_ANCHOR_MAIN_TAG + H5WEB_SCRIPT_B);
+  let out = html;
+  for (const [find, replace] of H5WEB_SDK_STRIP_RULES) {
+    out = out.replace(find, replace);
+  }
+  return out.replace(H5WEB_ANCHOR_MAIN_TAG, H5WEB_SCRIPT_A + H5WEB_ANCHOR_MAIN_TAG + H5WEB_SCRIPT_B);
 }
 
 function mapH5WebUpstreamPath(pathname) {
