@@ -27,6 +27,9 @@ export const H5WEB_UPSTREAM_BASE = "/h5web/";
 export const H5WEB_PROXY_PREFIX = "/h5web-proxy";
 
 const SCRIPT_A = [
+  // 通道覆盖：官方 /h5web/ 现行 GAME_ID=xyzwdouyinh5（抖音H5 退役通道——公告强制引导迁移、无关闭按钮，
+  // 登录入口已关）；改用镜像已验证可登录的 xyzw_mix（master 10-06 镜像登录实测通过），版本串保持官方现行。
+  `<script>window.GAME_ID="xyzw_mix";</script>`,
   `<script src="/game/platform-spoof.js?v=20260916.2" charset="utf-8"></script>`,
   `<script src="/game/first-frame-spoof.js?v=20260921.1" charset="utf-8"></script>`,
   `<script>/* [h5web-proxy] boot-shim: official boot waits for bridge sha1 ready (same as local mirror) */` +

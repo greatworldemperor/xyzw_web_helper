@@ -14,6 +14,9 @@ const H5WEB_UPSTREAM = 'https://xxz-xyzw-res.hortorgames.com';
 const H5WEB_PROXY_PREFIX = '/h5web-proxy';
 
 const H5WEB_SCRIPT_A = [
+  // 通道覆盖（与 scripts/h5web-inject.mjs 同步）：现行 /h5web/=xyzwdouyinh5（退役通道，登录死端），
+  // 用镜像已验证可登录的 xyzw_mix；版本串保持官方现行。
+  '<script>window.GAME_ID="xyzw_mix";</script>',
   '<script src="/game/platform-spoof.js?v=20260916.2" charset="utf-8"></script>',
   '<script src="/game/first-frame-spoof.js?v=20260921.1" charset="utf-8"></script>',
   '<script>/* [h5web-proxy] boot-shim: official boot waits for bridge sha1 ready (same as local mirror) */' +

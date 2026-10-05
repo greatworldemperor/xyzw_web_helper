@@ -148,3 +148,10 @@ push-level-research-bridge 以**相对路径**加载 sha1 库（`sh1.js` / `sh1.
 游戏黑屏（引擎已 boot、资源加载失败）。修复：反代主体 `location ^~ /h5web-proxy/`（压制全部正则），
 sh1 兜底改为 `location =`（精确匹配，优先级最高）。
 **教训：给"前缀反代"选 location 时，必须审查站点已有正则 location 的后缀表。**
+
+### 7.3 通道覆盖：GAME_ID 必须用 xyzw_mix（10-06 生产三测）
+
+官方现行 `/h5web/` 的 `GAME_ID=xyzwdouyinh5`（抖音H5 通道）= **已退役登录入口**：公告强制引导迁移新客户端、
+无关闭按钮（死端设计），登录流关闭 → 反代页卡死在公告。镜像（xyzw_mix + 1.90.3-h5web）登录实测通过
+⇒ 同代码不同通道行为不同。修复：注入 A 的**第一个脚本** `window.GAME_ID="xyzw_mix"`（game-defines 之后、
+main 之前执行，gt===globalThis 故覆盖生效），版本串保持官方现行 —— 即镜像已验证的组合。
