@@ -26,7 +26,9 @@
  *     "rules": [{ "cmd": "role_getroleinfo",
  *                 "fields": { "platformExt": "mix", "clientVersion": "2.48.2-cbe6e57c59db01c2-wx" } }]
  *   }
- *   - enabled=false 或缺省 → 完全不干预。
+ *   - 🔴 缺省（无 localStorage 配置）→ **默认启用 DEFAULT_RULES**（上报活通道现行串；
+ *     2026-10-06 master 定性：死通道临终版不被服务器认可，runtime 必须报 mix/现行版本）。
+ *   - enabled=false（显式写入）→ 完全不干预。
  *   - observeOnly=true → 只记录命中的帧与字段现值，不改字节（先用来确认字段确实在帧里）。
  *   - rules[].cmd 为空串/null 表示匹配所有命令。
  *
@@ -491,6 +493,12 @@
   }
 
   var cfg = readConfig();
+  if (!cfg && !localStorage.getItem(LS_KEY)) {
+    // 🔴 默认开启（2026-10-06 master 定性）：runtime 首帧必须上报活通道现行串
+    // （mix/2.48.2-cbe6e57c…，= DEFAULT_RULES）；显式写入 enabled:false 仍可关闭。
+    cfg = { enabled: true, observeOnly: false, rules: DEFAULT_RULES.slice() };
+    console.log("[frame-spoof] 默认启用（无 localStorage 配置）rules=" + JSON.stringify(cfg.rules));
+  }
   if (cfg) {
     applied.active = install(cfg);
     applied.observeOnly = cfg.observeOnly === true;

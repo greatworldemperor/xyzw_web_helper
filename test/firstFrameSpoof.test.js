@@ -192,12 +192,20 @@ test("observeOnly=true 只记录不改字节", () => {
   assert.equal(api.records[0].observed, true);
 });
 
-test("未启用（无配置 / enabled=false）时完全不干预", () => {
-  for (const config of [null, { enabled: false, rules: MIX_RULES }]) {
-    const api = loadScript({ config });
+test("无配置时默认启用（DEFAULT_RULES 生效）；显式 enabled=false 才不干预", () => {
+  // 2026-10-06 语义变更：runtime 首帧必须默认上报活通道现行串（master 定性）
+  {
+    const api = loadScript({ config: null }); // localStorage 无配置 → 默认启用
     const frame = hexToU8(REAL_FIRST_FRAME_HEX);
     Object.create(api._Proto).send(frame);
-
+    assert.equal(api.applied.active, true, "无配置 = 默认启用");
+    assert.equal(api.stats.patched >= 1 || api.stats.matched >= 1, true, "DEFAULT_RULES 参与");
+  }
+  {
+    // 显式关闭：localStorage 存在但 enabled=false → 不干预
+    const api = loadScript({ config: { enabled: false, rules: MIX_RULES } });
+    const frame = hexToU8(REAL_FIRST_FRAME_HEX);
+    Object.create(api._Proto).send(frame);
     assert.deepEqual(toBytes(api._sent[0]), toBytes(frame));
     assert.equal(api.stats.frames, 0, "未安装 hook 时不计数");
     assert.equal(api.applied.active, false);
