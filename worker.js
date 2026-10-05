@@ -46,7 +46,8 @@ const H5WEB_SDK_STRIP_RULES = [
   ['src="https://cdn.hortor.net/sdk/lib/thinkingdata.umd.min.js"',
    'src="data:text/javascript,//"'],
   ['window.HORTOR_AGENT.tga = thinkingdata;',
-   '/* [h5web-proxy] HORTOR SDK stripped (mirror parity) */'],
+   // 惰性黑洞 SDK 桩（与 scripts/h5web-inject.mjs 同步）：现行 chunk 平台加载/日志需要 SDK 存在
+   'var __h5wTga=new Proxy(function(){return __h5wTga},{get:function(){return __h5wTga},apply:function(){return __h5wTga}});window.HORTOR_AGENT={tga:__h5wTga,init:function(cb){try{cb&&cb(!0)}catch(e){}}};window.__HORTOR_SDK__=window.HORTOR_AGENT;'],
 ];
 
 function applyH5WebInjection(html) {

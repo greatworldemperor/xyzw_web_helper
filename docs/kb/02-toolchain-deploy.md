@@ -164,3 +164,12 @@ main 之前执行，gt===globalThis 故覆盖生效），版本串保持官方�
 修复：4 条单行 sub_filter 剥离 SDK（sdk_agent→注释、apm/thinkingdata→data URI、内联初始化首行→注释），
 剥离后内联因 HORTOR_AGENT 未定义自毁（一条 console TypeError，无害）——`__HORTOR_SDK__===undefined`
 与镜像完全一致。**教训：反代官方页时，先 diff 镜像版的 head，镜像剥了什么就剥什么。**
+
+### 7.5 SDK 桩：现行 chunk 需要 SDK 存在（10-06 生产五测）
+
+剥净 SDK 后卡「正在加载平台」：`Cannot read properties of undefined (reading 'tga')` at `t.tagLog` ——
+现行官方 chunk（settings.a1489 的 bundleVers 指向 index.0a88d.js 等新代码；main.2a00e.js 只是启动器，
+**新旧构建真正差异在 chunk 集**）的平台加载/日志模块需要 SDK 存在，错误日志器自己又崩，把原始错误吞掉。
+修复：`window.HORTOR_AGENT={tga:Proxy黑洞(任意方法=无操作), init:cb(!0)}` + `__HORTOR_SDK__` 同引用 ——
+日志器复活（若还有更深的原始错误，会自己打到 console）；其余 SDK 方法仍空缺（真缺会露出真实错误）。
+**认知修正：「镜像形态无 SDK」只对旧 chunk 成立；现行 bundle 最小需求 = tga 黑洞 + init。**

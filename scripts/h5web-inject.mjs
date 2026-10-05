@@ -69,7 +69,10 @@ const SDK_STRIP_RULES = [
   ],
   [
     `window.HORTOR_AGENT.tga = thinkingdata;`,
-    `/* [h5web-proxy] HORTOR SDK stripped (mirror parity) */`,
+    // 惰性黑洞 SDK 桩：现行官方 chunk（index.0a88d.js 等）的平台加载/日志模块需要 SDK 存在
+    // （tga.tagLog 写埋点，缺了会把原始错误吞掉）。tga=Proxy 黑洞（任何方法=无操作），
+    // init 回调成功；其余 SDK 方法未定义（真缺了会在 console 露出真实错误）。
+    `var __h5wTga=new Proxy(function(){return __h5wTga},{get:function(){return __h5wTga},apply:function(){return __h5wTga}});window.HORTOR_AGENT={tga:__h5wTga,init:function(cb){try{cb&&cb(!0)}catch(e){}}};window.__HORTOR_SDK__=window.HORTOR_AGENT;`,
   ],
 ];
 
