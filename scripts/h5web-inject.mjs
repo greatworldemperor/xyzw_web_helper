@@ -32,7 +32,8 @@ const SCRIPT_A = [
   `<script>/* [h5web-proxy] boot-shim: official boot waits for bridge sha1 ready (same as local mirror) */` +
     `(function(){var _b=null;try{Object.defineProperty(window,"boot",{configurable:true,` +
     `get:function(){if(!_b)return void 0;return function(){var a=arguments,s=this;` +
-    `Promise.resolve(window.__pushResearchSh1Ready||!0).then(function(){_b.apply(s,a)})}},` +
+    `var go=function(){_b.apply(s,a)};` +
+    `Promise.resolve(window.__pushResearchSh1Ready||!0).then(go,go);}},` +
     `set:function(v){_b=v}})}catch(e){}})();</script>`,
 ].join("");
 
@@ -74,3 +75,10 @@ export function mapProxyPathToUpstream(pathname) {
   if (!rest || rest === "/") rest = "/index.html";
   return H5WEB_UPSTREAM_BASE.replace(/\/$/, "") + rest;
 }
+
+/**
+ * 桥内相对路径加载的辅助脚本（sh1 库等）在反代页会解析到 /h5web-proxy/ 下，
+ * 官方没有这些文件 → 从本地镜像 /game/* 供出（三端各自实现，名单在此同步）。
+ * push-level-research-bridge.js 的相对加载全集：sh1.js / sh1.readable.js?v=…（10-06 实测）
+ */
+export const H5WEB_LOCAL_AUX_RE = /^\/h5web-proxy\/(sh1(?:\.readable)?\.js)(?:\?.*)?$/;

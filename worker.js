@@ -19,7 +19,8 @@ const H5WEB_SCRIPT_A = [
   '<script>/* [h5web-proxy] boot-shim: official boot waits for bridge sha1 ready (same as local mirror) */' +
     '(function(){var _b=null;try{Object.defineProperty(window,"boot",{configurable:true,' +
     'get:function(){if(!_b)return void 0;return function(){var a=arguments,s=this;' +
-    'Promise.resolve(window.__pushResearchSh1Ready||!0).then(function(){_b.apply(s,a)})}},' +
+    'var go=function(){_b.apply(s,a)};' +
+    'Promise.resolve(window.__pushResearchSh1Ready||!0).then(go,go);}},' +
     'set:function(v){_b=v}})}catch(e){}})();</script>',
 ].join('');
 const H5WEB_SCRIPT_B = [
@@ -313,6 +314,16 @@ export default {
 
     if (proxy) {
       const upstreamPath = (proxy.pathPrefix || '') + (url.pathname.replace(proxy.prefix, '') || '/');
+
+      // 桥相对加载的 sh1 库在反代页解析到 /h5web-proxy/ 下 → 从本站 /game/*（ASSETS）供出
+      if (proxy.injectH5Web && env.ASSETS) {
+        const aux = url.pathname.match(/^\/h5web-proxy\/(sh1(?:\.readable)?\.js)(?:\?.*)?$/);
+        if (aux) {
+          const asset = await env.ASSETS.fetch(new Request(url.origin + '/game/' + aux[1]));
+          if (asset && asset.status === 200) return asset;
+        }
+      }
+
       if (proxy.allowedPath && upstreamPath !== proxy.allowedPath) {
         return new Response('Not Found', { status: 404, headers: corsHeaders });
       }

@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import {
   H5WEB_UPSTREAM,
   H5WEB_PROXY_PREFIX,
+  H5WEB_LOCAL_AUX_RE,
   applyH5WebInjection,
   mapProxyPathToUpstream,
 } from "./scripts/h5web-inject.mjs";
@@ -23,6 +24,17 @@ const saltFieldScriptPath = "/game/salt-field-auto.js";
 function h5webProxyPlugin() {
   async function handle(req, res) {
     const pathname = String(req.url || "").split("?", 1)[0];
+    // 桥相对加载的 sh1 库在反代页解析到 /h5web-proxy/ 下 → 从本地镜像 public/game 供出
+    const aux = pathname.match(H5WEB_LOCAL_AUX_RE);
+    if (aux) {
+      const local = path.resolve(__dirname, "public/game", aux[1]);
+      if (fs.existsSync(local)) {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+        res.end(fs.readFileSync(local));
+        return;
+      }
+    }
     const upstreamUrl = H5WEB_UPSTREAM + mapProxyPathToUpstream(pathname);
     try {
       const upstream = await fetch(upstreamUrl, {

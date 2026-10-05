@@ -131,3 +131,12 @@ HTML 注入本地镜像同款辅助脚本（同源=注入有效）→ **版本�
 顺序 A(spoof) < main < B(bridge) < 内联 boot(var debug)；settings/game-defines/main 均 200；
 HTML `Cache-Control: no-cache`、资源 `immutable`；`X-H5Web-Inject: on`（vite/worker）/`X-H5Web-Proxy: 1`（nginx）。
 **锚点自检**：官方 bundle 若改结构（main hash 变化），三端锚点同步更新（grep `main.2a00e.js`）。
+
+### 7.1 桥内相对路径加载的兜底（10-06 生产首测修复）
+
+push-level-research-bridge 以**相对路径**加载 sha1 库（`sh1.js` / `sh1.readable.js?v=…`，
+相对加载全集仅此两个）——镜像页解析到 `/game/` 没问题；反代页解析到 `/h5web-proxy/` 下，官方没有 → 404 →
+`__pushResearchSh1Ready` 拒绝 → boot-shim 永不执行 → **白屏卡死**（10-06 首测现象）。
+三端修复：① sh1 路径映射到本地镜像（nginx 正则 location `try_files /game/$1`；vite/worker 直接从 public/game / env.ASSETS 供出）；
+② boot-shim 改为 resolve/reject 都放行 boot（`then(go,go)`，防未来同类失败再现白屏）。
+**教训：注入第三方脚本时，把它的一切相对路径子资源列入反代兜底清单。**
