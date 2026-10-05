@@ -140,3 +140,11 @@ push-level-research-bridge 以**相对路径**加载 sha1 库（`sh1.js` / `sh1.
 三端修复：① sh1 路径映射到本地镜像（nginx 正则 location `try_files /game/$1`；vite/worker 直接从 public/game / env.ASSETS 供出）；
 ② boot-shim 改为 resolve/reject 都放行 boot（`then(go,go)`，防未来同类失败再现白屏）。
 **教训：注入第三方脚本时，把它的一切相对路径子资源列入反代兜底清单。**
+
+### 7.2 反代 location 必须 `^~`（10-06 生产首测第二坑）
+
+站点级静态资源正则 `location ~* \.(json|png|...)$`（try_files =404）会**抢走** /h5web-proxy/ 下所有
+同后缀请求（nginx 规则：正则 location 优先于普通前缀）——Cocos 资源 `assets/**/config.*.json` 全 404，
+游戏黑屏（引擎已 boot、资源加载失败）。修复：反代主体 `location ^~ /h5web-proxy/`（压制全部正则），
+sh1 兜底改为 `location =`（精确匹配，优先级最高）。
+**教训：给"前缀反代"选 location 时，必须审查站点已有正则 location 的后缀表。**
