@@ -100,12 +100,26 @@ export function createTasksPantao(deps = {}) {
       if (!info?.bfId || !info?.sid) {
         return { ok: false, tokenId, reason: `legion_getpayloadbf 没返回 bfId/sid（roleBfState=${resp?.roleBfState ?? "?"}）` };
       }
+      // 顺带取俱乐部（Legion_GetInfoResp.info.{id,name}）—— 供页面按俱乐部分组（master 2026-10-06 需求）
+      let legion = null;
+      try {
+        const gi = await tokenStore.sendMessageWithPromise(
+          tokenId,
+          "legion_getinfo",
+          {},
+          Number(settings().probeTimeoutMs) || 10000,
+        );
+        if (gi?.info?.id) legion = { id: gi.info.id, name: gi.info.name || "" };
+      } catch {
+        /* 俱乐部信息拿不到不影响探测结果 */
+      }
       return {
         ok: true,
         tokenId,
         info,
         label,
         roleBfState: resp?.roleBfState || "",
+        legion,
       };
     } catch (e) {
       return { ok: false, tokenId, reason: `${label} 探测失败: ${e?.message || e}` };

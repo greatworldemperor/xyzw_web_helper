@@ -179,8 +179,6 @@ import { useTokenStore } from "@/stores/tokenStore";
 import { createConnectionManager } from "@/utils/batch/connectionManager";
 import { createTasksPantao } from "@/utils/batch/tasksPantao";
 import * as cfg from "@/utils/pantaoConfig";
-import * as saltFieldCfg from "@/utils/saltFieldConfig";
-import { getStableTokenKey } from "@/utils/stableTokenKey";
 
 const message = useMessage();
 const tokenStore = useTokenStore();
@@ -307,17 +305,19 @@ const allTokens = computed(() => tokenStore.gameTokens || []);
 
 /**
  * 俱乐部分组（master 2026-10-06 需求：按俱乐部为单位选择启动/关闭）。
- * 俱乐部来源 = 盐场探测时缓存的 saltFieldAutoRoleCache（legionId/legionName，稳定键 serverId:roleId）；
- * 缓存没有的角色归入「未分组」。搜索关键词同时匹配角色名 / 服务器 / 俱乐部名。
+ * 数据源 = **蟠桃自己的 roleCache**（probePantao 顺带 legion_getinfo 刷新；盐场数据不混用——
+ * 盐场参与者与蟠桃参与者未必相同）。未探测过 / 无俱乐部信息的角色归入「未分组」。
+ * 搜索关键词同时匹配角色名 / 服务器 / 俱乐部名。
  */
+const clubVersion = ref(0);
 const clubGroups = computed(() => {
+  clubVersion.value; // 依赖探测时的缓存写入（probeAll 后强制重算）
   const kw = roleFilter.value.trim().toLowerCase();
-  const cache = saltFieldCfg.getRoleCache?.() || {};
+  const cache = cfg.getRoleCache?.() || {};
   const byClub = new Map();
   for (const t of allTokens.value) {
     const label = tokenLabel(t);
-    const stableKey = getStableTokenKey(t.serverId, t.roleId);
-    const meta = cache[stableKey] || null;
+    const meta = cache[String(t.id)] || null;
     const clubName = meta?.legionName || (meta?.legionId ? `俱乐部 ${meta.legionId}` : "未分组");
     if (kw) {
       const hay = `${label} ${t?.server || ""} ${clubName}`.toLowerCase();
@@ -408,9 +408,14 @@ const probeAll = async () => {
         continue;
       }
       const info = r.info;
+      // 俱乐部缓存（蟠桃自己的 roleCache —— 探测即刷新，供按俱乐部分组）
+      if (r.legion?.id) {
+        cfg.setRoleCacheEntry(String(id), { legionId: r.legion.id, legionName: r.legion.name || "" });
+        clubVersion.value++;
+      }
       addLog({
         time: new Date().toLocaleTimeString(),
-        message: `${r.label} 战场 ${info.bfId}（准备 ${ts(info.readyTime)} / 开打 ${ts(info.startTime)} / 结束 ${ts(info.endTime)}，roleBfState=${r.roleBfState || "-"}）`,
+        message: `${r.label}${r.legion?.name ? ` [${r.legion.name}]` : ""} 战场 ${info.bfId}（准备 ${ts(info.readyTime)} / 开打 ${ts(info.startTime)} / 结束 ${ts(info.endTime)}，roleBfState=${r.roleBfState || "-"}）`,
         type: "success",
       });
       try {
