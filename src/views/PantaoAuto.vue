@@ -55,6 +55,9 @@
               <div class="panel__actions">
                 <n-button size="tiny" @click="selectAll">全选</n-button>
                 <n-button size="tiny" @click="clearAll">清空</n-button>
+                <n-button size="tiny" :disabled="!clubGroups.length" @click="toggleAllClubs">
+                  {{ allClubsCollapsed ? "全部展开" : "全部折叠" }}
+                </n-button>
               </div>
             </div>
           </template>
@@ -73,8 +76,22 @@
                     :label="`${g.name}（已选 ${g.selectedCount}/${g.tokens.length}）`"
                     @update:checked="(v) => toggleClub(g, v)"
                   />
+                  <span
+                    class="club-group__spacer"
+                    :title="isClubCollapsed(g.name) ? '展开' : '折叠'"
+                    @click="toggleClubCollapsed(g.name)"
+                  ></span>
+                  <span class="club-group__count">{{ g.tokens.length }} 人</span>
+                  <button
+                    type="button"
+                    class="club-group__toggle"
+                    :title="isClubCollapsed(g.name) ? '展开' : '折叠'"
+                    @click="toggleClubCollapsed(g.name)"
+                  >
+                    {{ isClubCollapsed(g.name) ? "▸" : "▾" }}
+                  </button>
                 </div>
-                <div class="role-list role-list--nested">
+                <div v-show="!isClubCollapsed(g.name)" class="role-list role-list--nested">
                   <n-checkbox
                     v-for="t in g.tokens"
                     :key="t.id"
@@ -352,6 +369,29 @@ const toggleClub = (g, checked) => {
   selectedIds.value = cfg.getRoleTokenIds();
 };
 
+/* ------------- 分组折叠（master 2026-10-06：按俱乐部折叠，状态持久化） ------------- */
+const collapsedClubs = ref(new Set(cfg.getCollapsedClubs()));
+
+const isClubCollapsed = (name) => collapsedClubs.value.has(name);
+
+const toggleClubCollapsed = (name) => {
+  const s = new Set(collapsedClubs.value);
+  if (s.has(name)) s.delete(name);
+  else s.add(name);
+  collapsedClubs.value = s;
+  cfg.setCollapsedClubs([...s]);
+};
+
+const allClubsCollapsed = computed(
+  () => clubGroups.value.length > 0 && clubGroups.value.every((g) => collapsedClubs.value.has(g.name)),
+);
+
+const toggleAllClubs = () => {
+  const s = allClubsCollapsed.value ? new Set() : new Set(clubGroups.value.map((g) => g.name));
+  collapsedClubs.value = s;
+  cfg.setCollapsedClubs([...s]);
+};
+
 const batchCount = computed(() =>
   Math.ceil(selectedIds.value.length / Math.max(1, Number(settings.value.concurrency) || 1)),
 );
@@ -366,6 +406,8 @@ function tokenLabel(t) {
   const extra = t?.server ? `${t.server}` : "";
   return `${t?.name || t?.id}${extra ? " · " + extra : ""}`;
 }
+
+const findTokenById = (id) => allTokens.value.find((t) => String(t.id) === String(id)) || null;
 
 watch(
   settings,
@@ -396,22 +438,83 @@ const stop = () => {
   addLog({ time: new Date().toLocaleTimeString(), message: "已请求停止（当前批次结束后生效）", type: "warning" });
 };
 
+/**
+ * 探测循环（2026-10-06 优化，master：探明 1 个号 → 拉回其俱乐部全量名册 →
+ * 本地匹配 pending 队列中所有 roleId∈名册 的号，直接归类出队，不再发请求。
+ * 同俱乐部 N 个号只花 1 次 legion_getinfo；漏网的号自然落回逐个探测，正确性不受影响。）
+ */
 const probeAll = async () => {
   probing.value = true;
-  addLog({ time: new Date().toLocaleTimeString(), message: `=== 探测 ${selectedIds.value.length} 个角色（俱乐部 + 蟠桃战场门票） ===`, type: "info" });
-  let clubCount = 0;
+  addLog({
+    time: new Date().toLocaleTimeString(),
+    message: `=== 探测 ${selectedIds.value.length} 个角色（俱乐部名单本地消化 + 蟠桃战场门票） ===`,
+    type: "info",
+  });
+
+  /** 待探测队列（探明/归类一个出一个） */
+  const pending = [...selectedIds.value];
+  /** roleId(String) → 本地 token（用于和名册比对） */
+  const tokensByRoleId = new Map();
+  for (const t of allTokens.value) {
+    const rid = t?.roleId != null ? String(t.roleId) : "";
+    if (rid) {
+      if (!tokensByRoleId.has(rid)) tokensByRoleId.set(rid, []);
+      tokensByRoleId.get(rid).push(t);
+    }
+  }
+
+  let netClubCount = 0; // 联网探明的俱乐部数（= legion_getinfo 次数）
+  let localHits = 0; // 本地名册匹配归类数
   let ticketCount = 0;
   let failCount = 0;
-  try {
-    for (const id of selectedIds.value) {
-      if (shouldStop.value) break;
-      const r = await tasks.probePantao(id);
-      // 俱乐部缓存（任何日期可用——探测即刷新分组数据）
-      if (r.legion?.id) {
-        cfg.setRoleCacheEntry(String(id), { legionId: r.legion.id, legionName: r.legion.name || "" });
-        clubVersion.value++;
-        clubCount++;
+
+  /** 把 legion 名册与本地待测号比对，命中者写缓存+出队；返回命中 token 列表 */
+  const absorbByRoster = (legion) => {
+    if (!legion?.id || !Array.isArray(legion.roster) || !legion.roster.length) return [];
+    const memberIds = new Set(legion.roster.map((m) => String(m.roleId)));
+    const nameOf = new Map(legion.roster.map((m) => [String(m.roleId), m.name || ""]));
+    const hit = [];
+    for (let i = pending.length - 1; i >= 0; i--) {
+      const tid = pending[i];
+      const tok = findTokenById(tid);
+      const rid = tok?.roleId != null ? String(tok.roleId) : "";
+      if (rid && memberIds.has(rid)) {
+        cfg.setRoleCacheEntry(tid, {
+          legionId: legion.id,
+          legionName: legion.name || "",
+          roleId: Number(rid),
+          roleName: nameOf.get(rid) || tok?.name || "",
+        });
+        pending.splice(i, 1);
+        hit.push(tok?.name || tid);
       }
+    }
+    return hit;
+  };
+
+  try {
+    while (pending.length) {
+      if (shouldStop.value) break;
+      const id = pending.shift();
+      const r = await tasks.probePantao(id);
+
+      if (r.legion?.id) {
+        netClubCount++;
+        clubVersion.value++;
+        cfg.setRoleCacheEntry(String(id), { legionId: r.legion.id, legionName: r.legion.name || "" });
+
+        // 名册本地消化：同俱乐部的待测号全部归类出队
+        const hits = absorbByRoster(r.legion);
+        localHits += hits.length;
+        if (hits.length) {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `[${r.legion.name}] 名册 ${r.legion.roster.length} 人，本地匹配到 ${hits.length} 个待测号，免再探：${hits.join("、")}`,
+            type: "success",
+          });
+        }
+      }
+
       if (r.info) {
         ticketCount++;
         const info = r.info;
@@ -441,9 +544,12 @@ const probeAll = async () => {
       }
       coordinator.releaseConnectionSlot?.();
     }
+
+    const parts = [`俱乐部联网探明 ${netClubCount} 个`, `本地匹配归类 ${localHits} 个`, `战场有票 ${ticketCount} 个`, `失败 ${failCount} 个`];
+    if (shouldStop.value) parts.push("（已手动停止）");
     addLog({
       time: new Date().toLocaleTimeString(),
-      message: `=== 探测完成：俱乐部已记录 ${clubCount} 个｜战场有票 ${ticketCount} 个｜失败 ${failCount} 个 ===`,
+      message: `=== 探测完成：${parts.join("｜")} ===`,
       type: failCount === 0 ? "success" : "warning",
     });
   } finally {
@@ -591,7 +697,34 @@ onMounted(() => {
   padding: 8px 10px;
 }
 .club-group__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 6px;
+}
+.club-group__spacer {
+  flex: 1;
+  cursor: pointer;
+  align-self: stretch;
+}
+.club-group__count {
+  font-size: 12px;
+  color: #9aa3b2;
+  white-space: nowrap;
+}
+.club-group__toggle {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: #8a94a6;
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 4px;
+}
+.club-group__toggle:hover {
+  color: #18a058;
+  background: rgba(24, 160, 88, 0.08);
 }
 .role-list--nested {
   max-height: 180px;

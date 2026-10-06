@@ -12,6 +12,8 @@ export const KEYS = {
   roles: "pantaoAutoRoleTokenIds",
   roleCache: "pantaoAutoRoleCache",
   settings: "pantaoAutoSettings",
+  /** 俱乐部分组折叠状态（组名数组）——UI 偏好，刷新页面不丢 */
+  collapsedClubs: "pantaoAutoCollapsedClubs",
 };
 
 export const DEFAULT_SETTINGS = {
@@ -92,6 +94,17 @@ export function setRoleCacheEntry(tokenId, entry) {
   return writeJson(KEYS.roleCache, cache);
 }
 
+/* ------------------------------ 分组折叠状态 ------------------------------ */
+
+export function getCollapsedClubs() {
+  const list = readJson(KEYS.collapsedClubs, []);
+  return Array.isArray(list) ? list.map(String) : [];
+}
+
+export function setCollapsedClubs(names) {
+  return writeJson(KEYS.collapsedClubs, [...new Set(names || []).values()].map(String));
+}
+
 /* ------------------------------ 设置 ------------------------------ */
 
 export function getSettings() {
@@ -116,6 +129,8 @@ export default {
   removeRoleTokenId,
   getRoleCache,
   setRoleCacheEntry,
+  getCollapsedClubs,
+  setCollapsedClubs,
   getSettings,
   setSettings,
   resetSettings,

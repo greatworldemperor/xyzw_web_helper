@@ -5,11 +5,24 @@
  *       盐场队长清单/队伍表以 token id 为主键 → 30 支队伍全部 "Token not found"。
  * 修复：主键换成稳定键 serverId:roleId（master 定稿），旧数据惰性自动迁移。
  *
- * 运行（需别名加载器，saltFieldConfig 依赖 @/utils/token）：
- *   node --import ./local-data/_alias_loader.mjs test/saltfieldLeaderKeys.test.js
+ * 运行：标准基线 `node --test test/*.test.js` 即可
+ *      （saltFieldConfig 已改相对路径 import，不再依赖 @/ 别名；node 环境的
+ *       localStorage 由下方内存垫片提供。local-data/_alias_loader.mjs 专用跑法也兼容——
+ *       其自带垫片会先装好，此处检测后跳过不覆盖。）
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+
+// node --test 环境没有 localStorage —— 内存版垫片（alias_loader 已装时跳过）
+if (typeof globalThis.localStorage === "undefined") {
+  const mem = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: (k, v) => mem.set(String(k), String(v)),
+    removeItem: (k) => mem.delete(k),
+    clear: () => mem.clear(),
+  };
+}
 
 import {
   KEYS,

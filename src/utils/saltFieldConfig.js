@@ -14,7 +14,8 @@
  *   导入回来即自动接上。旧版（token id 主键）数据在模块首次使用时自动迁移。
  */
 
-import { getStableTokenKey } from "@/utils/stableTokenKey";
+// 相对路径（不用 @/ 别名）：本文件被 node --test 单测直接引用，别名只有 vite 能解析
+import { getStableTokenKey } from "./stableTokenKey.js";
 
 export const KEYS = {
   /** 队长清单：稳定键（serverId:roleId）数组 */

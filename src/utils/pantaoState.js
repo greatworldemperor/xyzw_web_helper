@@ -169,30 +169,72 @@ export function getCarPosition(state, carId) {
  *    是否自动寻路未知，官方每帧都带，工具必须带上。
  * 格面近似全通航（官方路径偶有绕行，先给最短路；若服务端校验障碍再补障碍表）。
  */
+import { WALK_GRAPH } from "./pantaoWalkGraph.js";
+
 export function buildMarchPath(state, carId, { max = 36 } = {}) {
   const from = getMyPosition(state);
   const to = getCarPosition(state, carId);
   if (!from || !to) return null;
+  const startKey = `${from.x}_${from.y}`;
+  const endKey = `${to.x}_${to.y}`;
+  if (startKey === endKey) return [{ x: to.x, y: to.y }];
+
+  // ① 官方通行图优先（路障安全，2026-10-06 从官方 14 条实战路径逆推，15/15 最短路验证）
+  const graphPath = graphBfsPath(startKey, endKey);
+  if (graphPath) return graphPath.map((k) => { const [x, y] = k.split("_").map(Number); return { x, y }; });
+
+  // ② 兜底：全图可走 8 邻域 BFS（未经官方图验证——地图有路障，此路径可能非法）
+  console.warn(
+    `[pantao-march] 起终点不在官方通行图内（${startKey} → ${endKey}），回退全图可走 BFS——路径可能非法`,
+  );
+  return openFieldBfsPath(from, to, max);
+}
+
+/** 在官方通行图上 BFS（节点/边都来自实战抓包，路径保证合法） */
+function graphBfsPath(startKey, endKey) {
+  const nodes = WALK_GRAPH.nodes instanceof Set ? WALK_GRAPH.nodes : new Set(WALK_GRAPH.nodes);
+  const edges = WALK_GRAPH.edges;
+  if (!nodes.has(startKey) || !nodes.has(endKey)) return null;
+  const prev = new Map([[startKey, null]]);
+  const queue = [startKey];
+  while (queue.length) {
+    const cur = queue.shift();
+    if (cur === endKey) break;
+    for (const nb of edges[cur] || []) {
+      if (prev.has(nb)) continue;
+      prev.set(nb, cur);
+      queue.push(nb);
+    }
+  }
+  if (!prev.has(endKey)) return null;
+  const path = [];
+  let cur = endKey;
+  while (cur) {
+    path.unshift(cur);
+    cur = prev.get(cur);
+  }
+  return path;
+}
+
+/** 全图可走 8 邻域 BFS（兜底用：地图有路障，此路径可能非法） */
+function openFieldBfsPath(from, to, max) {
   const key = (x, y) => `${x}_${y}`;
-  if (from.x === to.x && from.y === to.y) return [{ x: to.x, y: to.y }];
   const prev = new Map([[key(from.x, from.y), null]]);
   const queue = [[from.x, from.y]];
   while (queue.length) {
     const [x, y] = queue.shift();
     if (x === to.x && y === to.y) break;
-    for (const [dx, dy] of [
-      [1, 0],
-      [-1, 0],
-      [0, 1],
-      [0, -1],
-    ]) {
-      const nx = x + dx;
-      const ny = y + dy;
-      if (nx < 0 || ny < 0 || nx > max || ny > max) continue;
-      const k = key(nx, ny);
-      if (prev.has(k)) continue;
-      prev.set(k, [x, y]);
-      queue.push([nx, ny]);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        if (!dx && !dy) continue;
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx > max || ny > max) continue;
+        const k = key(nx, ny);
+        if (prev.has(k)) continue;
+        prev.set(k, [x, y]);
+        queue.push([nx, ny]);
+      }
     }
   }
   if (!prev.has(key(to.x, to.y))) return null;
