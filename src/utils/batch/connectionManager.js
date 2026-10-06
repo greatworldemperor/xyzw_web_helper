@@ -329,16 +329,21 @@ export const pickArenaTargetId = (targets, options = {}) => {
 /**
  * 从本地存储读取批量竞技场配置（阵容 + 选敌模式）
  * 竞技场战斗相关的设置统一在“批量日常页面 -> 设置”中配置
- * @returns {{arenaFormation: number, smartArenaMode: string}}
+ * @returns {{arenaFormation: number | "current", smartArenaMode: string}}
  */
 export const getBatchArenaConfig = () => {
   try {
     const parsed = JSON.parse(localStorage.getItem("batchSettings"));
+    const formation = parsed?.arenaFormation;
     return {
-      arenaFormation: Number(parsed?.arenaFormation) || 1,
+      // "current"（维持当前）必须原样透传；缺省视为未设置 → 维持当前
+      arenaFormation:
+        formation === "current" || formation == null
+          ? "current"
+          : Number(formation) || 1,
       smartArenaMode: parsed?.smartArenaMode || "lowestPower",
     };
   } catch {
-    return { arenaFormation: 1, smartArenaMode: "lowestPower" };
+    return { arenaFormation: "current", smartArenaMode: "lowestPower" };
   }
 };

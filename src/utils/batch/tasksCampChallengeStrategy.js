@@ -96,7 +96,7 @@ const readBattleTeamHeroIds = (battleTeam) => {
  */
 const buildTeamSetParamsFromSummary = (summary, batchSettings) => {
   if (!summary) return null;
-  const formation = String(batchSettings?.arenaFormation ?? 1);
+  const formation = String(batchSettings?.arenaFormation ?? "current");
   if (formation !== "current" && formation !== "1") return null;
   const battleTeam = summary.battleTeam || {};
   if (Object.keys(battleTeam).length === 0) return null;
@@ -112,7 +112,7 @@ const buildTeamSetParamsFromSummary = (summary, batchSettings) => {
 
 const buildTeamSetParams = (presetTeamResult, roleInfo, batchSettings) => {
   const role = getRoleData(roleInfo);
-  const configuredFormation = batchSettings?.arenaFormation ?? 1;
+  const configuredFormation = batchSettings?.arenaFormation ?? "current";
   const formationId = String(
     configuredFormation === "current"
       ? (presetTeamResult?.presetTeamInfo?.useTeamId ?? 1)

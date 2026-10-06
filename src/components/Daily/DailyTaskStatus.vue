@@ -334,7 +334,7 @@ const settings = reactive({
 
 // 竞技场设置（单角色独立配置，按账号存储，不与批量页面的统一设置互相影响）
 const arenaSettings = reactive({
-  arenaFormation: 1,
+  arenaFormation: "current",
   smartArenaMode: "lowestPower",
 });
 

@@ -197,7 +197,7 @@ export class DailyTaskRunner {
     try {
       const raw = localStorage.getItem(`daily-settings:${roleId}`);
       const defaultSettings = {
-        arenaFormation: 1,
+        arenaFormation: "current",
         smartArenaMode: "lowestPower",
         bossFormation: 1,
         bossTimes: 2,

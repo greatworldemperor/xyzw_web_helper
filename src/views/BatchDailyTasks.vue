@@ -5392,7 +5392,7 @@ const batchSettings = reactive({
   refreshInterval: 360, // 分钟
   smartArenaMode: "lowestPower",
   // 竞技场阵容：统一在此配置（旧任务模板/自由模板不再各自保存）
-  arenaFormation: 1,
+  arenaFormation: "current",
 });
 
 // Load batch settings from localStorage

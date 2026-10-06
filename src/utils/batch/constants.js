@@ -161,7 +161,7 @@ export const defaultBatchSettings = {
   maxLogEntries: 1000,
   smartArenaMode: "lowestPower",
   // 竞技场阵容（统一在批量设置中配置，旧模板/新模板不再各自保存）
-  arenaFormation: 1,
+  arenaFormation: "current",
 };
 
 // 默认模板
