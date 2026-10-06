@@ -10,7 +10,7 @@
  * 连接排队、超时重连、日志、停止开关，不重复造轮子。
  */
 import { LegionWarSession, buildLegionWarUrl } from "@/utils/legionWarSession";
-import { getInviteReadiness, getTeamMemberCids, getUnsettledMembers } from "@/utils/legionWarState";
+import { classifySaltFieldError, detectCaptainPulled, getInviteReadiness, getTeamMemberCids, getUnsettledMembers } from "@/utils/legionWarState";
 import { getStableTokenKey } from "@/utils/token";
 import * as cfg from "@/utils/saltFieldConfig";
 
@@ -440,14 +440,14 @@ export function createTasksSaltField(deps) {
 
   /* -------------------- ③ 执行单支队伍 -------------------- */
 
-  /** 登场重试窗口：失败每 1 秒重试，超过仍未成功则抛错（调用方跳过该队伍，master 规则） */
+  /** 登场重试窗口默认值：失败每 1 秒重试，超窗抛错（可在 saltFieldConfig.settings.deployWindowMs 调大） */
   const DEPLOY_RETRY_WINDOW_MS = 30000;
 
   /**
    * 登场（带重试）：war_setbattleteam 在队友未完成入队确认时会失败，
    * 失败后每隔 1 秒重试；等待太久说明出问题了，抛错跳过该队伍。
    */
-  const deployWithRetry = async (probe, lineup, t) => {
+  const deployWithRetry = async (probe, lineup, t, windowMs = DEPLOY_RETRY_WINDOW_MS) => {
     const startedAt = Date.now();
     for (;;) {
       if (shouldStop?.value) throw new Error("已手动停止（登场阶段）");
@@ -461,14 +461,37 @@ export function createTasksSaltField(deps) {
         log(`${t} 登场完成 ${dp.role?.state || "?"}(${pos.x ?? "?"}, ${pos.y ?? "?"})`, "success");
         return dp;
       }
-      if (Date.now() - startedAt > DEPLOY_RETRY_WINDOW_MS) {
+      if (Date.now() - startedAt > windowMs) {
         throw new Error(
-          `登场重试 ${DEPLOY_RETRY_WINDOW_MS / 1000}s 仍未成功（最后状态 ${dp.role?.state || "watching"}）——跳过该队伍`,
+          `登场重试 ${Math.round(windowMs / 1000)}s 仍未成功（最后状态 ${dp.role?.state || "watching"}）——跳过该队伍`,
         );
       }
       log(`${t} 登场未确认（${dp.role?.state || "watching"}），1 秒后重试`, "warning");
       await sleep(1000);
     }
+  };
+
+  /**
+   * probe 阶段重试（master 2026-10-06：probe 失败就重试，别直接放弃整队）。
+   * 最多 3 次；瞬时错误短退避（2s/4s），限流错误退避 10s；hard（配置/3000070 类）与手动停止不重试。
+   */
+  const probeWithRetry = async (team, t) => {
+    const attempts = 3;
+    let lastErr = null;
+    for (let i = 1; i <= attempts; i++) {
+      if (shouldStop?.value) throw new Error("已手动停止（probe 阶段）");
+      try {
+        return await probeSaltFieldTeam(team);
+      } catch (e) {
+        lastErr = e;
+        const cat = classifySaltFieldError(e?.message, "probe");
+        if (cat === "hard" || cat === "stopped" || i === attempts) throw e;
+        const wait = cat === "rate-limit" ? 10000 : 2000 * i;
+        log(`${t} probe 失败（第 ${i}/${attempts} 次，阶段 ${cat}）：${e?.message || e} —— ${wait / 1000}s 后重试`, "warning");
+        await sleep(wait);
+      }
+    }
+    throw lastErr;
   };
 
 
@@ -484,8 +507,8 @@ export function createTasksSaltField(deps) {
    *
    * @returns {object} 结果对象（不再抛错，失败信息在结果里）
    */
-  const runOneSaltFieldTeam = async (team) => {
-    const t = tag(team);
+  const runOneSaltFieldTeam = async (team, attempt = 1) => {
+    const t = attempt > 1 ? `${tag(team)}·补跑#${attempt - 1}` : tag(team);
     const mode = team.mode === "wait" ? "wait" : "immediate";
     const startedAt = Date.now();
     const result = {
@@ -493,8 +516,10 @@ export function createTasksSaltField(deps) {
       legionId: team.legionId,
       leaderKey: team.leaderKey,
       mode,
+      attempt,
       ok: false,
       stage: "init",
+      category: "",
       invited: [],
       failed: [],
       teamMembers: [],
@@ -503,11 +528,19 @@ export function createTasksSaltField(deps) {
 
     let probe = null;
     try {
-      // 1) 连接 + 定俱乐部 + 拿阵容 + roleMap（复用探测流程，避免逻辑分叉）
+      // 1) 连接 + 定俱乐部 + 拿阵容 + roleMap（复用探测流程；失败自动重试，别直接放弃整队）
       result.stage = "probe";
-      probe = await probeSaltFieldTeam(team);
+      probe = await probeWithRetry(team, t);
       const { legionId, legionName, lineup, roleMap, myCid, roleId } = probe;
       const ownRoleId = Number(roleId || 0);
+
+      // 1.5) 队长被拉走检测（master 2026-10-06：其它队长的队伍里有我们 → 标记 + 补跑）
+      const pulledBy = detectCaptainPulled(probe.session.state, myCid);
+      if (pulledBy) {
+        const err = new Error(`captain-pulled：队长 cId ${myCid} 已被其它队伍拉走（在队长 ${pulledBy} 的队伍里）`);
+        err.code = "captain-pulled";
+        throw err;
+      }
 
       log(
         `${t} 进入战场 ${probe.battlefieldId} · ${legionName || legionId} · 自身 cId ${myCid}` +
@@ -768,9 +801,10 @@ export function createTasksSaltField(deps) {
         }
       }
 
-      // 4) 登场（失败每 1 秒重试，窗口超时则抛错跳过该队伍）
+      // 4) 登场（失败每 1 秒重试，窗口超时则抛错跳过该队伍；窗口可用 settings.deployWindowMs 调大）
       result.stage = "deploy";
-      const dp = await deployWithRetry(probe, lineup, t);
+      const deployWindowMs = Math.max(10000, Number(settings().deployWindowMs) || DEPLOY_RETRY_WINDOW_MS);
+      const dp = await deployWithRetry(probe, lineup, t, deployWindowMs);
       result.deployState = dp.role?.state || null;
       result.teamMembers = probe.session.teamMemberCids(myCid);
 
@@ -826,11 +860,16 @@ export function createTasksSaltField(deps) {
       }
     } catch (e) {
       result.error = e?.message || String(e);
-      log(`${t} 执行失败（阶段 ${result.stage}）: ${result.error}`, "error");
+      result.category = e?.code === "captain-pulled" ? "captain-pulled" : classifySaltFieldError(result.error, result.stage);
+      log(`${t} 执行失败（阶段 ${result.stage}，分类 ${result.category}）: ${result.error}`, "error");
     } finally {
       if (probe) await closeProbe(probe);
       result.elapsedMs = Date.now() - startedAt;
-      log(`${t} 结束，用时 ${(result.elapsedMs / 1000).toFixed(1)}s，${result.ok ? "成功" : "未完全成功"}`, result.ok ? "success" : "warning");
+      if (!result.category) result.category = result.ok ? "ok" : classifySaltFieldError(result.error, result.stage);
+      log(
+        `${t} 结束，用时 ${(result.elapsedMs / 1000).toFixed(1)}s，${result.ok ? "成功" : `未完全成功（${result.category}）`}`,
+        result.ok ? "success" : "warning",
+      );
     }
     return result;
   };
@@ -860,22 +899,68 @@ export function createTasksSaltField(deps) {
     log(`=== 开始执行：${runnable.length} 个俱乐部 / ${runnable.reduce((n, g) => n + g.teams.length, 0)} 支队伍 ===`, "info");
 
     const results = [];
-    // 俱乐部内串行，俱乐部间并行
-    await Promise.all(
-      runnable.map(async (g) => {
-        for (const team of g.teams) {
-          if (shouldStop?.value) break;
-          const r = await runOneSaltFieldTeam(team);
-          results.push(r);
-        }
-      }),
-    );
+    const attemptsByTeam = new Map(); // teamId -> 已尝试次数
 
-    const okCount = results.filter((r) => r.ok).length;
-    log(`=== 执行结束：成功 ${okCount} / ${results.length} 支队伍 ===`, okCount === results.length ? "success" : "warning");
+    /** 一轮执行：俱乐部内串行，俱乐部间并行（每队记录 attempt 次数） */
+    const runTeams = async (teams) => {
+      const roundGroups = cfg.groupTeamsByLegion(teams);
+      await Promise.all(
+        roundGroups.map(async (g) => {
+          for (const team of g.teams) {
+            if (shouldStop?.value) break;
+            const attempt = (attemptsByTeam.get(team.id) || 0) + 1;
+            attemptsByTeam.set(team.id, attempt);
+            const r = await runOneSaltFieldTeam(team, attempt);
+            results.push(r);
+          }
+        }),
+      );
+    };
+
+    // 第 1 轮：全量
+    await runTeams(runnable.flatMap((g) => g.teams));
+
+    // 补跑轮（master 2026-10-06：不等冷却，1 秒节奏立即补跑；hard/stopped 不补，最多 saltfieldRetryRounds 轮）
+    const maxRounds = Math.max(1, Number(settings().saltfieldRetryRounds) || 3);
+    const retryableCategory = (cat) => cat === "transient" || cat === "rate-limit" || cat === "captain-pulled";
+    const allTeams = runnable.flatMap((g) => g.teams);
+    for (let round = 2; round <= maxRounds && !shouldStop?.value; round++) {
+      const retryTeams = allTeams.filter((team) => {
+        if ((attemptsByTeam.get(team.id) || 0) >= maxRounds) return false;
+        const last = [...results].reverse().find((r) => r.teamId === team.id);
+        return !!last && !last.ok && retryableCategory(last.category);
+      });
+      if (retryTeams.length === 0) break;
+      log(`=== 补跑第 ${round - 1} 轮：${retryTeams.length} 支失败队伍（1 秒节奏，立即出发） ===`, "info");
+      await sleep(1000);
+      await runTeams(retryTeams);
+    }
+
+    // 最终汇总：每队取「最后一次尝试」的结果
+    const finals = allTeams
+      .map((team) => [...results].reverse().find((r) => r.teamId === team.id))
+      .filter(Boolean);
+    const okAll = finals.filter((r) => r.ok);
+    const okFirst = okAll.filter((r) => (r.attempt || 1) === 1);
+    const okRetried = okAll.filter((r) => (r.attempt || 1) > 1);
+    const pulled = finals.filter((r) => !r.ok && r.category === "captain-pulled");
+    const stopped = finals.filter((r) => r.category === "stopped");
+    const failedOther = finals.filter((r) => !r.ok && r.category !== "captain-pulled" && r.category !== "stopped");
+    const allOk = okAll.length === finals.length;
+
+    log(
+      `=== 最终汇总：成功 ${okAll.length}/${finals.length}（首轮 ${okFirst.length} + 补跑 ${okRetried.length}）` +
+        `｜被拉走 ${pulled.length}｜仍失败 ${failedOther.length}｜手停 ${stopped.length} ===`,
+      allOk ? "success" : "warning",
+    );
+    failedOther.forEach((r) => log(`  ✗ ${r.leaderKey}（${r.category}）: ${r.error}`, "warning"));
 
     if (isRunning) isRunning.value = false;
-    message?.success?.(`自动盐场完成：${okCount}/${results.length} 支队伍成功`);
+    message?.[allOk ? "success" : "warning"]?.(
+      `自动盐场完成：成功 ${okAll.length}/${finals.length}` +
+        (pulled.length ? `，被拉走 ${pulled.length}` : "") +
+        (failedOther.length ? `，仍失败 ${failedOther.length}` : ""),
+    );
     return results;
   };
 

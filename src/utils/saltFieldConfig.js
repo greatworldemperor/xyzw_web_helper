@@ -34,6 +34,8 @@ export const DEFAULT_SETTINGS = {
   enterTimeoutMs: 15000,
   maxActiveBattlefield: 3, // 战场连接并发上限（与批量 maxActive 分开）
   waitPollMs: 12000, // 等待模式：轮询战场快照的间隔
+  deployWindowMs: 30000, // 登场确认放弃上限（1s 重试节奏；遇限流可调大到 90000）
+  saltfieldRetryRounds: 3, // 失败队伍补跑轮数上限（1s 节奏；hard/stopped 分类不补跑）
 };
 
 function readJson(key, fallback) {

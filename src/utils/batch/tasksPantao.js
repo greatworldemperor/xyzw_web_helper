@@ -331,9 +331,13 @@ export function createTasksPantao(deps = {}) {
       return result;
     } finally {
       try {
-        session?.close();
+        await session?.closeAsync?.();
       } catch {
-        /* ignore */
+        try {
+          session?.close();
+        } catch {
+          /* ignore */
+        }
       }
       gate.release();
       try {

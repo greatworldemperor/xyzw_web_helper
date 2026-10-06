@@ -185,6 +185,16 @@ export class PantaoSession {
     this.frameWaiters.length = 0;
   }
 
+  /** 收尾（带排空）：先把发送队列里的帧全部送上线再断开——防「入队未上线」竞态吞命令（盐场 09-26 事故教训） */
+  async closeAsync(timeoutMs = 2000) {
+    try {
+      await this.client?.flushSendQueue?.(timeoutMs);
+    } catch {
+      /* ignore */
+    }
+    this.close();
+  }
+
   /* ------------------------------ 内部 ------------------------------ */
 
   _onMessage(msg) {

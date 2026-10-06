@@ -63,15 +63,28 @@
             还没有导入任何角色，请先到 <router-link to="/tokens">Token 管理</router-link> 导入。
           </div>
           <div v-else class="role-picker">
-            <n-input v-model:value="roleFilter" size="small" placeholder="搜索角色名 / 服务器" clearable />
-            <div class="role-list">
-              <n-checkbox
-                v-for="t in filteredTokens"
-                :key="t.id"
-                :checked="selectedIds.includes(String(t.id))"
-                :label="tokenLabel(t)"
-                @update:checked="(v) => toggleRole(t.id, v)"
-              />
+            <n-input v-model:value="roleFilter" size="small" placeholder="搜索角色名 / 服务器 / 俱乐部" clearable />
+            <div class="club-groups">
+              <div v-for="g in clubGroups" :key="g.name" class="club-group">
+                <div class="club-group__head">
+                  <n-checkbox
+                    :checked="g.allSelected"
+                    :indeterminate="g.someSelected && !g.allSelected"
+                    :label="`${g.name}（已选 ${g.selectedCount}/${g.tokens.length}）`"
+                    @update:checked="(v) => toggleClub(g, v)"
+                  />
+                </div>
+                <div class="role-list role-list--nested">
+                  <n-checkbox
+                    v-for="t in g.tokens"
+                    :key="t.id"
+                    :checked="selectedIds.includes(String(t.id))"
+                    :label="tokenLabel(t)"
+                    @update:checked="(v) => toggleRole(t.id, v)"
+                  />
+                </div>
+              </div>
+              <div v-if="clubGroups.length === 0" class="empty club-groups__empty">没有匹配的角色</div>
             </div>
           </div>
         </n-card>
@@ -166,6 +179,8 @@ import { useTokenStore } from "@/stores/tokenStore";
 import { createConnectionManager } from "@/utils/batch/connectionManager";
 import { createTasksPantao } from "@/utils/batch/tasksPantao";
 import * as cfg from "@/utils/pantaoConfig";
+import * as saltFieldCfg from "@/utils/saltFieldConfig";
+import { getStableTokenKey } from "@/utils/stableTokenKey";
 
 const message = useMessage();
 const tokenStore = useTokenStore();
@@ -289,11 +304,53 @@ const downloadRecording = () => {
 
 /* ------------------------------ 派生 ------------------------------ */
 const allTokens = computed(() => tokenStore.gameTokens || []);
-const filteredTokens = computed(() => {
+
+/**
+ * 俱乐部分组（master 2026-10-06 需求：按俱乐部为单位选择启动/关闭）。
+ * 俱乐部来源 = 盐场探测时缓存的 saltFieldAutoRoleCache（legionId/legionName，稳定键 serverId:roleId）；
+ * 缓存没有的角色归入「未分组」。搜索关键词同时匹配角色名 / 服务器 / 俱乐部名。
+ */
+const clubGroups = computed(() => {
   const kw = roleFilter.value.trim().toLowerCase();
-  if (!kw) return allTokens.value;
-  return allTokens.value.filter((t) => tokenLabel(t).toLowerCase().includes(kw));
+  const cache = saltFieldCfg.getRoleCache?.() || {};
+  const byClub = new Map();
+  for (const t of allTokens.value) {
+    const label = tokenLabel(t);
+    const stableKey = getStableTokenKey(t.serverId, t.roleId);
+    const meta = cache[stableKey] || null;
+    const clubName = meta?.legionName || (meta?.legionId ? `俱乐部 ${meta.legionId}` : "未分组");
+    if (kw) {
+      const hay = `${label} ${t?.server || ""} ${clubName}`.toLowerCase();
+      if (!hay.includes(kw)) continue;
+    }
+    if (!byClub.has(clubName)) byClub.set(clubName, []);
+    byClub.get(clubName).push(t);
+  }
+  const groups = [...byClub.entries()].map(([name, tokens]) => {
+    const selectedCount = tokens.filter((t) => selectedIds.value.includes(String(t.id))).length;
+    return {
+      name,
+      tokens,
+      selectedCount,
+      allSelected: selectedCount === tokens.length && tokens.length > 0,
+      someSelected: selectedCount > 0,
+    };
+  });
+  // 未分组排最后，其余按名字排序
+  groups.sort((a, b) => {
+    if (a.name === "未分组") return 1;
+    if (b.name === "未分组") return -1;
+    return a.name.localeCompare(b.name, "zh-CN");
+  });
+  return groups;
 });
+
+const toggleClub = (g, checked) => {
+  const ids = g.tokens.map((t) => String(t.id));
+  if (checked) cfg.addRoleTokenIds(ids);
+  else cfg.setRoleTokenIds(cfg.getRoleTokenIds().filter((id) => !ids.includes(String(id))));
+  selectedIds.value = cfg.getRoleTokenIds();
+};
 
 const batchCount = computed(() =>
   Math.ceil(selectedIds.value.length / Math.max(1, Number(settings.value.concurrency) || 1)),
@@ -494,6 +551,25 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+.club-groups {
+  max-height: 380px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.club-group {
+  border: 1px solid rgba(128, 128, 128, 0.25);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.club-group__head {
+  margin-bottom: 6px;
+}
+.role-list--nested {
+  max-height: 180px;
+  padding-left: 18px;
 }
 .settings {
   display: flex;

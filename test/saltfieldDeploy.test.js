@@ -23,6 +23,8 @@ import {
   isDeployedState,
   isRoleDeployed,
   DEPLOYED_STATES,
+  classifySaltFieldError,
+  detectCaptainPulled,
 } from "../src/utils/legionWarState.js";
 
 const OWNER_ROLE_ID = 119532574; // 队长 roleId（roleMap 反查 cId 用，值任意）
@@ -160,4 +162,48 @@ test("登场后的战斗/行军状态仍算已登场（重试不误发第二轮�
   assert.equal(isRoleDeployed(state, MY), true);
   state.roles[String(MY)].state = "march";
   assert.equal(isRoleDeployed(state, MY), true);
+});
+
+test("classifySaltFieldError：分类真值表（master 2026-10-06 定稿）", () => {
+  const cases = [
+    ["已手动停止（probe 阶段）", "stopped"],
+    ["排队中 400340 请稍后", "rate-limit"],
+    ["登录限流 rate limit exceeded", "rate-limit"],
+    ["captain-pulled：队长 cId 457 已被其它队伍拉走", "captain-pulled"],
+    ["payload_xxx 返回 3000070", "hard"],
+    ["角色没有可用的主阵容（battleTeam 为空）", "hard"],
+    ["队员 123 不在本俱乐部 roleMap", "hard"],
+    ["进入战场超时（未拿到 roleCodeId）", "transient"],
+    ["全员就位超时（30s）：仍在准备期", "transient"],
+    ["WebSocket未连接 [xxx]", "transient"],
+    ["队伍人数 3 ≠ 预期 5", "transient"],
+  ];
+  for (const [msg, want] of cases) {
+    assert.equal(classifySaltFieldError(msg), want, `分类错误：${msg}`);
+  }
+});
+
+test("detectCaptainPulled：其它队长队伍含我 → 报告拉走者；否则 null", () => {
+  const state = (tm) => ({ teamMap: tm });
+  assert.equal(
+    detectCaptainPulled(
+      state({
+        457: { mCodeIds: [457, 443] },
+        501: { mCodeIds: [501, 457] }, // 501 的队伍里有 457 → 被拉走
+      }),
+      457,
+    ),
+    501,
+  );
+  assert.equal(
+    detectCaptainPulled(
+      state({
+        457: { mCodeIds: [457, 443, 447] },
+        501: { mCodeIds: [501] },
+      }),
+      457,
+    ),
+    null,
+  );
+  assert.equal(detectCaptainPulled(null, 457), null);
 });

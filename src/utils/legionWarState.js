@@ -233,6 +233,38 @@ export function isRoleDeployed(state, cid) {
 }
 
 /**
+ * 队长被拉走检测：进战场后查 teamMap，若「其它队长」的队伍成员里包含本 cId，
+ * 说明本队队长已被别人组走（设计外情况，master 2026-10-06 定性）。
+ * @returns 拉走我们的队长 cId（数字），未被拉走返回 null
+ */
+export function detectCaptainPulled(state, myCid) {
+  const tm = state?.teamMap;
+  if (!tm || typeof tm !== "object") return null;
+  const mine = Number(myCid);
+  for (const [leaderCid, team] of Object.entries(tm)) {
+    if (Number(leaderCid) === mine) continue;
+    const members = Array.isArray(team?.mCodeIds) ? team.mCodeIds.map(Number) : [];
+    if (members.includes(mine)) return Number(leaderCid);
+  }
+  return null;
+}
+
+/** 失败分类（master 2026-10-06 定稿）：决定补跑策略 */
+export function classifySaltFieldError(message = "", stage = "") {
+  const s = String(message || "");
+  if (/手动停止/.test(s)) return "stopped";
+  if (/400340|限流|rate.?limit|authuser/i.test(s)) return "rate-limit";
+  if (/captain-pulled|被其它队伍拉走|被别人拉走/.test(s)) return "captain-pulled";
+  if (
+    /3000070|没有可用的主阵容|请先在游戏里配置阵容|不在本俱乐部 roleMap|超过队员上限|已禁用/.test(s)
+  ) {
+    return "hard";
+  }
+  // 其余（超时 / 连接类 / 就位超时 / 人数校验失败等）一律视为瞬时错误 → 可补跑
+  return "transient";
+}
+
+/**
  * 活动窗口是否已开放（用于 UI 置灰「一键执行」）
  * 战场时间来自 body.battlefield.{readyTime,openTime,endTime}（秒）
  */
