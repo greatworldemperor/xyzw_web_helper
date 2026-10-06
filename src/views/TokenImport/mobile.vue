@@ -226,6 +226,7 @@ import {
 } from "@/utils/hortorLogin";
 import { decodeServerRoleId, formatImportedRoleName } from "@/utils/serverRole";
 import { getServerList, getTokenId } from "@/utils/token";
+import { importRolesWithDedupe } from "@/utils/importRolesDedupe";
 
 interface ServerRole {
   name?: string;
@@ -249,7 +250,7 @@ interface PendingRole {
 const emit = defineEmits(["cancel", "ok"]);
 const tokenStore = useTokenStore();
 const message = useMessage();
-const { storeArrayBuffer } = useIndexedDB();
+const { storeArrayBuffer, getArrayBuffer } = useIndexedDB();
 const deviceProfile = getOrCreateHortorDeviceProfile();
 
 const loginFormRef = ref<FormInst | null>(null);
@@ -499,15 +500,21 @@ const handleImport = async () => {
   if (pendingRoles.value.length === 0) return;
   isImporting.value = true;
   try {
-    for (const role of pendingRoles.value) {
-      const existing = tokenStore.gameTokens.find((token) => token.id === role.id);
-      if (existing) tokenStore.updateToken(existing.id, { ...role });
-      else tokenStore.addToken({ ...role });
-    }
-    const importedCount = pendingRoles.value.length;
+    // 稳定键查重（serverId:roleId）+ 新 BIN 补存旧 id 键：同角色重登后 token id（bin MD5）
+    // 必变，按 id 查重会新老并存（master 2026-10-07 bug）；共享逻辑见 importRolesDedupe.js
+    const { addedCount, updatedCount } = await importRolesWithDedupe(
+      tokenStore,
+      pendingRoles.value,
+      { getArrayBuffer, storeArrayBuffer },
+    );
     pendingRoles.value = [];
-    showStatus(`已添加 ${importedCount} 个 Token`, "success");
-    message.success(`成功添加 ${importedCount} 个 Token`);
+    const total = addedCount + updatedCount;
+    showStatus(`已添加 ${total} 个 Token`, "success");
+    message.success(
+      updatedCount > 0
+        ? `成功添加 ${total} 个 Token（新增 ${addedCount}，同角色更新 ${updatedCount}）`
+        : `成功添加 ${total} 个 Token`,
+    );
     emit("ok");
   } finally {
     isImporting.value = false;

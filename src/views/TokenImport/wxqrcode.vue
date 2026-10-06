@@ -131,11 +131,12 @@ import {
 } from "@vicons/ionicons5";
 import { NIcon, useMessage, NButton, NForm, NFormItem, NInput } from "naive-ui";
 import { getTokenId, getServerList } from "@/utils/token";
+import { importRolesWithDedupe } from "@/utils/importRolesDedupe";
 import useIndexedDB from "@/hooks/useIndexedDB";
 import { g_utils } from "@/utils/bonProtocol";
 import { useTokenStore } from "@/stores/tokenStore";
 const tokenStore = useTokenStore();
-const { storeArrayBuffer } = useIndexedDB();
+const { storeArrayBuffer, getArrayBuffer } = useIndexedDB();
 
 const message = useMessage();
 const isImporting = ref(false);
@@ -758,23 +759,18 @@ const handleImport = async () => {
     message.error("请先上传bin文件！");
     return;
   }
-  roleList.value.forEach((role) => {
-    // tokenStore.gameTokens中发现已存在的重复名称，则移出token后重新添加
-    const gameToken = tokenStore.gameTokens.find((t) => t.id === role.id);
-    if (gameToken) {
-      console.log("移除同名token:", gameToken);
-      // tokenStore.removeToken(gameToken.id);
-      tokenStore.updateToken(gameToken.id, {
-        ...role,
-      });
-    } else {
-      tokenStore.addToken({
-        ...role,
-      });
-    }
-  });
-  console.log("当前Token列表:", tokenStore.gameTokens);
-  message.success("Token添加成功");
+  // 稳定键查重（serverId:roleId）+ 新 BIN 补存旧 id 键：同角色重登后 token id（bin MD5）
+  // 必变，按 id 查重会新老并存（master 2026-10-07 bug）；共享逻辑见 importRolesDedupe.js
+  const { addedCount, updatedCount } = await importRolesWithDedupe(
+    tokenStore,
+    roleList.value,
+    { getArrayBuffer, storeArrayBuffer },
+  );
+  if (updatedCount > 0) {
+    message.success(`导入完成：新增 ${addedCount} 个，同角色更新 ${updatedCount} 个（保留原记录）`);
+  } else {
+    message.success(`Token添加成功（新增 ${addedCount} 个）`);
+  }
   roleList.value = [];
   emit("ok");
 };
