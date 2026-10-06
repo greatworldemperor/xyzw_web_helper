@@ -114,8 +114,15 @@ export function createTasksPantao(deps = {}) {
             {},
             Number(settings().probeTimeoutMs) || 10000,
           );
-          if (gi?.info?.id) {
-            legion = { id: gi.info.id, name: gi.info.name || "", roster: rosterToArray(gi.info.members) };
+          // 形态兜底（对齐盐场 loadOwnLegion 三重解析）：info / legionData / role.legionId
+          // 2026-10-07 实测（bin-test）：正常返回 info.id + info.members；role_getroleinfo 的
+          // role.legionId 也带俱乐部 id——legion_getinfo 变态时至少保住分组 id
+          const info = gi?.info || gi?.legionData || null;
+          const fallbackLegionId = Number(gi?.role?.legionId || 0);
+          if (info?.id) {
+            legion = { id: info.id, name: info.name || "", roster: rosterToArray(info.members) };
+          } else if (fallbackLegionId) {
+            legion = { id: fallbackLegionId, name: "", roster: [] };
           } else legionErr = "legion_getinfo 没返回 info.id";
         } catch (e) {
           legionErr = `legion_getinfo: ${e?.message || e}`;
