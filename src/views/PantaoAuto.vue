@@ -66,7 +66,28 @@
             还没有导入任何角色，请先到 <router-link to="/tokens">Token 管理</router-link> 导入。
           </div>
           <div v-else class="role-picker">
-            <n-input v-model:value="roleFilter" size="small" placeholder="搜索角色名 / 服务器 / 俱乐部" clearable />
+            <div class="filter-row">
+              <n-input v-model:value="roleFilter" size="small" placeholder="搜索角色名 / 服务器 / 俱乐部" clearable />
+              <n-input
+                v-model:value="serverRange"
+                size="small"
+                placeholder="server id：9700-9800 / 9724 / 9700-,9900"
+                clearable
+                class="filter-server"
+              />
+            </div>
+            <div class="filter-actions">
+              <n-button size="tiny" type="primary" ghost :disabled="!filteredTokens.length" @click="selectFiltered">
+                筛选结果全选
+              </n-button>
+              <n-button size="tiny" :disabled="!filteredTokens.length" @click="deselectFiltered">
+                筛选结果取消
+              </n-button>
+              <span class="filter-hint">命中 {{ filteredTokens.length }} 个</span>
+              <span v-if="serverRangeParsed && !serverRangeParsed.valid" class="filter-hint filter-hint--warn">
+                范围格式无效（示例：9700-9800）
+              </span>
+            </div>
             <div class="club-groups">
               <div v-for="g in clubGroups" :key="g.name" class="club-group">
                 <div class="club-group__head">
@@ -234,6 +255,38 @@ const settings = ref(cfg.getSettings());
 const selectedIds = ref(cfg.getRoleTokenIds());
 const roleFilter = ref("");
 
+/**
+ * server id 范围筛选（master 2026-10-07：按 server id 范围圈号，筛选结果可批量选中/取消）。
+ * 语法：单值 `9724`；闭区间 `9700-9800`（兼容 - ~ — 全半角）；开区间 `9700-`；逗号/空格分隔多段。
+ * 匹配号源：token.serverId（数字，优先）→ token.server 里的数字段（"9724服" → 9724）。
+ */
+const serverRange = ref("");
+
+const serverNumOf = (t) => {
+  const sid = Number(t?.serverId);
+  if (Number.isFinite(sid) && sid > 0) return sid;
+  const m = String(t?.server || "").match(/\d+/);
+  return m ? Number(m[0]) : NaN;
+};
+
+function parseServerRangeSpec(spec) {
+  const s = String(spec || "").trim();
+  if (!s) return null; // 未启用筛选
+  const rules = [];
+  for (const part of s.split(/[,，、\s]+/).filter(Boolean)) {
+    const m = part.match(/^(\d*)\s*[-~－—～]\s*(\d*)$/);
+    if (m && (m[1] !== "" || m[2] !== "")) {
+      const lo = m[1] === "" ? -Infinity : Number(m[1]);
+      const hi = m[2] === "" ? Infinity : Number(m[2]);
+      rules.push((n) => n >= lo && n <= hi);
+      continue;
+    }
+    const n = Number(part);
+    if (Number.isFinite(n)) rules.push((x) => x === n);
+  }
+  return rules.length ? { valid: true, match: (num) => rules.some((f) => f(num)) } : { valid: false, match: () => false };
+}
+
 const strategyOptions = [
   { label: "抵达目的地最近（默认）", value: "nearest-arrival" },
   { label: "离我最近", value: "nearest-me" },
@@ -330,6 +383,7 @@ const clubVersion = ref(0);
 const clubGroups = computed(() => {
   clubVersion.value; // 依赖探测时的缓存写入（probeAll 后强制重算）
   const kw = roleFilter.value.trim().toLowerCase();
+  const range = parseServerRangeSpec(serverRange.value);
   const cache = cfg.getRoleCache?.() || {};
   const byClub = new Map();
   for (const t of allTokens.value) {
@@ -339,6 +393,10 @@ const clubGroups = computed(() => {
     if (kw) {
       const hay = `${label} ${t?.server || ""} ${clubName}`.toLowerCase();
       if (!hay.includes(kw)) continue;
+    }
+    if (range?.valid) {
+      const sNum = serverNumOf(t);
+      if (!Number.isFinite(sNum) || !range.match(sNum)) continue;
     }
     if (!byClub.has(clubName)) byClub.set(clubName, []);
     byClub.get(clubName).push(t);
@@ -367,6 +425,34 @@ const toggleClub = (g, checked) => {
   if (checked) cfg.addRoleTokenIds(ids);
   else cfg.setRoleTokenIds(cfg.getRoleTokenIds().filter((id) => !ids.includes(String(id))));
   selectedIds.value = cfg.getRoleTokenIds();
+};
+
+/* ---------- 筛选结果批量操作（master 2026-10-07：server id 范围圈号后一键选中/取消） ---------- */
+const serverRangeParsed = computed(() => parseServerRangeSpec(serverRange.value));
+
+/** 当前通过全部筛选（文本 + server 范围）的角色，即界面上可见的那批 */
+const filteredTokens = computed(() => clubGroups.value.flatMap((g) => g.tokens));
+
+const selectFiltered = () => {
+  cfg.addRoleTokenIds(filteredTokens.value.map((t) => t.id));
+  selectedIds.value = cfg.getRoleTokenIds();
+  addLog({
+    time: new Date().toLocaleTimeString(),
+    message: `筛选结果全选：+${filteredTokens.value.length} 个（总选中 ${selectedIds.value.length}）`,
+    type: "info",
+  });
+};
+
+const deselectFiltered = () => {
+  const ids = new Set(filteredTokens.value.map((t) => String(t.id)));
+  const before = selectedIds.value.length;
+  cfg.setRoleTokenIds(cfg.getRoleTokenIds().filter((id) => !ids.has(String(id))));
+  selectedIds.value = cfg.getRoleTokenIds();
+  addLog({
+    time: new Date().toLocaleTimeString(),
+    message: `筛选结果取消：-${before - selectedIds.value.length} 个（总选中 ${selectedIds.value.length}）`,
+    type: "info",
+  });
 };
 
 /* ------------- 分组折叠（master 2026-10-06：按俱乐部折叠，状态持久化） ------------- */
@@ -676,6 +762,26 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.filter-row {
+  display: flex;
+  gap: 8px;
+}
+.filter-server {
+  flex: 0 0 230px;
+}
+.filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.filter-hint {
+  font-size: 12px;
+  color: #9aa3b2;
+}
+.filter-hint--warn {
+  color: #d03050;
 }
 .role-list {
   max-height: 260px;
