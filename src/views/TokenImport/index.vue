@@ -2026,6 +2026,7 @@ const bulkOptions = [
   { label: "导出所有Token", key: "export" },
   { label: "导入Token文件", key: "import" },
   { label: "清理过期Token", key: "clean" },
+  { label: "合并重复角色", key: "dedupe" },
   { label: "断开所有连接", key: "disconnect" },
   { label: "清除所有Token", key: "clear" },
 ];
@@ -2548,6 +2549,9 @@ const handleBulkAction = (key) => {
     case "clean":
       cleanExpiredTokens();
       break;
+    case "dedupe":
+      dedupeTokens();
+      break;
     case "disconnect":
       disconnectAll();
       break;
@@ -2604,6 +2608,39 @@ const importTokenFile = () => {
 const cleanExpiredTokens = async () => {
   const count = await tokenStore.cleanExpiredTokens();
   message.success(`已清理 ${count} 个过期Token`);
+};
+
+/**
+ * 合并重复角色（master 2026-10-07）：修复前的导入链按 token id（bin MD5）查重，
+ * 同角色重导 bin / 微信验证码重登后会留下多条记录（老的那份 bin 已过期）。
+ * 按稳定键 serverId:roleId 分组合并，每组保留最早创建的一条（外部配置大多挂在它上面）。
+ */
+const dedupeTokens = () => {
+  // 先统计重复情况，给 master 一个明确的确认信息
+  const groups = new Map();
+  for (const t of tokenStore.gameTokens) {
+    const k = [t?.serverId, t?.roleId].map((v) => String(v ?? "").trim()).join(":");
+    if (!k || k === ":") continue;
+    groups.set(k, (groups.get(k) || 0) + 1);
+  }
+  const dupGroups = [...groups.values()].filter((n) => n > 1).length;
+  const dupTokens = [...groups.values()].reduce((s, n) => s + (n > 1 ? n - 1 : 0), 0);
+
+  if (dupTokens === 0) {
+    message.success("没有发现重复角色");
+    return;
+  }
+
+  dialog.warning({
+    title: "合并重复角色",
+    content: `发现 ${dupGroups} 个角色存在重复记录（共多余 ${dupTokens} 条）。将按角色身份（serverId:roleId）分组，每组保留最早创建的一条并删除其余（被删记录的 BIN 会补到保留记录上）。继续吗？`,
+    positiveText: "合并",
+    negativeText: "取消",
+    onPositiveClick: async () => {
+      const removed = await tokenStore.dedupeByStableKey();
+      message.success(`已合并重复角色：删除 ${removed} 条多余记录`);
+    },
+  });
 };
 
 const disconnectAll = () => {

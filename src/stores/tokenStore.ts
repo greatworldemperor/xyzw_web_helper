@@ -414,7 +414,33 @@ export const useTokenStore = defineStore("tokens", () => {
   };
 
   // Token管理
-  const addToken = (tokenData: TokenData) => {    let id =
+  const addToken = (tokenData: TokenData) => {
+    /**
+     * 稳定键查重（master 2026-10-07 bug 修复：bin 重导后新老角色并存）。
+     * token id = bin 内容 MD5，角色重新登录/重导后必变——所有按 id 查重的导入链
+     * 都会查不到旧记录而追加，同一角色出现两份（旧的那份 bin 已过期）。
+     * 现在：同角色（serverId:roleId）已存在 → 保留旧 id 原地更新，
+     * 按 token id 记录的外部配置（蟠桃勾选/俱乐部缓存等）自动接上不悬空。
+     */
+    const sKey = getStableTokenKey(tokenData.serverId, tokenData.roleId);
+    if (sKey) {
+      const existing = gameTokens.value.find(
+        (t) => getStableTokenKey(t.serverId, t.roleId) === sKey,
+      );
+      if (existing) {
+        const updated = {
+          ...existing,
+          ...tokenData,
+          id: existing.id, // 强制保留旧 id（tokenData 可能带新 MD5 id）
+          createdAt: existing.createdAt,
+          updatedAt: new Date().toISOString(),
+        };
+        gameTokens.value[gameTokens.value.indexOf(existing)] = updated;
+        return updated;
+      }
+    }
+
+    let id =
       tokenData.id ||
       `token_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const newToken = {
@@ -1742,6 +1768,59 @@ export const useTokenStore = defineStore("tokens", () => {
     return cleanedCount;
   };
 
+  /**
+   * 按稳定键（serverId:roleId）合并重复 token（master 2026-10-07）。
+   * 修复前的导入链按 token id（bin 内容 MD5）查重，同角色重导后会留下多条记录；
+   * 本方法每组保留一条、删除其余。
+   *
+   * 保留策略：**最早创建**的那条——蟠桃勾选/俱乐部缓存等外部配置按 token id 记录，
+   * 大概率挂在最早的 id 上，保留它可让悬空引用最少；若保留记录在 IndexedDB 没有
+   * BIN（键=token.id），用被删记录的 BIN 补缺（不覆盖已有），保证刷新链路可用。
+   *
+   * @returns 删除的重复记录数
+   */
+  const dedupeByStableKey = async () => {
+    const groups = new Map<string, TokenData[]>();
+    for (const t of gameTokens.value) {
+      const k = getStableTokenKey(t.serverId, t.roleId);
+      if (!k) continue; // 缺稳定键的记录不动（无法判定是否同角色）
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k)!.push(t);
+    }
+
+    const toRemove: TokenData[] = [];
+    for (const list of groups.values()) {
+      if (list.length <= 1) continue;
+      const sorted = [...list].sort(
+        (a, b) =>
+          new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime(),
+      );
+      const keep = sorted[0];
+      toRemove.push(...sorted.slice(1));
+
+      // BIN 补缺：保留记录没有 BIN 而被删记录有 → 拷贝过去（不覆盖已有）
+      try {
+        const keepBuf = await getArrayBuffer(keep.id);
+        if (!keepBuf) {
+          for (const dup of sorted.slice(1)) {
+            const dupBuf = await getArrayBuffer(dup.id);
+            if (dupBuf) {
+              await storeArrayBuffer(keep.id, dupBuf);
+              break;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("[dedupe] BIN 补缺失败（不影响去重）", e);
+      }
+    }
+
+    for (const t of toRemove) {
+      await removeToken(t.id);
+    }
+    return toRemove.length;
+  };
+
   // 将现有token升级为长期有效
   const upgradeTokenToPermanent = (tokenId: string) => {
     const token = gameTokens.value.find((t) => t.id === tokenId);
@@ -2183,6 +2262,7 @@ export const useTokenStore = defineStore("tokens", () => {
     importTokens,
     clearAllTokens,
     cleanExpiredTokens,
+    dedupeByStableKey,
     upgradeTokenToPermanent,
     initTokenStore,
 

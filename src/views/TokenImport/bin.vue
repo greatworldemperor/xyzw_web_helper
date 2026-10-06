@@ -86,10 +86,11 @@ import PQueue from "p-queue";
 import useIndexedDB from "@/hooks/useIndexedDB";
 import { getTokenId, getServerList } from "@/utils/token";
 import { g_utils } from "@/utils/bonProtocol";
+import { getStableTokenKey } from "@/utils/stableTokenKey";
 
 const $emit = defineEmits(["cancel", "ok"]);
 
-const { storeArrayBuffer } = useIndexedDB();
+const { storeArrayBuffer, getArrayBuffer } = useIndexedDB();
 
 const cancel = () => {
   roleList.value = [];
@@ -304,23 +305,52 @@ const handleImport = async () => {
     message.error("请先上传bin文件！");
     return;
   }
-  roleList.value.forEach((role) => {
-    // tokenStore.gameTokens中发现已存在的重复名称，则移出token后重新添加
-    const gameToken = tokenStore.gameTokens.find((t) => t.id === role.id);
-    if (gameToken) {
-      console.log("移除同名token:", gameToken);
-      // tokenStore.removeToken(gameToken.id);
-      tokenStore.updateToken(gameToken.id, {
-        ...role,
-      });
+  /**
+   * 查重键 = 稳定键 serverId:roleId（master 2026-10-07 bug 修复）。
+   * 旧逻辑按 t.id === role.id 查重，而 token id = bin 内容 MD5——角色重新登录后
+   * bin 必变 → MD5 变 → 永远查不到旧记录 → 走 addToken 追加，新老两条并存
+   * （蟠桃/盐场里同一个角色出现两份，旧的那份 bin 已过期连不上）。
+   * 现在同角色命中旧记录时：保留旧 id 原地更新 → 按 token id 记录的
+   * 蟠桃勾选/俱乐部缓存等配置自动接上，不再悬空。
+   */
+  let addedCount = 0;
+  let updatedCount = 0;
+  for (const role of roleList.value) {
+    const sKey = getStableTokenKey(role.serverId, role.roleId);
+    const existing =
+      // ① 完全相同的 bin 重复导入（id 相同）→ 原地更新（原有行为）
+      tokenStore.gameTokens.find((t) => t.id === role.id) ||
+      // ② 同角色的过期 bin（稳定键相同、id 不同）→ 保留旧 id 更新
+      (sKey
+        ? tokenStore.gameTokens.find(
+            (t) => t.id !== role.id && getStableTokenKey(t.serverId, t.roleId) === sKey,
+          )
+        : undefined);
+
+    if (existing) {
+      // 新 bin 已按新 MD5 键存 IndexedDB（addSelectedRole → storeArrayBuffer），
+      // 但运行时刷新链路按 token.id 读 bin（tokenStore/gameLauncher）——
+      // 补一份按旧 id 键的存储，保证按旧 id 也能读到新 bin
+      try {
+        if (existing.id !== role.id) {
+          const buf = await getArrayBuffer(role.id);
+          if (buf) await storeArrayBuffer(existing.id, buf);
+        }
+      } catch (e) {
+        console.warn("补存新 bin 到旧 token id 失败（不影响导入）", e);
+      }
+      tokenStore.updateToken(existing.id, { ...role, id: existing.id });
+      updatedCount++;
     } else {
-      tokenStore.addToken({
-        ...role,
-      });
+      tokenStore.addToken({ ...role });
+      addedCount++;
     }
-  });
-  console.log("当前Token列表:", tokenStore.gameTokens);
-  message.success("Token添加成功");
+  }
+  if (updatedCount > 0) {
+    message.success(`导入完成：新增 ${addedCount} 个，同角色更新 ${updatedCount} 个（保留原记录）`);
+  } else {
+    message.success(`Token添加成功（新增 ${addedCount} 个）`);
+  }
   roleList.value = [];
   $emit("ok");
 };

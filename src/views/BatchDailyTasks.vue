@@ -5986,10 +5986,15 @@ const importConfig = async ({ file }) => {
             // Check if token already exists
             // 注意：BIN 导入的角色 token 字段为空（角色 Token 使用时才按需刷新），
             // 空字符串之间不能参与「相同 token」去重判断，否则会互相误判
+            // 稳定键维度（2026-10-07）：token id = bin 内容 MD5，同角色重导后 id 必变，
+            // 只按 id/token 查重会让同一角色出现两份 → 补 serverId:roleId 匹配
+            const importKey = getStableTokenKey(token.serverId, token.roleId);
             const exists = gameTokens.value.some(
               (t) =>
                 t.id === token.id ||
-                (!!token.token && t.token === token.token),
+                (!!token.token && t.token === token.token) ||
+                (importKey !== null &&
+                  getStableTokenKey(t.serverId, t.roleId) === importKey),
             );
             if (!exists) {
               // Add new token directly to gameTokens (useLocalStorage)
