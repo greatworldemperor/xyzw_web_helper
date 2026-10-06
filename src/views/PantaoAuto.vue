@@ -374,6 +374,26 @@ const downloadRecording = () => {
 const allTokens = computed(() => tokenStore.gameTokens || []);
 
 /**
+ * 悬空勾选自动清理（master 2026-10-07：全清角色重导 176 个后「已选」叠成 460）。
+ * 勾选列表按 token id 记账，而 token id = bin 内容 MD5——删号重导后旧 id 全部悬空，
+ * 残留在 localStorage 里越叠越多（284 悬空 + 176 新 = 460）。
+ * token 列表变化时，把不在列表里的 id 过滤掉并写回
+ * （gameTokens 是 useLocalStorage 同步加载，setup 时即为已加载数据，无误清窗口）。
+ */
+watch(
+  allTokens,
+  (tokens) => {
+    const alive = new Set(tokens.map((t) => String(t.id)));
+    const valid = selectedIds.value.filter((id) => alive.has(String(id)));
+    if (valid.length !== selectedIds.value.length) {
+      cfg.setRoleTokenIds(valid);
+      selectedIds.value = cfg.getRoleTokenIds();
+    }
+  },
+  { immediate: true },
+);
+
+/**
  * 俱乐部分组（master 2026-10-06 需求：按俱乐部为单位选择启动/关闭）。
  * 数据源 = **蟠桃自己的 roleCache**（probePantao 顺带 legion_getinfo 刷新；盐场数据不混用——
  * 盐场参与者与蟠桃参与者未必相同）。未探测过 / 无俱乐部信息的角色归入「未分组」。
