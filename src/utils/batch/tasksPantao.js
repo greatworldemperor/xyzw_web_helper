@@ -86,22 +86,20 @@ export function createTasksPantao(deps = {}) {
   /**
    * @returns {{ok:boolean, info?:object, tokenId?:string, reason?:string}}
    */
+  /**
+   * 探测（2026-10-06 重构，master：非活动日也要能「给角色分俱乐部」）：
+   *   ① legion_getinfo      —— 俱乐部档案，**任何时间可查**（不依赖战场开放）→ 分组数据源
+   *   ② legion_getpayloadbf —— 战场门票，仅活动开放日有意义（非活动日 roleBfState=noEntered 属正常）
+   * ok = 拿到俱乐部 或 拿到门票；reason 说明缺哪一半。
+   */
   const probePantao = async (tokenId) => {
     const label = findToken(tokenId)?.name || tokenId;
     try {
       await ensureConnection(tokenId);
-      const resp = await tokenStore.sendMessageWithPromise(
-        tokenId,
-        "legion_getpayloadbf",
-        {},
-        Number(settings().probeTimeoutMs) || 10000,
-      );
-      const info = resp?.info;
-      if (!info?.bfId || !info?.sid) {
-        return { ok: false, tokenId, reason: `legion_getpayloadbf 没返回 bfId/sid（roleBfState=${resp?.roleBfState ?? "?"}）` };
-      }
-      // 顺带取俱乐部（Legion_GetInfoResp.info.{id,name}）—— 供页面按俱乐部分组（master 2026-10-06 需求）
+
+      // ① 俱乐部（分组数据源）
       let legion = null;
+      let legionErr = "";
       try {
         const gi = await tokenStore.sendMessageWithPromise(
           tokenId,
@@ -110,17 +108,37 @@ export function createTasksPantao(deps = {}) {
           Number(settings().probeTimeoutMs) || 10000,
         );
         if (gi?.info?.id) legion = { id: gi.info.id, name: gi.info.name || "" };
-      } catch {
-        /* 俱乐部信息拿不到不影响探测结果 */
+        else legionErr = "legion_getinfo 没返回 info.id";
+      } catch (e) {
+        legionErr = `legion_getinfo: ${e?.message || e}`;
       }
-      return {
-        ok: true,
-        tokenId,
-        info,
-        label,
-        roleBfState: resp?.roleBfState || "",
-        legion,
-      };
+
+      // ② 战场门票（活动日才有）
+      let info = null;
+      let roleBfState = "";
+      let bfErr = "";
+      try {
+        const resp = await tokenStore.sendMessageWithPromise(
+          tokenId,
+          "legion_getpayloadbf",
+          {},
+          Number(settings().probeTimeoutMs) || 10000,
+        );
+        roleBfState = resp?.roleBfState || "";
+        if (resp?.info?.bfId && resp?.info?.sid) info = resp.info;
+        else bfErr = `roleBfState=${roleBfState || "?"}`;
+      } catch (e) {
+        bfErr = `${e?.message || e}`;
+      }
+
+      const ok = legion !== null || !!info;
+      const reason = ok
+        ? !info
+          ? `战场未开放（roleBfState=${roleBfState || "?"}）——俱乐部已记录，活动日再探测门票`
+          : ""
+        : `俱乐部与门票均失败（${[legionErr, bfErr].filter(Boolean).join("；")}）`;
+
+      return { ok, tokenId, info: info || null, label, roleBfState, legion, reason };
     } catch (e) {
       return { ok: false, tokenId, reason: `${label} 探测失败: ${e?.message || e}` };
     }

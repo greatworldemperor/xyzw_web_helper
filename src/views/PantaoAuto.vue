@@ -398,26 +398,42 @@ const stop = () => {
 
 const probeAll = async () => {
   probing.value = true;
-  addLog({ time: new Date().toLocaleTimeString(), message: `=== 探测 ${selectedIds.value.length} 个角色的蟠桃战场 ===`, type: "info" });
+  addLog({ time: new Date().toLocaleTimeString(), message: `=== 探测 ${selectedIds.value.length} 个角色（俱乐部 + 蟠桃战场门票） ===`, type: "info" });
+  let clubCount = 0;
+  let ticketCount = 0;
+  let failCount = 0;
   try {
     for (const id of selectedIds.value) {
       if (shouldStop.value) break;
       const r = await tasks.probePantao(id);
-      if (!r.ok) {
-        addLog({ time: new Date().toLocaleTimeString(), message: `${id} ${r.reason}`, type: "warning" });
-        continue;
-      }
-      const info = r.info;
-      // 俱乐部缓存（蟠桃自己的 roleCache —— 探测即刷新，供按俱乐部分组）
+      // 俱乐部缓存（任何日期可用——探测即刷新分组数据）
       if (r.legion?.id) {
         cfg.setRoleCacheEntry(String(id), { legionId: r.legion.id, legionName: r.legion.name || "" });
         clubVersion.value++;
+        clubCount++;
       }
-      addLog({
-        time: new Date().toLocaleTimeString(),
-        message: `${r.label}${r.legion?.name ? ` [${r.legion.name}]` : ""} 战场 ${info.bfId}（准备 ${ts(info.readyTime)} / 开打 ${ts(info.startTime)} / 结束 ${ts(info.endTime)}，roleBfState=${r.roleBfState || "-"}）`,
-        type: "success",
-      });
+      if (r.info) {
+        ticketCount++;
+        const info = r.info;
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${r.label}${r.legion?.name ? ` [${r.legion.name}]` : ""} 战场 ${info.bfId}（准备 ${ts(info.readyTime)} / 开打 ${ts(info.startTime)} / 结束 ${ts(info.endTime)}，roleBfState=${r.roleBfState || "-"}）`,
+          type: "success",
+        });
+      } else if (r.legion?.id) {
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${r.label} [${r.legion.name}] ${r.reason}`,
+          type: "info",
+        });
+      } else {
+        failCount++;
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${id} ${r.reason}`,
+          type: "warning",
+        });
+      }
       try {
         tokenStore.closeWebSocketConnection(id);
       } catch {
@@ -425,6 +441,11 @@ const probeAll = async () => {
       }
       coordinator.releaseConnectionSlot?.();
     }
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `=== 探测完成：俱乐部已记录 ${clubCount} 个｜战场有票 ${ticketCount} 个｜失败 ${failCount} 个 ===`,
+      type: failCount === 0 ? "success" : "warning",
+    });
   } finally {
     probing.value = false;
   }
