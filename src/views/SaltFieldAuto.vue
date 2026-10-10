@@ -369,6 +369,10 @@ const roleCache = ref(cfg.getRoleCache());
 const batchSettings = {
   maxActive: 3,
   connectionTimeout: 15000,
+  // 连接「准备阶段」宽限：fire-and-forget 建连后，连接对象真正落地（connecting）
+  // 之前的等待上限。这段含连接锁等待 + 关旧连接 + 按需刷新 role token，
+  // 不该占用 connectionTimeout（2026-10-10 盐场实跑复盘：这段曾是「每个角色必超时一次」的根因）
+  connectionPrepareGraceMs: 30000,
   reconnectDelay: 2000,
   maxLogEntries: MAX_LOGS,
 };
