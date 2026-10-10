@@ -17,6 +17,25 @@ import * as cfg from "@/utils/saltFieldConfig";
 /** 战场连接槽位（与批量主连接的 maxActive 分开限流） */
 export const battlefieldQueue = { active: 0 };
 
+/**
+ * 战场 state → 中文说明。
+ * 用于「没发起邀请就放弃」的日志与失败原因（口径见 legionWarState.getInviteReadiness）：
+ * 只有 watching 才可邀请，teamings/idle/combat/march/die 都拉不动。
+ */
+const INVITE_STATE_TEXT = {
+  teaming: "已被其它队伍组走（teamings）",
+  idle: "已登场（待机）",
+  combat: "已登场（战斗中）",
+  march: "已登场（行军中）",
+  die: "已阵亡（待复活）",
+  revive: "复活中",
+  not_in_field: "不在本战场名单内",
+  bad_cid: "cId 非法",
+  unknown: "状态未知",
+};
+
+const describeInviteState = (s) => INVITE_STATE_TEXT[String(s)] || `${s}（非观战态）`;
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** 兼容 ref / 裸数组 */
@@ -722,6 +741,27 @@ export function createTasksSaltField(deps) {
             break;
           }
           const { roleId, cId } = targets[i];
+
+          // 邀请前先验状态：不在观战态（watching）的人根本拉不动，
+          // 与其白发一次 war_invitejointeam 再干等 15s 超时，不如直接放弃（2026-10-11 master 口径）。
+          // not_in_field 例外：多半是快照滞后，仍按原样试一次。
+          const rd = getInviteReadiness(probe.session.state, cId, myCid);
+          if (!rd.ready) {
+            if (rd.reason === "in_my_team") {
+              joined.push(cId);
+              log(`${t} 队员 cId ${cId} 已在本队名单内，无需再邀请`, "info");
+              continue;
+            }
+            if (rd.reason !== "not_in_field") {
+              result.failed.push({ roleId, cId, reason: `未发起邀请：${describeInviteState(rd.reason)}` });
+              log(
+                `${t} 队员 cId ${cId} 当前 ${rd.reason}（非观战态）——直接放弃，不发起邀请`,
+                "warning",
+              );
+              continue;
+            }
+          }
+
           const inv = await doInvite(roleId, cId);
           if (inv.ok) {
             joined.push(cId);
