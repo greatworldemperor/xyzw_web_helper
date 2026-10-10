@@ -157,6 +157,12 @@ export const defaultBatchSettings = {
   taskDelay: 0,
   maxActive: 2,
   connectionTimeout: 10000,
+  /**
+   * 连接「准备阶段」宽限上限：fire-and-forget 建连后，到连接对象真正落地
+   * （status 从 disconnected 变为 connecting）之间的等待上限。
+   * 这段包含连接锁等待、关闭旧连接、按需刷新 role token，不计入 connectionTimeout。
+   */
+  connectionPrepareGraceMs: 30000,
   reconnectDelay: 1000,
   maxLogEntries: 1000,
   smartArenaMode: "lowestPower",

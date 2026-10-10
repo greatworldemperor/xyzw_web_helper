@@ -6,6 +6,15 @@
 export const connectionQueue = { active: 0 };
 
 /**
+ * 连接「准备阶段」的宽限上限（毫秒）。
+ *
+ * 见 waitForConnection 注释：tokenStore.createWebSocketConnection 是 fire-and-forget，
+ * 内部要依次 await「连接锁 → 关旧连接 → 按需刷新 role token」之后才把连接对象写成
+ * connecting，这段耗时不应计入 WS 握手的超时窗口，否则必然误报超时。
+ */
+export const DEFAULT_PREPARE_GRACE_MS = 30000;
+
+/**
  * 创建连接管理器
  * @param {object} options - 配置选项
  * @param {object} options.tokenStore - Token存储
@@ -34,18 +43,48 @@ export function createConnectionManager({ tokenStore, batchSettings, addLog }) {
   };
 
   /**
-   * 等待连接建立
+   * 等待连接建立（两段计时）。
+   *
    * @param {string} tokenId - Token ID
-   * @param {number} timeout - 超时时间
+   * @param {number} timeout - 握手超时（毫秒）
+   * @param {number} prepareGraceMs - 准备阶段宽限上限（毫秒）
+   *
+   * ⚠️ 2026-10-10 盐场实跑复盘修的根因：
+   * 调用方是 fire-and-forget 触发 tokenStore.createWebSocketConnection 的，而后者内部
+   * 要先跑一串 await（连接锁最长 10s → 关闭旧连接 → 按需刷新 role token）才会把
+   * wsConnections[tokenId] 写成 status="connecting"。在这之前 getWebSocketStatus 恒返回
+   * "disconnected"。旧实现把 10s 倒计时从「调用瞬间」起算，于是握手还没开始就已经超时，
+   * 表现为每个角色必定吃一次「连接超时，尝试重连...」，第二次（token 已热）才秒连。
+   *
+   * 修正后分两段：
+   *   ① 准备段（status 恒为 disconnected，连接对象尚未落地）→ 用 prepareGraceMs 宽限；
+   *   ② 握手段（已观察到 connecting/reconnecting/error，说明对象已落地）→ 严格按 timeout。
    */
-  const waitForConnection = async (tokenId, timeout = batchSettings.connectionTimeout) => {
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
+  const waitForConnection = async (
+    tokenId,
+    timeout = batchSettings.connectionTimeout,
+    prepareGraceMs = batchSettings.connectionPrepareGraceMs ?? DEFAULT_PREPARE_GRACE_MS,
+  ) => {
+    const startedAt = Date.now();
+    let handshakeStartedAt = 0;
+    for (;;) {
       const status = tokenStore.getWebSocketStatus(tokenId);
       if (status === "connected") return true;
+
+      const now = Date.now();
+      // 出现非 disconnected 状态 ⇒ 连接对象已创建，握手真正开始
+      if (!handshakeStartedAt && status && status !== "disconnected") {
+        handshakeStartedAt = now;
+      }
+
+      if (handshakeStartedAt) {
+        if (now - handshakeStartedAt >= timeout) return false;
+      } else if (now - startedAt >= prepareGraceMs) {
+        // 准备阶段超期：连接对象迟迟没影子，交给上层重连
+        return false;
+      }
       await new Promise((r) => setTimeout(r, 500));
     }
-    return false;
   };
 
   /**

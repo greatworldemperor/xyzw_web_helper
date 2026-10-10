@@ -134,6 +134,68 @@ export function createTasksSaltField(deps) {
     if (battlefieldQueue.active > 0) battlefieldQueue.active--;
   };
 
+  /* -------------------- 队长 token 并行预热 -------------------- */
+
+  /**
+   * 批量开跑前并行刷新所有队长的 role token。
+   *
+   * ⚠️ 2026-10-10 盐场实跑复盘：role token 是「BIN 导入时留空、首次建连时才按需刷新」
+   * 的惰性策略。不预热的话，每支队伍第一次 ensureConnection 都要在连接关键路径上
+   * 付一次刷新往返（撞 25/min 限流时更慢），而 ensureConnection 的超时倒计时从调用瞬间
+   * 起算，于是每个角色都先「连接超时」再重连连上。预热把这笔开销挪到正式开跑之前。
+   *
+   * @param {Array} teams 队伍清单
+   * @returns {Promise<{total:number, attempted:number, failed:number, elapsedMs:number, skipped:boolean}>}
+   */
+  const prewarmLeaderTokens = async (teams) => {
+    const canRefresh = typeof tokenStore?.ensureTokenAvailable === "function";
+    const seen = new Set();
+    const tokenIds = [];
+    for (const team of teams || []) {
+      const tok = findTokenByKey(team?.leaderKey);
+      const id = tok?.id;
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        tokenIds.push(id);
+      }
+    }
+    if (!canRefresh || tokenIds.length === 0) {
+      return { total: tokenIds.length, attempted: 0, failed: 0, elapsedMs: 0, skipped: true };
+    }
+
+    const startedAt = Date.now();
+    log(`预热 ${tokenIds.length} 个队长 token（把按需刷新挪到连接关键路径之外）…`, "info");
+
+    // 小并发推进：刷新接口有 25/min 速率限制，别一口气全压上去
+    const concurrency = Math.max(1, Number(settings()?.tokenPrewarmConcurrency) || 4);
+    let cursor = 0;
+    let attempted = 0;
+    let failed = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, tokenIds.length) }, async () => {
+        for (;;) {
+          const i = cursor++;
+          if (i >= tokenIds.length) return;
+          if (shouldStop?.value) return;
+          try {
+            await tokenStore.ensureTokenAvailable(tokenIds[i]);
+            attempted++;
+          } catch (e) {
+            failed++;
+            log(`token 预热失败：${e?.message || e}`, "warning");
+          }
+        }
+      }),
+    );
+
+    const elapsedMs = Date.now() - startedAt;
+    log(
+      `token 预热完成：${attempted}/${tokenIds.length} 已就绪${failed ? `，${failed} 个失败` : ""}，耗时 ${(elapsedMs / 1000).toFixed(1)}s`,
+      failed ? "warning" : "success",
+    );
+    return { total: tokenIds.length, attempted, failed, elapsedMs, skipped: false };
+  };
+
   /* -------------------- ① 同步角色信息 -------------------- */
 
   /**
@@ -652,6 +714,8 @@ export function createTasksSaltField(deps) {
 
         result.stage = "invite";
         const gap = Math.max(300, Number(settings().inviteIntervalMs) || 1200);
+        /** 真正入队的成员 cId —— 只有这些人才需要等「正式就位」 */
+        const joined = [];
         for (let i = 0; i < targets.length; i++) {
           if (shouldStop?.value) {
             result.error = "已手动停止";
@@ -659,36 +723,52 @@ export function createTasksSaltField(deps) {
           }
           const { roleId, cId } = targets[i];
           const inv = await doInvite(roleId, cId);
-          if (!inv.ok) {
+          if (inv.ok) {
+            joined.push(cId);
+          } else {
             const why = probe.session.describeInviteFailure?.(cId) || "邀请未就位（超时）";
             result.failed.push({ roleId, cId, reason: why });
           }
           if (i < targets.length - 1) await sleep(gap);
         }
         // 必须「全员正式就位」才能登场（占位≠就位；含未就位成员时全队无法登场）
+        // ⚠️ 2026-10-10 盐场实跑复盘：want 原先取全部 targets（含邀请失败者），
+        //    等待条件因此永不成立 → 必然打满 30s → throw 跳过整队 → 已经组队成功的
+        //    队友一起被放弃。实测 8 轮因此一次 war_setbattleteam 都没发出。
+        //    正确做法：只等真正入队的 joined。
         if (targets.length && !shouldStop?.value) {
-          const want = targets.map((x) => x.cId);
-          result.stage = "confirm";
-          log(`${t} 等待全员正式就位（每人邀请后约 8 秒准备期）…`, "info");
-          const settled = await probe.session.waitForState(
-            (s) => {
-              const u = getUnsettledMembers(s, myCid, want);
-              return u.notInTeam.length === 0 && u.stillPreparing.length === 0;
-            },
-            30000,
-            300,
-          );
-          if (!settled) {
-            const u = getUnsettledMembers(probe.session.state, myCid, want);
-            const detail = [
-              u.notInTeam.length ? `未入名单 cId ${u.notInTeam.join(",")}` : "",
-              u.stillPreparing.length ? `仍在准备期 cId ${u.stillPreparing.join(",")}（还需 ${u.readySecLeft}s）` : "",
-            ].filter(Boolean).join("；");
-            throw new Error(`全员就位超时（30s）：${detail}——跳过该队伍`);
+          const missing = targets.length - joined.length;
+          if (missing > 0) {
+            log(`${t} ${missing}/${targets.length} 名队员未拉进来，按现有 ${joined.length + 1} 人登场`, "warning");
           }
-          log(`${t} 全员已正式就位，开始登场`, "success");
+          result.expectedMembers = 1 + joined.length;
+          if (joined.length === 0) {
+            log(`${t} 无人入队，跳过等待就位，直接进入登场`, "warning");
+          } else {
+            const want = joined;
+            result.stage = "confirm";
+            log(`${t} 等待 ${want.length} 名已入队成员正式就位（每人邀请后约 8 秒准备期）…`, "info");
+            const settled = await probe.session.waitForState(
+              (s) => {
+                const u = getUnsettledMembers(s, myCid, want);
+                return u.notInTeam.length === 0 && u.stillPreparing.length === 0;
+              },
+              30000,
+              300,
+            );
+            if (!settled) {
+              const u = getUnsettledMembers(probe.session.state, myCid, want);
+              const detail = [
+                u.notInTeam.length ? `未入名单 cId ${u.notInTeam.join(",")}` : "",
+                u.stillPreparing.length ? `仍在准备期 cId ${u.stillPreparing.join(",")}（还需 ${u.readySecLeft}s）` : "",
+              ].filter(Boolean).join("；");
+              throw new Error(`全员就位超时（30s）：${detail}——跳过该队伍`);
+            }
+            log(`${t} ${want.length} 名全员已正式就位，开始登场`, "success");
+          }
+        } else {
+          result.expectedMembers = 1;
         }
-        result.expectedMembers = 1 + targets.length;
       } else {
         /* ---------- 等待模式：持续刷新清单，出现一个组一个，全部组上再登场 ---------- */
         result.stage = "wait";
@@ -897,6 +977,13 @@ export function createTasksSaltField(deps) {
     if (shouldStop) shouldStop.value = false;
 
     log(`=== 开始执行：${runnable.length} 个俱乐部 / ${runnable.reduce((n, g) => n + g.teams.length, 0)} 支队伍 ===`, "info");
+
+    // 先并行预热队长 token：避免每支队伍在首连关键路径上各自付一次刷新往返
+    try {
+      await prewarmLeaderTokens(runnable.flatMap((g) => g.teams));
+    } catch (e) {
+      log(`token 预热异常，按原流程继续：${e?.message || e}`, "warning");
+    }
 
     const results = [];
     const attemptsByTeam = new Map(); // teamId -> 已尝试次数
