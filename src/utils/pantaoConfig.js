@@ -35,6 +35,11 @@ export const DEFAULT_SETTINGS = {
   enterTimeoutMs: 15000,
   /** 战场连接并发上限 */
   maxActiveBattlefield: 3,
+  /**
+   * 批次看门狗（ms）：单批次超过此时长未完成即按失败计并继续下一批。
+   * 2026-10-11 事故兜底（fix C）——当日第一批卡死 33 分钟零输出。
+   */
+  batchWatchdogMs: 180000,
   /** 行军每格耗时（ms）——实测 2000 */
   msPerMarchStep: 2000,
   /** 是否只探测不行动（dry run） */

@@ -15,6 +15,16 @@ export const connectionQueue = { active: 0 };
 export const DEFAULT_PREPARE_GRACE_MS = 30000;
 
 /**
+ * 等待连接槽位的兜底超时（毫秒）。
+ *
+ * 2026-10-11 蟠桃事故兜底（fix B）：waitForConnectionSlot 曾是全链路唯一
+ * 「无超时、无日志」的等待点 —— 槽位死锁时表现为静默卡死（10-11 第一批
+ * 3 角色卡 33 分钟零输出，WSS 0 帧）。加兜底上限后，任何未来的死锁都会
+ * 在上限时间内变成一条可见报错，而不是无限静默等待。
+ */
+export const DEFAULT_SLOT_WAIT_TIMEOUT_MS = 300000;
+
+/**
  * 创建连接管理器
  * @param {object} options - 配置选项
  * @param {object} options.tokenStore - Token存储
@@ -24,10 +34,18 @@ export const DEFAULT_PREPARE_GRACE_MS = 30000;
  */
 export function createConnectionManager({ tokenStore, batchSettings, addLog }) {
   /**
-   * 等待连接槽位
+   * 等待连接槽位（fix B：带兜底超时，超时抛可见错误而非静默无限等待）
    */
   const waitForConnectionSlot = async () => {
+    const waitStart = Date.now();
+    const waitCap =
+      Number(batchSettings.connectionSlotWaitTimeoutMs) || DEFAULT_SLOT_WAIT_TIMEOUT_MS;
     while (connectionQueue.active >= batchSettings.maxActive) {
+      if (Date.now() - waitStart >= waitCap) {
+        throw new Error(
+          `等待连接槽位超时（${Math.round(waitCap / 1000)}s，队列 ${connectionQueue.active}/${batchSettings.maxActive}）——疑似槽位死锁，已放弃等待（2026-10-11 蟠桃死锁兜底）`,
+        );
+      }
       await new Promise((r) => setTimeout(r, 1000));
     }
     connectionQueue.active++;
@@ -88,10 +106,61 @@ export function createConnectionManager({ tokenStore, batchSettings, addLog }) {
   };
 
   /**
+   * 初始化会话数据（role_getroleinfo → fight_startlevel）。
+   * 从 ensureConnection 中提出，供「新建连接」和「已连接复用」两条路径共用。
+   */
+  const initSessionData = async (tokenId) => {
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `连接成功，初始化会话数据（role_getroleinfo → fight_startlevel）……若长时间停留在此条 = 命中服务器限流恢复循环，请看限流弹窗`,
+      type: "info",
+    });
+    try {
+      // Fetch Role Info first (Standard flow)
+      await tokenStore.sendMessageWithPromise(
+        tokenId,
+        "role_getroleinfo",
+        {},
+        5000
+      );
+
+      // Fetch Battle Version
+      const res = await tokenStore.sendMessageWithPromise(
+        tokenId,
+        "fight_startlevel",
+        {},
+        5000
+      );
+      if (res?.battleData?.version) {
+        tokenStore.setBattleVersion(res.battleData.version);
+      }
+    } catch (e) {
+      addLog({
+        time: new Date().toLocaleTimeString(),
+        message: `初始化数据失败: ${e.message}`,
+        type: "warning",
+      });
+      throw e;
+    }
+  };
+
+  /**
    * 确保连接建立
    * @param {string} tokenId - Token ID
    * @param {object} tokens - Tokens列表
    * @param {number} maxRetries - 最大重试次数
+   * @param {boolean} slotAlreadyAcquired - 调用方已自行占槽时传 true
+   *
+   * 🔴 2026-10-11 蟠桃死锁修复（fix A，根因）：
+   * 旧实现「先占槽 → 后查状态」，导致同一 token 的二次 ensureConnection
+   * （runOnePantaoRole → probePantao）在并发占满槽位时形成环形等待：
+   * 每个任务持 1 槽再等第 2 槽，谁也不放 → 第一批即死锁（33 分钟零输出）。
+   * 修正后：已连接的 token 走幂等路径（直接初始化会话数据），完全不碰槽位；
+   * 只有真正需要建连时才占槽，槽保持占用到任务结束由调用方释放。
+   *
+   * ⚠️ 收支语义：幂等路径不占槽，而调用方 finally 仍会无条件 release 一次，
+   * 该场景 active 会「多放一」向宽松方向漂移（有 >0 下限保护）——只会让
+   * 并发上限轻微放宽，绝不会向「虚高→死锁」方向漂移，可接受。
    */
   const ensureConnection = async (
     tokenId,
@@ -102,6 +171,12 @@ export function createConnectionManager({ tokenStore, batchSettings, addLog }) {
     const latestToken = tokens.find((t) => t.id === tokenId);
     if (!latestToken) {
       throw new Error(`Token not found: ${tokenId}`);
+    }
+
+    // fix A：先查状态 —— 已连接 ⇒ 幂等路径，不占槽直接初始化
+    if (tokenStore.getWebSocketStatus(tokenId) === "connected") {
+      await initSessionData(tokenId);
+      return true;
     }
 
     if (!slotAlreadyAcquired) {
@@ -159,38 +234,7 @@ export function createConnectionManager({ tokenStore, batchSettings, addLog }) {
     // 连接成功，槽位保持占用，直到任务完成后手动释放
 
     // Initialize Game Data (Critical for Battle Version and Session)
-    addLog({
-      time: new Date().toLocaleTimeString(),
-      message: `连接成功，初始化会话数据（role_getroleinfo → fight_startlevel）……若长时间停留在此条 = 命中服务器限流恢复循环，请看限流弹窗`,
-      type: "info",
-    });
-    try {
-      // Fetch Role Info first (Standard flow)
-      await tokenStore.sendMessageWithPromise(
-        tokenId,
-        "role_getroleinfo",
-        {},
-        5000
-      );
-
-      // Fetch Battle Version
-      const res = await tokenStore.sendMessageWithPromise(
-        tokenId,
-        "fight_startlevel",
-        {},
-        5000
-      );
-      if (res?.battleData?.version) {
-        tokenStore.setBattleVersion(res.battleData.version);
-      }
-    } catch (e) {
-      addLog({
-        time: new Date().toLocaleTimeString(),
-        message: `初始化数据失败: ${e.message}`,
-        type: "warning",
-      });
-      throw e;
-    }
+    await initSessionData(tokenId);
 
     return true;
   };

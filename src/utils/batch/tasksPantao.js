@@ -435,8 +435,34 @@ export function createTasksPantao(deps = {}) {
         const batch = batches[bi];
         log(`批次 ${bi + 1}/${batches.length}：${batch.map((id) => findToken(id)?.name || id).join("、")}`, "info");
 
-        const batchResults = await Promise.all(batch.map((id) => runOnePantaoRole({ tokenId: id })));
-        results.push(...batchResults);
+        // 2026-10-11 看门狗（fix C，兜底）：单批次卡超过 batchWatchdogMs 就按失败计并继续
+        // 下一批。当日事故里第一批卡死 33 分钟，shouldStop 只能在批次边界生效，
+        // Promise.all 永远等不到 —— 看门狗保证任何未来的内部卡死最多损失一个批次。
+        // 超时后原任务仍在后台跑（JS 无法强杀 Promise），其 finally 最终会释放槽位；
+        // 本批结果用占位失败记录，不再等待真实结果。
+        const watchdogMs = Number(s.batchWatchdogMs) || 180000;
+        const batchResults = await Promise.race([
+          Promise.all(batch.map((id) => runOnePantaoRole({ tokenId: id }))),
+          sleep(watchdogMs).then(() => null),
+        ]);
+
+        if (batchResults === null) {
+          log(
+            `⚠️ 批次 ${bi + 1} 超过 ${Math.round(watchdogMs / 1000)}s 未完成（疑似内部卡死）——本批按失败计并继续下一批`,
+            "error",
+          );
+          results.push(
+            ...batch.map((id) => ({
+              tokenId: id,
+              name: findToken(id)?.name || id,
+              ok: false,
+              stage: "watchdog",
+              reason: `批次看门狗超时（${Math.round(watchdogMs / 1000)}s 未完成，已跳过）`,
+            })),
+          );
+        } else {
+          results.push(...batchResults);
+        }
 
         if (bi < batches.length - 1) await sleep(interval);
       }
