@@ -130,3 +130,15 @@ DEFAULT_RULES = `platformExt:mix + clientVersion:2.48.2-cbe6e57c…`（= 工具�
 ⇒ 每周 SOP（runtime+工具 共 2 行）：微信包解出本周串 → 改 `clientVersion.js` + `first-frame-spoof.js` 各一行。
 ⇒ 周六盐场 PVP = 判决实验：镜像页（spoof 默认开）以 mix/2.48.2 真串打 PVP——
 过 ⇒ 3000070 版本门全面突破（runtime+工具双路通）；拒 ⇒ 门含设备/会话指纹（下一战场）。
+
+## 11. 赛季淘汰赛助威（天工投票，2026-10-15 接入）
+
+> 完整协议分析：`docs/saltroad-season-out-cheer-protocol.md`（抓包 `local-data/tiangong_vote/vote.jsonl`，逐字节复现 0 失败）。
+
+- 入口：批量页「**临时活动**」标签页 → 「赛季淘汰赛助威」弹窗（名单 = 淘汰赛排行前 64，点选后对全部选中账号投票）。
+- 命令：`saltroad_getseasonoutrank {}`（探活跃 + 名单）+ `saltroad_outcheer {legionId}`（投票，成功回 `SyncResp`）。
+- 口径：**一账号一届一次**（记录键 `sr:out:cheer:<赛季首轮yyMMdd>`，如 `261003`）；重复投/窗口外由服务端拒绝，日志里给中文原因。
+- 实现：`src/utils/seasonOutCheer.js`（纯逻辑）+ `src/utils/batch/tasksSeasonOutCheer.js`（`batchSeasonOutCheer`）+ 自由模板「临时活动」分组（参数 `seasonOutCheerLegionId`）。
+- 测试：`test/seasonOutCheer.test.js` + `test/tasksSeasonOutCheer.test.js`（18 例全绿）。
+- ⚠️ 对战表（`saltroad_getoutopponent {phase}`）**未接入**：phase 来自客户端赛程配置，服务端无查询接口；助威只需要俱乐部 ID，用不上。
+- 活动结束后的下线先例：照逍遥津做法移除「临时活动」分组任务项 + 页面入口，源码与测试保留。

@@ -35,6 +35,8 @@ export { createTasksApex } from './tasksApex.js';
 export { createTasksCampChallengeStrategy } from './tasksCampChallengeStrategy.js';
 export { createTasksSaltField, battlefieldQueue } from './tasksSaltField.js';
 export { createTasksXianMaster } from './tasksXianMaster.js';
+// 盐场「赛季淘汰赛助威」（天工投票，2026-10-15 抓包实证，见 docs/saltroad-season-out-cheer-protocol.md）
+export { createTasksSeasonOutCheer } from './tasksSeasonOutCheer.js';
 export { createTasksXiaoyaojin } from './tasksXiaoyaojin.js';
 export {
   createTasksGoldenfish,

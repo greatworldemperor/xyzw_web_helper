@@ -911,12 +911,24 @@
               </n-space>
             </n-tab-pane>
             <n-tab-pane name="temporary" tab="临时活动">
-              <!-- 空壳：限时临时活动都挂在这里，当前没有进行中的活动 -->
-              <n-empty
-                description="暂无进行中的临时活动"
-                size="small"
-                class="temporary-activity-empty"
-              />
+              <!-- 限时临时活动入口。2026-10-15 接入盐场「赛季淘汰赛助威」（天工投票） -->
+              <n-space vertical :size="8">
+                <n-space align="center" :size="8" wrap>
+                  <n-button
+                    size="small"
+                    @click="openSeasonOutCheerModal"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    赛季淘汰赛助威
+                  </n-button>
+                </n-space>
+                <span class="xiaoyaojin-hint">
+                  盐场赛季淘汰赛（64 强）助威：助威名单按淘汰赛胜场取前 64 家俱乐部，
+                  每家俱乐部点「助威」即对<b>所有选中账号</b>投票。
+                  每账号每届仅可助威一家（记录键 sr:out:cheer:&lt;赛季首轮日期&gt;），
+                  已助威或窗口未开时服务端会拒绝并在日志里给出原因；活跃度以服务端为准。
+                </span>
+              </n-space>
             </n-tab-pane>
             <n-tab-pane name="goldenfish" tab="金鱼">
               <n-space vertical :size="8">
@@ -2400,6 +2412,30 @@
             </div>
           </div>
         </div>
+
+        <div
+          v-if="flexibleTemplateTasks.includes('batchSeasonOutCheer')"
+          class="flexible-conditional-settings"
+        >
+          <div class="flexible-conditional-settings__title">
+            赛季淘汰赛助威参数
+          </div>
+          <div class="flexible-settings-grid">
+            <div class="setting-item">
+              <label class="setting-label">俱乐部ID</label>
+              <n-input-number
+                v-model:value="flexibleTemplateSettings.seasonOutCheerLegionId"
+                :min="1"
+                :show-button="false"
+                style="width: 100%"
+              />
+            </div>
+          </div>
+          <div class="setting-hint">
+            在「临时活动」标签页打开助威弹窗可查看助威名单（按淘汰赛胜场取前
+            64）；每账号每届仅可助威一次，已助威的账号服务端会拒绝。
+          </div>
+        </div>
       </div>
 
       <div class="modal-actions flexible-editor-footer">
@@ -3761,6 +3797,63 @@
       </div>
     </n-modal>
 
+    <!-- 赛季淘汰赛助威（天工投票）Modal -->
+    <n-modal
+      v-model:show="showSeasonOutCheerModal"
+      preset="card"
+      title="赛季淘汰赛助威"
+      style="width: 90%; max-width: 860px"
+    >
+      <div class="settings-content">
+        <div
+          style="
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+          "
+        >
+          <n-button
+            type="primary"
+            @click="handleSeasonOutCheer"
+            :disabled="!selectedSeasonOutCheerLegionId || isRunning"
+          >
+            对选中账号助威
+          </n-button>
+          <n-button
+            @click="fetchSeasonOutCheerRank"
+            :loading="seasonOutCheerLoading"
+          >
+            刷新数据
+          </n-button>
+          <span style="color: #86909c; font-size: 12px">
+            名单 = 赛季淘汰赛排行按胜场取前 64；每账号每届仅可助威一次
+          </span>
+        </div>
+
+        <n-data-table
+          :columns="seasonOutCheerColumns"
+          :data="seasonOutCheerList"
+          :loading="seasonOutCheerLoading"
+          :row-key="(row) => row.id"
+          :checked-row-keys="
+            selectedSeasonOutCheerLegionId
+              ? [selectedSeasonOutCheerLegionId]
+              : []
+          "
+          @update:checked-row-keys="
+            (keys) => (selectedSeasonOutCheerLegionId = keys[0])
+          "
+          :row-props="seasonOutCheerRowProps"
+          style="height: 440px; flex: 1"
+          flex-height
+        />
+      </div>
+      <div class="modal-actions" style="margin-top: 20px; text-align: right">
+        <n-button @click="showSeasonOutCheerModal = false">关闭</n-button>
+      </div>
+    </n-modal>
+
     <!-- Token Group Management Modal -->
     <n-modal
       v-model:show="showGroupManageModal"
@@ -4225,6 +4318,7 @@ import {
   createTasksApex,
   createTasksCampChallengeStrategy,
   createTasksXianMaster,
+  createTasksSeasonOutCheer,
   createTasksWhiteJadePkroom,
   createTasksGoldenfish,
   GOLDENFISH_SHOP_DEFAULTS,
@@ -4236,6 +4330,9 @@ import {
 
 // 金鱼收尾（第 1~16 步）：第 16 步的失败清单汇总 + 可下载文本
 import { summarizeFinishResults } from "@/utils/goldenfishFinishRun";
+
+// 盐场「赛季淘汰赛助威」（天工投票）：助威面板名单排序口径与游戏客户端对齐
+import { selectTopSeasonOutLegions } from "@/utils/seasonOutCheer";
 
 import { merchantConfig, goldItemsConfig } from "@/utils/dreamConstants";
 
@@ -4908,6 +5005,139 @@ const handleWarGuessCheer = async () => {
   await batchWarGuessCheer(selectedWarGuessLegionId.value, warGuessCoin.value);
 };
 
+// ======================
+// 赛季淘汰赛助威（天工投票）
+// 协议：saltroad_getseasonoutrank / saltroad_outcheer
+// 证据：local-data/tiangong_vote/vote.jsonl（2026-10-15，逐字节复现通过）
+// ======================
+const showSeasonOutCheerModal = ref(false);
+const seasonOutCheerList = ref([]);
+const seasonOutCheerLoading = ref(false);
+const selectedSeasonOutCheerLegionId = ref(null);
+
+const seasonOutCheerColumns = [
+  {
+    type: "selection",
+    multiple: false,
+  },
+  { title: "俱乐部ID", key: "id", width: 110 },
+  {
+    title: "头像",
+    key: "logo",
+    render(row) {
+      return h("img", {
+        src: row.logo,
+        style: { width: "30px", height: "30px", borderRadius: "50%" },
+      });
+    },
+    width: 60,
+  },
+  { title: "区服", key: "serverId", width: 90 },
+  { title: "俱乐部", key: "name", width: 140 },
+  {
+    title: "战力",
+    key: "power",
+    render(row) {
+      return formatPower(row.power);
+    },
+    width: 110,
+  },
+  { title: "红淬", key: "redQuench", width: 80 },
+  {
+    title: "淘汰赛战绩",
+    key: "sOWinCnt",
+    render(row) {
+      return `${row.sOWinCnt || 0}胜 ${row.sOLoseCnt || 0}负`;
+    },
+    width: 110,
+  },
+  { title: "淘汰赛积分", key: "sOSumScore", width: 110 },
+  { title: "赛季总积分", key: "sRTotalScore", width: 110 },
+];
+
+const seasonOutCheerRowProps = (row) => {
+  return {
+    style: "cursor: pointer",
+    onClick: () => {
+      selectedSeasonOutCheerLegionId.value = row.id;
+    },
+  };
+};
+
+const openSeasonOutCheerModal = () => {
+  showSeasonOutCheerModal.value = true;
+  selectedSeasonOutCheerLegionId.value = null;
+  seasonOutCheerList.value = [];
+  if (selectedTokens.value.length > 0) {
+    fetchSeasonOutCheerRank();
+  }
+};
+
+const fetchSeasonOutCheerRank = async () => {
+  if (selectedTokens.value.length === 0) {
+    message.warning("请先选择一个账号用于获取淘汰赛助威名单");
+    return;
+  }
+
+  const tokenId = selectedTokens.value[0];
+  const token = tokens.value.find((t) => t.id === tokenId);
+
+  seasonOutCheerLoading.value = true;
+  try {
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `正在使用 ${token.name} 获取赛季淘汰赛助威名单...`,
+      type: "info",
+    });
+
+    // Ensure connection（与月赛助威弹窗同款做法）
+    const status = tokenStore.getWebSocketStatus(tokenId);
+    if (status !== "connected") {
+      tokenStore.createWebSocketConnection(tokenId, token.token, token.wsUrl);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+
+    const res = await tokenStore.sendMessageWithPromise(
+      tokenId,
+      "saltroad_getseasonoutrank",
+      {},
+      8000,
+    );
+
+    if (Array.isArray(res?.legionList) && res.legionList.length > 0) {
+      // 排序口径与游戏客户端一致：sOWinCnt 降序、同胜场保持原序、取前 64
+      seasonOutCheerList.value = selectTopSeasonOutLegions(res.legionList);
+      if (res.legionList.length > seasonOutCheerList.value.length) {
+        message.success(
+          `共 ${res.legionList.length} 家俱乐部，已按胜场取前 ${seasonOutCheerList.value.length} 家`,
+        );
+      }
+    } else {
+      seasonOutCheerList.value = [];
+      message.warning("当前不在淘汰赛助威开放时间（服务端返回空名单）");
+    }
+  } catch (error) {
+    console.error("Fetch season out rank error:", error);
+    message.error("获取淘汰赛助威名单失败: " + error.message);
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `获取淘汰赛助威名单失败: ${error.message}`,
+      type: "error",
+    });
+  } finally {
+    seasonOutCheerLoading.value = false;
+  }
+};
+
+const handleSeasonOutCheer = async () => {
+  if (!selectedSeasonOutCheerLegionId.value) {
+    message.warning("请先选择一家俱乐部");
+    return;
+  }
+  showSeasonOutCheerModal.value = false;
+  await batchSeasonOutCheer(selectedSeasonOutCheerLegionId.value);
+};
+
 // Settings Modal State
 const showSettingsModal = ref(false);
 const currentSettingsTokenId = ref(null);
@@ -5066,6 +5296,13 @@ const saveFlexibleTemplate = () => {
     !flexibleTemplateSettings.warGuessLegionId
   ) {
     message.error("请填写月赛助威俱乐部ID");
+    return;
+  }
+  if (
+    flexibleTemplateTasks.value.includes("batchSeasonOutCheer") &&
+    !flexibleTemplateSettings.seasonOutCheerLegionId
+  ) {
+    message.error("请填写淘汰赛助威俱乐部ID");
     return;
   }
   if (
@@ -8542,6 +8779,10 @@ const {
 const tasksXianMaster = createTasksXianMaster(createTaskDeps());
 const { detectXianMasters } = tasksXianMaster;
 
+// 盐场「赛季淘汰赛助威」（天工投票，2026-10-15 抓包实证）
+const tasksSeasonOutCheer = createTasksSeasonOutCheer(createTaskDeps());
+const { batchSeasonOutCheer } = tasksSeasonOutCheer;
+
 const tasksBottle = createTasksBottle(createTaskDeps());
 const { resetBottles, batchlingguanzi } = tasksBottle;
 
@@ -8989,6 +9230,8 @@ const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksLegacy(deps),
   ...createTasksFootball(deps),
   ...createTasksCampChallengeStrategy(deps),
+  // 盐场「赛季淘汰赛助威」（临时活动分组，2026-10-15 接入）
+  ...createTasksSeasonOutCheer(deps),
   // 逍遥津已于 2026-09-26 活动结束后下线（UI 已摘除；源码与测试保留在
   // utils/batch/tasksXiaoyaojin.js + utils/xiaoyaojinPlan.js，下期接回只需恢复接线）
   ...createTasksGoldenfish(deps),
@@ -9029,6 +9272,11 @@ const getFlexibleTaskUnavailableReason = (taskId, settings) => {
   if (taskId === "batchWarGuessCheer" && !isWarGuessActivityOpen.value) {
     return warGuessActivityTip.value;
   }
+  // 赛季淘汰赛助威：不做本地时间闸门（客户端拿不到赛程配置），
+  // 活跃度/窗口一律以服务端为准；缺俱乐部ID时在模板校验里拦。
+  if (taskId === "batchSeasonOutCheer") {
+    return "";
+  }
   if (
     taskId === "activityBuyBlackMarketWeek" &&
     !(
@@ -9059,6 +9307,12 @@ const getFlexibleTemplateValidationError = (template) => {
     !template.settings.warGuessLegionId
   ) {
     return "自由模板缺少月赛助威俱乐部ID";
+  }
+  if (
+    template.selectedTasks.includes("batchSeasonOutCheer") &&
+    !template.settings.seasonOutCheerLegionId
+  ) {
+    return "自由模板缺少淘汰赛助威俱乐部ID";
   }
   if (
     template.selectedTasks.includes("activityBuyBlackMarketWeek") &&
@@ -9209,6 +9463,8 @@ const runFlexibleBatchTask = async (
         template.settings.warGuessLegionId,
         template.settings.warGuessCoin,
       );
+    } else if (task.handler === "batchSeasonOutCheer") {
+      await handler(template.settings.seasonOutCheerLegionId);
     } else if (task.handler === "activityBuyBlackMarketWeek") {
       // 自由模板：按模板里勾选的商品清单购买（无清单的任务已在入口被跳过）
       await handler([...(template.settings.blackMarketGoodsKeys || [])]);
@@ -10305,7 +10561,7 @@ const stopBatch = () => {
   line-height: 1.6;
 }
 
-/* 「临时活动」空壳占位 */
+/* 「临时活动」标签页无活动时的占位样式（当前有盐场淘汰赛助威，保留备用） */
 .temporary-activity-empty {
   padding: 24px 0;
 }

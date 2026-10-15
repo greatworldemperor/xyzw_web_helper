@@ -54,6 +54,17 @@
 **未实现**：`war_startmarch` · `war_startattackbuilding{buildingId}`(实测 20/20 成功) · `war_speedup{marchId}` · `war_adjustteampos` · `war_kickoutteam` · `war_leave` · `war_resurrect`
 **🔴 禁止**：`war_startbattle`（3000070）
 
+### 4.1 赛季淘汰赛助威（天工投票，2026-10-15 抓包实证）
+
+| 命令 | 参数 | 响应 |
+|---|---|---|
+| `saltroad_getseasonoutrank` | `null` | `SaltRoad_GetSeasonOutRankResp {round, legionList[]}` |
+| `saltroad_outcheer` | `{legionId:Number}` | **`SyncResp`**（`role.statistics["sr:out:cheer:<赛季首轮yyMMdd>"]`） |
+| `saltroad_getoutopponent` | `{phase:"261016"}` | `SaltRoad_GetOutOpponentResp`（对战表；phase 无服务端查询接口，工具未接入） |
+
+助威面板 = legionList 按 `sOWinCnt` 降序稳定排序取前 64；**一账号一届一次**（重复投服务端拒）。
+详见 `docs/saltroad-season-out-cheer-protocol.md`。
+
 ## 5. 营地挑战
 
 `club_getinfo` · `club_gettargetteam{targetId:Number}` · `hero_calcpowerbyteam` · `club_attack{nodeId,targetId,challengeCnt,failCnt,targetIsMirror,useItem,teamSetParams}` · `club_attackmonster{useItem,teamSetParams}` · `club_taskclaim{confId}` · `club_draw{}`

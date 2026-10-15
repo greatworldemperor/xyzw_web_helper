@@ -135,6 +135,18 @@ export const flexibleTaskGroups = [
       batchTask("batchWarGuessCheer", "月赛助威", { requires: "warGuess" }),
     ],
   },
+  {
+    // 「临时活动」分组：限时活动入口（逍遥津 7 任务 2026-09-26 下线后留下的空壳分组）。
+    // 2026-10-15 接入盐场「赛季淘汰赛助威」（天工投票，抓包实证）。
+    // ⚠️ 活动结束后按逍遥津先例把分组与任务项一并移除，源码与测试保留。
+    name: "temporary",
+    label: "临时活动",
+    tasks: [
+      batchTask("batchSeasonOutCheer", "赛季淘汰赛助威", {
+        requires: "seasonOutCheer",
+      }),
+    ],
+  },
   // 逍遥津（"临时活动" 分组）已于 2026-09-26 活动结束后下线：
   // 分组与任务项一并移除。源码与测试保留（utils/batch/tasksXiaoyaojin.js +
   // utils/xiaoyaojinPlan.js + test/xiaoyaojinPlan.test.js + test/tasksXiaoyaojinCoupon.test.js），
@@ -182,6 +194,8 @@ export const defaultFlexibleTemplateSettings = {
   legacyGiftQuantity: 10,
   warGuessLegionId: null,
   warGuessCoin: 20,
+  // 赛季淘汰赛助威（天工投票）：目标俱乐部ID；每账号每届仅可助威一次
+  seasonOutCheerLegionId: null,
   blackMarketGoodsKeys: [],
   blackMarketGoodsTitles: [],
 };
@@ -310,6 +324,7 @@ export const normalizeFlexibleTemplateSettings = (settings) => {
       20,
       defaults.warGuessCoin,
     ),
+    seasonOutCheerLegionId: normalizeOptionalId(source.seasonOutCheerLegionId),
     blackMarketGoodsKeys: normalizeBlackMarketKeys(
       source.blackMarketGoodsKeys,
     ),

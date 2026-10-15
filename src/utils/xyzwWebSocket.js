@@ -230,6 +230,10 @@ export function registerDefaultCommands(reg) {
     .register("legion_claimpayloadtaskprogress")
     .register("saltroad_getwartype")
     .register("saltroad_getsaltroadwargrouprank")
+    // 赛季淘汰赛助威（天工投票；2026-10-15 抓包 local-data/tiangong_vote/vote.jsonl，
+    // SEND 帧逐字节精确复现。详见 docs/saltroad-season-out-cheer-protocol.md）
+    .register("saltroad_getseasonoutrank")
+    .register("saltroad_outcheer", { legionId: 1 })
     .register("league_getbattlefield")
     .register("league_getgroupopponent")
     .register("legion_signup") // 盐场报名
@@ -1190,6 +1194,8 @@ export class XyzwWebSocketClient {
       legion_claimpayloadtaskprogressresp: "legion_claimpayloadtaskprogress",
       saltroad_getwartyperesp: "saltroad_getwartype",
       saltroad_getsaltroadwartotalrankresp: "saltroad_getsaltroadwartotalrank",
+      // 赛季淘汰赛助威：响应 SaltRoad_GetSeasonOutRankResp（resp=seq 亦可匹配）
+      saltroad_getseasonoutrankresp: "saltroad_getseasonoutrank",
       warguess_getrankresp: "warguess_getrank",
       warguess_startguessresp: "warguess_startguess",
       warguess_getguesscoinrewardresp: "warguess_getguesscoinreward",
@@ -1280,6 +1286,10 @@ export class XyzwWebSocketClient {
         // ⚠️ 同时会有一条 {seq,ack,time,code:11900050,error:"感谢您预约本场比赛…"} 信封，
         //    它无 resp 无 cmd → 会被 _handlePromiseResponse 直接忽略，不影响本 Promise。
         "pkroom_appoint",
+        // 赛季淘汰赛助威：成功后回 SyncResp（不是 saltroad_outcheerresp），
+        // 助威记录在 body.role.statistics["sr:out:cheer:<赛季首轮日期>"]。
+        // 详见 docs/saltroad-season-out-cheer-protocol.md
+        "saltroad_outcheer",
       ],
       syncrewardresp: [
         "system_buygold",

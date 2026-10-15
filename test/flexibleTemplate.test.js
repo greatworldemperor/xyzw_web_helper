@@ -86,6 +86,9 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "batchTopUpFish",
     "batchTopUpArena",
     "batchWarGuessCheer",
+    // 2026-10-15 新增：盐场「赛季淘汰赛助威」（天工投票），落在「临时活动」分组。
+    // 该分组因逍遥津下线而空壳，本次重新启用；活动结束后按先例移除任务项。
+    "batchSeasonOutCheer",
     // ⚠️ 逍遥津的 7 个任务（xiaoyaojinAll / DailyTask / PassChest / PassRewards /
     //    OneTimeGift / SignReward / Lottery）已于 2026-09-26 活动结束后下线，
     //    从「临时活动」分组移除；源码仍在 utils/batch/tasksXiaoyaojin.js，下期可接回。
@@ -196,6 +199,7 @@ test("normalization clamps imported settings and rejects invalid options", () =>
       footballPick: "2",
       legacyRecipientId: -1,
       warGuessCoin: 50,
+      seasonOutCheerLegionId: "378071",
     },
   });
 
@@ -205,6 +209,17 @@ test("normalization clamps imported settings and rejects invalid options", () =>
   assert.equal(normalized.settings.footballPick, 2);
   assert.equal(normalized.settings.legacyRecipientId, null);
   assert.equal(normalized.settings.warGuessCoin, 20);
+  // 字符串 ID 归一为 number；非法值回落 null
+  assert.equal(normalized.settings.seasonOutCheerLegionId, 378071);
+  assert.equal(
+    normalizeFlexibleTemplate({
+      id: "bad-cheer-id",
+      name: "bad",
+      selectedTasks: [],
+      settings: { seasonOutCheerLegionId: -3 },
+    }).settings.seasonOutCheerLegionId,
+    null,
+  );
 });
 
 test("skin challenge only selects explicitly configured uncleared bosses", () => {
