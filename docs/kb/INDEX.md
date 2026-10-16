@@ -79,7 +79,7 @@ L0  INDEX.md ← 你在这里（索引 + 路由 + 红线 + 当前状态）
 2. 🔴 **UI 接线是"三处"（实际五处）**：任务模块导出 + 页面 import/解构 + `createFlexibleTaskHandlers` 展开 + 模板 `n-button` + `flexibleTemplate` 注册。**"导出函数" ≠ "有入口"**。
 3. 🔴 **补推 GitHub 前不要跑 `deploy/update.sh`**（会把线上 `reset --hard` 回退到 myrepo 旧 tip）。
 4. 🔴 **进度在 `activity_get.task`，不在 `role` 上**。
-5. 🔴 **开箱/招募/钓鱼只认整批 10**（余数被服务端拒）。
+5. 🔴 **开箱只认整批 10**（余数被服务端拒，实证）；**招募/钓鱼为「10 或 1」**——`lotteryNumber`/`recruitNumber` 单发 1 服务端接受（生产免费钓鱼长期发 `lotteryNumber:1`；2026-10-16 master 实测钓鱼可一次一次做），余数按 1/帧补，不再向下对齐丢弃。
 6. 🔴 **宝箱积分 ≥1000 才一键兑光，<1000 不兑**；钻石箱一律不开、木箱留 200。
 7. 🔴 **未注册的命令发不出去**（`CommandRegistry.register` 先注册）。
 8. 🔴 **建连必须走 `tokenStore.createWebSocketConnection`**，勿直接 `new WebSocket`。

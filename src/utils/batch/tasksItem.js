@@ -8,6 +8,10 @@ import { PEACH_TASKS } from "@/utils/PeachTaskIds";
 import { executeSmartOpenBox } from "@/utils/smartOpenBox";
 // 养鱼/神器（鱼）自动合并（纯逻辑在 fishMerge.js，协议见 docs/fish-merge-and-artifactbook-protocol.md）
 import { runFishAutoMerge } from "./fishMerge.js";
+// 钓鱼切批：10/帧为主、余数按 1/帧补。artifact_lottery 单发 1 服务端接受
+// （生产免费钓鱼长期发 lotteryNumber:1；2026-10-16 master 口径「一次一次做也可以」）。
+// 相对路径与 tasksGoldenfish.js 一致，保证裸 node 可测。
+import { chunkBatchesMixed } from "../goldenfishConsumePlan.js";
 
 /**
  * 开箱、钓鱼、招募类任务
@@ -1145,8 +1149,6 @@ export function createTasksItem(deps) {
     const totalCount = isScheduledTask
       ? batchSettings.fishCount
       : helperSettings.count;
-    const batches = Math.floor(totalCount / 10);
-    const remainder = totalCount % 10;
 
     selectedTokens.value.forEach((id) => {
       tokenStatus.value[id] = "waiting";
@@ -1204,71 +1206,71 @@ export function createTasksItem(deps) {
             return;
         }
 
-        const batches = Math.floor(availableCount / 10);
-        const remainder = availableCount % 10;
+        // 切批：10/帧为主，余数按 1/帧补（2026-10-16 master 口径）。
+        // artifact_lottery 单发 1 服务端接受（生产免费钓鱼长期发 lotteryNumber:1），
+        // 所以差几根就单发几根，不再把余数合成一帧乱数（如 7）发出——那一帧既非 10
+        // 也非 1，按 09-29 类比口径会被服务端拒；也不再整批向下对齐丢余数。
+        let frames = chunkBatchesMixed(availableCount, 10, 1);
+        let doneCount = 0;
+        let nextStockCheck = 50; // 每消耗约 50 根校验一次库存（原「每5轮」口径）
 
-        for (let i = 0; i < batches && !shouldStop.value; i++) {
+        while (frames.length > 0 && !shouldStop.value) {
+          const n = frames.shift();
           await tokenStore.sendMessageWithPromise(
             tokenId,
             "artifact_lottery",
-            { type: fishType, lotteryNumber: 10, newFree: true },
+            { type: fishType, lotteryNumber: n, newFree: true },
             5000,
           );
+          doneCount += n;
           addLog({
             time: new Date().toLocaleTimeString(),
-            message: `${token.name} 钓鱼进度: ${(i + 1) * 10}/${availableCount}`,
+            message: `${token.name} 钓鱼进度: ${doneCount}/${availableCount}`,
             type: "info",
           });
 
-          // 每5轮（50次）后，重新校验鱼竿数量
-          if ((i + 1) % 5 === 0 && i < batches - 1) {
-             try {
-                const roleRes = await sendRoleInfo(
-                  tokenId,
-                  {},
-                  5000,
-                  "同步鱼竿数量",
-                );
-                const currentRole = roleRes?.role || roleRes?.data?.role;
-                if (currentRole) {
-                    const currentRodCount = currentRole.items?.[rodId]?.quantity || 0;
-                    
-                    // 剩余需要的次数 (不包括当前这轮，因为i已经执行完了，所以剩余次数是 (batches - 1 - i) * 10 + remainder)
-                    // 但实际上我们只需要知道下一轮是否有足够的鱼竿
-                    // 如果当前库存少于10，说明下一轮可能不够，或者整个任务不够
-                    // 重新计算 availableCount 可能会比较复杂，因为循环是基于 batches
-                    
-                    if (currentRodCount < 10) {
-                        addLog({
-                            time: new Date().toLocaleTimeString(),
-                            message: `${token.name} 同步后发现鱼竿不足 (${currentRodCount} < 10)，停止后续批量任务`,
-                            type: "warning",
-                        });
-                        // 强制停止
-                        break; 
-                    }
+          // 每约 50 次后，重新校验鱼竿数量（并行任务/邮件可能把库存抽干）
+          if (doneCount >= nextStockCheck && frames.length > 0) {
+            nextStockCheck = doneCount + 50;
+            try {
+              const roleRes = await sendRoleInfo(
+                tokenId,
+                {},
+                5000,
+                "同步鱼竿数量",
+              );
+              const currentRole = roleRes?.role || roleRes?.data?.role;
+              if (currentRole) {
+                const currentRodCount = currentRole.items?.[rodId]?.quantity || 0;
+                const remainingCount = frames.reduce((s, x) => s + x, 0);
+
+                if (currentRodCount <= 0) {
+                  addLog({
+                    time: new Date().toLocaleTimeString(),
+                    message: `${token.name} 同步后发现鱼竿不足 (${currentRodCount})，停止后续批量任务`,
+                    type: "warning",
+                  });
+                  // 强制停止
+                  break;
                 }
-             } catch (e) {
-               if (e?.code === "ROLE_INFO_RECOVERY_FAILED") throw e;
-                 // ignore
-             }
+                if (currentRodCount < remainingCount) {
+                  // 库存不够剩下 frames 的总量 → 按当前库存重新切批；
+                  // 库存 <10 时 chunkBatchesMixed 自动全是 1/帧，逐根钓完不浪费
+                  frames = chunkBatchesMixed(currentRodCount, 10, 1);
+                  addLog({
+                    time: new Date().toLocaleTimeString(),
+                    message: `${token.name} 同步后鱼竿仅剩 ${currentRodCount}（原计划还剩 ${remainingCount} 次），按库存重新切批`,
+                    type: "warning",
+                  });
+                }
+              }
+            } catch (e) {
+              if (e?.code === "ROLE_INFO_RECOVERY_FAILED") throw e;
+              // ignore
+            }
           }
 
           await new Promise((r) => setTimeout(r, delayConfig.action));
-        }
-
-        if (remainder > 0 && !shouldStop.value) {
-          await tokenStore.sendMessageWithPromise(
-            tokenId,
-            "artifact_lottery",
-            { type: fishType, lotteryNumber: remainder, newFree: true },
-            5000,
-          );
-          addLog({
-            time: new Date().toLocaleTimeString(),
-            message: `${token.name} 钓鱼进度: ${availableCount}/${availableCount}`,
-            type: "info",
-          });
         }
         // 自动领取鱼竿累计奖励
         try {

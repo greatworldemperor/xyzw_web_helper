@@ -2124,12 +2124,12 @@
             />
           </div>
           <div class="setting-item">
-            <label class="setting-label">钓鱼数量</label>
+            <label class="setting-label">钓鱼数量（≥1，余数自动单发补齐）</label>
             <n-input-number
               v-model:value="flexibleTemplateSettings.fishCount"
-              :min="10"
+              :min="1"
               :max="10000"
-              :step="10"
+              :step="1"
               style="width: 100%"
             />
           </div>
@@ -2216,12 +2216,12 @@
               v-if="flexibleTemplateTasks.includes('batchFish')"
               class="setting-item"
             >
-              <label class="setting-label">批量钓鱼数量</label>
+              <label class="setting-label">批量钓鱼数量（≥1，余数自动单发补齐）</label>
               <n-input-number
                 v-model:value="flexibleTemplateSettings.fishCount"
-                :min="10"
+                :min="1"
                 :max="10000"
-                :step="10"
+                :step="1"
                 style="width: 100%"
               />
             </div>
@@ -2784,12 +2784,14 @@
             积分: 木质=1分, 青铜=10分, 黄金=20分, 铂金=50分
           </n-alert>
           <div class="setting-item" v-if="helperType !== 'pointsBox'">
-            <label class="setting-label">消耗数量（10的倍数）</label>
+            <label class="setting-label">{{
+              helperType === "fish" ? "钓鱼数量（≥1，余数自动单发补齐）" : "消耗数量（10的倍数）"
+            }}</label>
             <n-input-number
               v-model:value="helperSettings.count"
-              :min="10"
+              :min="helperType === 'fish' ? 1 : 10"
               :max="10000"
-              :step="10"
+              :step="helperType === 'fish' ? 1 : 10"
               size="small"
             />
           </div>
@@ -3326,12 +3328,12 @@
                   align-items: center;
                 "
               >
-                <label class="setting-label">钓鱼数量(10倍)</label>
+                <label class="setting-label">钓鱼数量(≥1)</label>
                 <n-input-number
                   v-model:value="batchSettings.fishCount"
-                  :min="10"
+                  :min="1"
                   :max="10000"
-                  :step="10"
+                  :step="1"
                   size="small"
                   style="width: 100px"
                 />
@@ -7129,7 +7131,14 @@ const confirmLegacyGift = async () => {
 };
 
 const executeHelper = () => {
-  if (helperType.value !== "pointsBox") {
+  if (helperType.value === "fish") {
+    // 钓鱼：10/帧 + 余数 1/帧（artifact_lottery 单发 1 服务端接受，2026-10-16 master 口径）
+    if (!Number.isInteger(helperSettings.count) || helperSettings.count < 1) {
+      message.warning("钓鱼数量必须 ≥ 1（10/帧发送，余数自动单发补齐）");
+      return;
+    }
+  } else if (helperType.value !== "pointsBox") {
+    // 开箱/招募：保持整批 10 口径（开箱服务端只认整批，招募日常任务暂不改）
     if (helperSettings.count % 10 !== 0 || helperSettings.count < 10) {
       message.warning("消耗数量必须是10的整数倍，最小为10");
       return;
