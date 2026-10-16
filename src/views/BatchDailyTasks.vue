@@ -2139,7 +2139,7 @@
             />
           </div>
           <div class="setting-item">
-            <label class="setting-label">钓鱼数量（≥1，余数自动单发补齐）</label>
+            <label class="setting-label">钓鱼数量（≥1，尾数一帧结清）</label>
             <n-input-number
               v-model:value="flexibleTemplateSettings.fishCount"
               :min="1"
@@ -2231,7 +2231,7 @@
               v-if="flexibleTemplateTasks.includes('batchFish')"
               class="setting-item"
             >
-              <label class="setting-label">批量钓鱼数量（≥1，余数自动单发补齐）</label>
+              <label class="setting-label">批量钓鱼数量（≥1，尾数一帧结清）</label>
               <n-input-number
                 v-model:value="flexibleTemplateSettings.fishCount"
                 :min="1"
@@ -2800,7 +2800,7 @@
           </n-alert>
           <div class="setting-item" v-if="helperType !== 'pointsBox'">
             <label class="setting-label">{{
-              helperType === "fish" ? "钓鱼数量（≥1，余数自动单发补齐）" : "消耗数量（10的倍数）"
+              helperType === "fish" ? "钓鱼数量（≥1，尾数一帧结清）" : "消耗数量（10的倍数）"
             }}</label>
             <n-input-number
               v-model:value="helperSettings.count"
@@ -7150,7 +7150,7 @@ const executeHelper = () => {
   if (helperType.value === "fish") {
     // 钓鱼：10/帧 + 余数 1/帧（artifact_lottery 单发 1 服务端接受，2026-10-16 master 口径）
     if (!Number.isInteger(helperSettings.count) || helperSettings.count < 1) {
-      message.warning("钓鱼数量必须 ≥ 1（10/帧发送，余数自动单发补齐）");
+      message.warning("钓鱼数量必须 ≥ 1（每帧最多 10 次，尾数一帧结清）");
       return;
     }
   } else if (helperType.value !== "pointsBox") {

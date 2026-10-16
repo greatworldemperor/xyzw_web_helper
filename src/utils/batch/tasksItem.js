@@ -8,10 +8,11 @@ import { PEACH_TASKS } from "@/utils/PeachTaskIds";
 import { executeSmartOpenBox } from "@/utils/smartOpenBox";
 // 养鱼/神器（鱼）自动合并（纯逻辑在 fishMerge.js，协议见 docs/fish-merge-and-artifactbook-protocol.md）
 import { runFishAutoMerge } from "./fishMerge.js";
-// 钓鱼切批：10/帧为主、余数按 1/帧补。artifact_lottery 单发 1 服务端接受
-// （生产免费钓鱼长期发 lotteryNumber:1；2026-10-16 master 口径「一次一次做也可以」）。
+// 钓鱼切批：10/帧 + 尾数一帧结清。artifact_lottery 的 lotteryNumber **1~10 任意**
+// （超过 10 不行）——2026-10-16 master 口径；生产免费钓鱼长期发 lotteryNumber:1。
+// ⚠️ 与招募不同：hero_recruit 只能 1 或 10，尾数要拆成 1/帧；钓鱼尾数直接一帧发完。
 // 相对路径与 tasksGoldenfish.js 一致，保证裸 node 可测。
-import { chunkBatchesMixed } from "../goldenfishConsumePlan.js";
+import { chunkBatches } from "../goldenfishConsumePlan.js";
 
 /**
  * 开箱、钓鱼、招募类任务
@@ -1206,11 +1207,10 @@ export function createTasksItem(deps) {
             return;
         }
 
-        // 切批：10/帧为主，余数按 1/帧补（2026-10-16 master 口径）。
-        // artifact_lottery 单发 1 服务端接受（生产免费钓鱼长期发 lotteryNumber:1），
-        // 所以差几根就单发几根，不再把余数合成一帧乱数（如 7）发出——那一帧既非 10
-        // 也非 1，按 09-29 类比口径会被服务端拒；也不再整批向下对齐丢余数。
-        let frames = chunkBatchesMixed(availableCount, 10, 1);
+        // 切批：10/帧 + 尾数一帧结清（2026-10-16 master 口径）。
+        // artifact_lottery 的 lotteryNumber **1~10 任意，超过 10 不行**——尾数（如 7）
+        // 直接合成一帧发完即可，不需要像招募那样拆成 1/帧反复凑。
+        let frames = chunkBatches(availableCount, 10);
         let doneCount = 0;
         let nextStockCheck = 50; // 每消耗约 50 根校验一次库存（原「每5轮」口径）
 
@@ -1255,8 +1255,8 @@ export function createTasksItem(deps) {
                 }
                 if (currentRodCount < remainingCount) {
                   // 库存不够剩下 frames 的总量 → 按当前库存重新切批；
-                  // 库存 <10 时 chunkBatchesMixed 自动全是 1/帧，逐根钓完不浪费
-                  frames = chunkBatchesMixed(currentRodCount, 10, 1);
+                  // 尾数一帧结清（1~10 任意），不会产生非法帧
+                  frames = chunkBatches(currentRodCount, 10);
                   addLog({
                     time: new Date().toLocaleTimeString(),
                     message: `${token.name} 同步后鱼竿仅剩 ${currentRodCount}（原计划还剩 ${remainingCount} 次），按库存重新切批`,
