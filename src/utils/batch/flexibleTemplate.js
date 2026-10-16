@@ -145,6 +145,8 @@ export const flexibleTaskGroups = [
       batchTask("batchSeasonOutCheer", "赛季淘汰赛助威", {
         requires: "seasonOutCheer",
       }),
+      // 周年庆每日奖励（2026-10-16 接入）：actId 2610169 的 5 个每日奖励，无额外参数
+      batchTask("batchAnnDailyClaim", "领取周年庆每日奖励"),
     ],
   },
   // 逍遥津（"临时活动" 分组）已于 2026-09-26 活动结束后下线：

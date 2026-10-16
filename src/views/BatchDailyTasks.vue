@@ -911,7 +911,8 @@
               </n-space>
             </n-tab-pane>
             <n-tab-pane name="temporary" tab="临时活动">
-              <!-- 限时临时活动入口。2026-10-15 接入盐场「赛季淘汰赛助威」（天工投票） -->
+              <!-- 限时临时活动入口。2026-10-15 接入盐场「赛季淘汰赛助威」（天工投票）；
+                   2026-10-16 接入周年庆每日奖励（actId 2610169，5 个奖励） -->
               <n-space vertical :size="8">
                 <n-space align="center" :size="8" wrap>
                   <n-button
@@ -921,7 +922,21 @@
                   >
                     赛季淘汰赛助威
                   </n-button>
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="batchAnnDailyClaim"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    领取周年庆每日奖励
+                  </n-button>
                 </n-space>
+                <span class="xiaoyaojin-hint">
+                  周年庆每日奖励：对<b>所有选中账号</b>依次领取 5 个每日奖励
+                 （activity_warordertaskclaim，actId 2610169，序号 01~05，每个得道具 5290
+                  ×1）。已领取 / 任务未达成 / 活动未开的账号服务端会拒绝，按正常跳过处理；
+                  触发限流(400340)会自动停该账号剩余领取，下次再跑即可。
+                </span>
                 <span class="xiaoyaojin-hint">
                   盐场赛季淘汰赛（64 强）助威：助威名单按淘汰赛胜场取前 64 家俱乐部，
                   每家俱乐部点「助威」即对<b>所有选中账号</b>投票。
@@ -4321,6 +4336,7 @@ import {
   createTasksCampChallengeStrategy,
   createTasksXianMaster,
   createTasksSeasonOutCheer,
+  createTasksAnnDaily,
   createTasksWhiteJadePkroom,
   createTasksGoldenfish,
   GOLDENFISH_SHOP_DEFAULTS,
@@ -8792,6 +8808,10 @@ const { detectXianMasters } = tasksXianMaster;
 const tasksSeasonOutCheer = createTasksSeasonOutCheer(createTaskDeps());
 const { batchSeasonOutCheer } = tasksSeasonOutCheer;
 
+// 周年庆每日奖励（临时活动，2026-10-16 抓包实证，actId 2610169 / 5 个奖励）
+const tasksAnnDaily = createTasksAnnDaily(createTaskDeps());
+const { batchAnnDailyClaim } = tasksAnnDaily;
+
 const tasksBottle = createTasksBottle(createTaskDeps());
 const { resetBottles, batchlingguanzi } = tasksBottle;
 
@@ -9241,6 +9261,8 @@ const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksCampChallengeStrategy(deps),
   // 盐场「赛季淘汰赛助威」（临时活动分组，2026-10-15 接入）
   ...createTasksSeasonOutCheer(deps),
+  // 周年庆每日奖励（临时活动分组，2026-10-16 接入）
+  ...createTasksAnnDaily(deps),
   // 逍遥津已于 2026-09-26 活动结束后下线（UI 已摘除；源码与测试保留在
   // utils/batch/tasksXiaoyaojin.js + utils/xiaoyaojinPlan.js，下期接回只需恢复接线）
   ...createTasksGoldenfish(deps),

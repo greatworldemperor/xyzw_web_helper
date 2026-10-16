@@ -89,6 +89,9 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     // 2026-10-15 新增：盐场「赛季淘汰赛助威」（天工投票），落在「临时活动」分组。
     // 该分组因逍遥津下线而空壳，本次重新启用；活动结束后按先例移除任务项。
     "batchSeasonOutCheer",
+    // 2026-10-16 新增：周年庆每日奖励（actId 2610169 的 5 个每日奖励），
+    // 同样落在「临时活动」分组；活动轮换后更新 tasksAnnDaily.js 常量或移除。
+    "batchAnnDailyClaim",
     // ⚠️ 逍遥津的 7 个任务（xiaoyaojinAll / DailyTask / PassChest / PassRewards /
     //    OneTimeGift / SignReward / Lottery）已于 2026-09-26 活动结束后下线，
     //    从「临时活动」分组移除；源码仍在 utils/batch/tasksXiaoyaojin.js，下期可接回。

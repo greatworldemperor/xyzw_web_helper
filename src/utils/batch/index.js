@@ -37,6 +37,8 @@ export { createTasksSaltField, battlefieldQueue } from './tasksSaltField.js';
 export { createTasksXianMaster } from './tasksXianMaster.js';
 // 盐场「赛季淘汰赛助威」（天工投票，2026-10-15 抓包实证，见 docs/saltroad-season-out-cheer-protocol.md）
 export { createTasksSeasonOutCheer } from './tasksSeasonOutCheer.js';
+// 周年庆每日奖励（临时活动，2026-10-16 抓包实证，见 local-data/ann_daily/）
+export { createTasksAnnDaily } from './tasksAnnDaily.js';
 export { createTasksXiaoyaojin } from './tasksXiaoyaojin.js';
 export {
   createTasksGoldenfish,
