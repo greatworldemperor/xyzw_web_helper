@@ -63,6 +63,12 @@
 34. **写 md 禁用 `node -e` 模板字符串**（反引号必炸）→ 用 Edit/Write 工具。
 35. **`node --check` 抓不到忘 import** — 用 `local-data/_sfc_batch_check.mjs` 或直接构建。
 36. **收尾/核验别把输出截断到看不出结论**（master 明确要求）。
+36b. 🔴 **漏 import 构建期不炸、运行时才炸**：vite/rollup 把未解析标识符当**全局变量**，
+  `ReferenceError: xxx is not defined` 只在页面 setup 时抛（整页白/路由打不开）。
+  ⇒ **新接功能上线前必须做运行时冒烟**（浏览器打开目标路由，看 pageerror/console），
+  grep bundle 字符串不算数（2026-10-17 周年庆接入实测：createTasksAnnBoss 只在
+  index.js export 没在页面 import，构建全绿、字符串全在，线上批量页直接崩）。
+  冒烟脚本：`local-data/_smoke_batch.mjs`（playwright-core + Edge + 假 token 过守卫）。
 
 ## G. 方法论（认知类）
 
