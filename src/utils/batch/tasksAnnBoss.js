@@ -5,6 +5,12 @@
  *   runtime 抓包，角色 9736服-139073239-法王，158 帧全解码；配套脚本：
  *   `_decode_boss_jsonl.mjs` 解 SEND / `_decode_boss_recv.mjs` 解 RECV /
  *   `_check_iswin.mjs` 验胜负字段 / `_verify_reencode.mjs` 逐字段复现 11/11 一致）。
+ * 补充证据：`local-data/anniversary/ann_reward.jsonl`（2026-10-17 14:36 抓包，
+ *   9729服-29号战士，弱号连败场；`_extract_reward.mjs` 解出两条关键口径）：
+ *   ① **失败场 `result.isWin` 字段缺失**（胜场才带 isWin:true）⇒ 胜负判定必须
+ *      `isWin → accept.ext.curHP===0 → winCnt/层数上涨` 三级兜底；
+ *   ② **`todayUseTickCnt` 只由 towers_start 消耗**（getinfo=5 → start=6 → fight 不变）
+ *      ⇒ 每日 10 次机会是**账号级**预算，不是每 BOSS 10 次；弱号连败时预算耗尽即停。
  *
  * ── 与「换皮闯关」（SkinChallengeCard.vue / tasksTower.js skinChallenge）的差异 ──
  * 游戏界面形式相同（towers_* 六宫格 BOSS 挑战），但旧功能在本活动**无法执行**：
@@ -41,10 +47,13 @@
  * 实现口径（与 tasksAnnDaily 同风格：很单纯的领取/战斗指令，服务端拒绝算 benign）：
  *   - actId / missionId / cardId 全硬编码（临时活动，下期轮换再改常量）；
  *   - 领取类：不前置探测，按抓包顺序直接发；已领取/未达成/未开/已结束 全算跳过；
+ *     瞬时失败（超时等）重试 2 次（领取幂等，重试不会重复到账）；
  *   - 攻打类：前置一次 towers_getinfo 探活 + 选目标；今日开放（周五 BOSS1 / 周六 BOSS2 /
  *     周日 BOSS3 / 周一 BOSS4 / 周二 BOSS5 / 周三 BOSS6 / 周四全开，与换皮闯关同口径）
- *     且未通关的 BOSS 逐个打；**每个 BOSS 最多 10 战**（8 关 + 2 次失败冗余，
- *     master 口径：可能会失败所以一共 10 次机会），通关（pass:true）即停；
+ *     且未通关的 BOSS 逐个打；**没通关就一直打**，直到 ① 通关（pass）② 今日次数用完
+ *     （todayUseTickCnt 日上限 10，**账号级**、只由 towers_start 消耗，抓包实证；
+ *     周四全开 6 BOSS 共享这 10 次）③ 用户停止 ④ 瞬时错误重试耗尽；
+ *     start/fight 瞬时失败各重试 2 次；每战日志带「今日 X/10 次」预算状态；
  *   - 触发限流(400340)立即停该账号剩余动作（下次再跑）；
  *   - 连接生命周期与助威/每日奖励模块同口径：ensureConnection → finally close + releaseSlot。
  */
@@ -60,15 +69,24 @@ export const isRateLimitError = (error) => Number(error?.code) === 400340;
 
 /** 已领过：幂等重跑的常态，不算失败 */
 export const isAlreadyDoneError = (error) =>
-  /已领取|已经领取|领取过|重复领取|本期已|已签到|已阅读|已读取/.test(errorText(error));
+  /已领取|已经领取|领取过|重复领取|本期已|已领完|领完|已达上限|已兑换|已签到|已阅读|已读取/.test(
+    errorText(error),
+  );
 
-/** 任务未达成 / 条件不满足：正常跳过 */
+/** 任务未达成 / 条件不满足 / 不可领：正常跳过 */
 export const isNotCompletedError = (error) =>
-  /未达成|未完成|条件不满足|未满足/.test(errorText(error));
+  /未达成|未完成|条件不满足|未满足|不可领取|无法领取|未达到/.test(errorText(error));
 
 /** 活动未开 / 已结束 / ID 无效：提示为主，不算失败 */
 export const isInactiveError = (error) =>
   /未开启|未开始|已结束|活动不存在|无效的ID|未开放|活动已过期/.test(errorText(error));
+
+/**
+ * 「今日次数已用完」类拒绝（抓包未取到原文，按常见服务端文案宽匹配）；
+ * 命中即干净停（不算失败、不重试风暴）。拒绝语义最终以服务端为准。
+ */
+export const isDailyLimitError = (error) =>
+  /次数|上限|已用完|已达|明日| exhausted|limit/i.test(errorText(error));
 
 /** 奖励字段 → 可读文案（Common_RewardResp / Celebrate_ClaimResp 同构：body.reward[]） */
 export const rewardText = (response) => {
@@ -103,6 +121,16 @@ export const ANN_BOSS_TYPES = Object.freeze([1, 2, 3, 4, 5, 6]);
 
 /** 每个 BOSS 的最大战斗次数：8 关 + 失败冗余 = 10 次机会（master 2026-10-17 口径） */
 export const ANN_BOSS_MAX_FIGHTS = 10;
+
+/**
+ * 每日挑战次数上限（**账号级**，不是每 BOSS）：UI「今日挑战 X/10」+ 抓包实证
+ * （ann_reward.jsonl：getinfo todayUseTickCnt=5 → towers_start 后=6 → fight 不变）
+ * ⇒ tick 只由 `towers_start` 消耗，战斗本身不耗次数；周四全开时 6 BOSS 共享这 10 次。
+ */
+export const ANN_BOSS_DAILY_LIMIT = 10;
+
+/** start/fight 瞬时失败（超时等）重试次数 */
+const REQUEST_RETRY = 2;
 
 /**
  * 今日开放 BOSS（与换皮闯关同口径：周五 1 / 周六 2 / 周日 3 / 周一 4 / 周二 5 /
@@ -274,36 +302,54 @@ export function createTasksAnnBoss(deps) {
 
   const claimOneTimeForToken = async ({ tokenId, token }) => {
     const tokenName = token?.name || tokenId;
-    try {
-      const response = await tokenStore.sendMessageWithPromise(
-        tokenId,
-        "common_claimtotalreward",
-        { activityId: ANN_ONETIME_ACT_ID, configId: ANN_ONETIME_CONFIG_ID },
-        8000,
-      );
-      log(
-        tokenName,
-        `周年庆一次性奖励领取成功（${rewardText(response)}）`,
-        "success",
-      );
-      return "claimed";
-    } catch (error) {
-      if (isRateLimitError(error)) throw error;
-      if (isAlreadyDoneError(error)) {
-        log(tokenName, "周年庆一次性奖励已领取过，跳过");
-        return "nothing";
+    // 瞬时失败（超时等）重试：领取指令是幂等的，重试不会重复到账
+    for (let attempt = 1; attempt <= REQUEST_RETRY; attempt += 1) {
+      try {
+        const response = await tokenStore.sendMessageWithPromise(
+          tokenId,
+          "common_claimtotalreward",
+          { activityId: ANN_ONETIME_ACT_ID, configId: ANN_ONETIME_CONFIG_ID },
+          8000,
+        );
+        log(
+          tokenName,
+          `周年庆一次性奖励领取成功（${rewardText(response)}）`,
+          "success",
+        );
+        return "claimed";
+      } catch (error) {
+        if (isRateLimitError(error)) throw error;
+        const isLast = attempt >= REQUEST_RETRY;
+        if (!isLast) {
+          log(
+            tokenName,
+            `周年庆一次性奖励无响应，第 ${attempt}/${REQUEST_RETRY} 次重试……`,
+            "warning",
+          );
+          await sleep(1000);
+          continue;
+        }
+        if (isAlreadyDoneError(error)) {
+          log(tokenName, "周年庆一次性奖励已领取过，跳过");
+          return "nothing";
+        }
+        if (isNotCompletedError(error)) {
+          log(tokenName, "周年庆一次性奖励条件未达成，跳过");
+          return "nothing";
+        }
+        if (isInactiveError(error)) {
+          log(tokenName, `周年庆一次性奖励暂未开放：${errorText(error)}`, "warning");
+          return "nothing";
+        }
+        log(
+          tokenName,
+          `周年庆一次性奖励领取失败：${errorText(error)}（请求 {activityId:${ANN_ONETIME_ACT_ID}, configId:${ANN_ONETIME_CONFIG_ID}}，如持续失败请把此条日志给开发）`,
+          "error",
+        );
+        return "failed";
       }
-      if (isNotCompletedError(error)) {
-        log(tokenName, "周年庆一次性奖励条件未达成，跳过");
-        return "nothing";
-      }
-      if (isInactiveError(error)) {
-        log(tokenName, `周年庆一次性奖励暂未开放：${errorText(error)}`, "warning");
-        return "nothing";
-      }
-      log(tokenName, `周年庆一次性奖励领取失败：${errorText(error)}`, "error");
-      return "failed";
     }
+    return "nothing";
   };
 
   const batchAnnOneTimeReward = async () =>
@@ -473,71 +519,154 @@ export function createTasksAnnBoss(deps) {
       "批量领取周年庆每日奖励/助力结束",
     );
 
-  // ── ③ 攻打 BOSS（towers：start + fight ×≤10，通关即停）─────────────────────
+  // ── ③ 攻打 BOSS（towers：start + fight，没通关就一直打到日预算用完）──────────
 
-  /** 单个 BOSS：开打（如需要）→ 最多 ANN_BOSS_MAX_FIGHTS 战 → 通关/打满返回 */
-  const fightOneBoss = async ({ tokenId, tokenName, towerType, initialState }) => {
+  /**
+   * 单个 BOSS：开打 → 战斗 → **没通关就继续打**，直到
+   * ① 通关（pass）② 日预算用完（todayUseTickCnt 达 10 / start 被拒）
+   * ③ 用户停止 ④ 瞬时错误重试耗尽。
+   * @returns {{cleared: boolean, fights: number, usedTicks: number, stop: string}}
+   *   stop ∈ cleared | daily-limit | user-stop | exhausted | request-error | inactive
+   */
+  const fightOneBoss = async ({
+    tokenId,
+    tokenName,
+    towerType,
+    initialState,
+    usedTicks,
+  }) => {
     let fights = 0;
     let prevWinCnt = initialState?.winCnt ?? 0;
     // 上次有未打完的战斗（fighting:true）直接续打，否则先 start
     let needStart = initialState?.fighting !== true;
+    let stop = "exhausted";
 
     while (fights < ANN_BOSS_MAX_FIGHTS && !shouldStop.value) {
       if (needStart) {
+        // 预算预检（服务端权威值）：已满就不白发请求
+        if (usedTicks >= ANN_BOSS_DAILY_LIMIT) {
+          stop = "daily-limit";
+          break;
+        }
+        let startOk = false;
+        for (let attempt = 1; attempt <= REQUEST_RETRY && !startOk; attempt += 1) {
+          try {
+            const startRes = await tokenStore.sendMessageWithPromise(
+              tokenId,
+              "towers_start",
+              { actId: ANN_BOSS_ACT_ID, towerType },
+              8000,
+            );
+            startOk = true;
+            // StartResp.towerData.todayUseTickCnt = 服务端权威 tick 数
+            const tick = startRes?.towerData?.todayUseTickCnt;
+            if (Number.isFinite(tick)) usedTicks = tick;
+          } catch (error) {
+            if (isRateLimitError(error)) throw error;
+            if (isInactiveError(error)) {
+              log(tokenName, `BOSS ${towerType} 暂未开放：${errorText(error)}`, "warning");
+              return { cleared: false, fights, usedTicks, stop: "inactive" };
+            }
+            if (isDailyLimitError(error)) {
+              log(
+                tokenName,
+                `BOSS ${towerType} 今日次数已用完（服务端：${errorText(error)}）`,
+                "info",
+              );
+              stop = "daily-limit";
+              break;
+            }
+            if (attempt >= REQUEST_RETRY) {
+              log(
+                tokenName,
+                `BOSS ${towerType} 开打失败（重试 ${REQUEST_RETRY} 次仍不行）：${errorText(error)}`,
+                "error",
+              );
+              stop = "request-error";
+              break;
+            }
+            log(
+              tokenName,
+              `BOSS ${towerType} 开打无响应，第 ${attempt}/${REQUEST_RETRY} 次重试……`,
+              "warning",
+            );
+            await sleep(1000);
+          }
+        }
+        if (!startOk) break;
+        await sleep(START_INTERVAL_MS);
+      }
+
+      let fightRes = null;
+      for (let attempt = 1; attempt <= REQUEST_RETRY && !fightRes; attempt += 1) {
         try {
-          await tokenStore.sendMessageWithPromise(
+          fightRes = await tokenStore.sendMessageWithPromise(
             tokenId,
-            "towers_start",
+            "towers_fight",
             { actId: ANN_BOSS_ACT_ID, towerType },
-            5000,
+            15000,
           );
         } catch (error) {
           if (isRateLimitError(error)) throw error;
           if (isInactiveError(error)) {
             log(tokenName, `BOSS ${towerType} 暂未开放：${errorText(error)}`, "warning");
-            return { cleared: false, fights, inactive: true };
+            return { cleared: false, fights, usedTicks, stop: "inactive" };
           }
-          log(tokenName, `BOSS ${towerType} 开打失败：${errorText(error)}`, "error");
-          return { cleared: false, fights };
+          if (isDailyLimitError(error)) {
+            log(
+              tokenName,
+              `BOSS ${towerType} 战斗被拒，今日次数已用完（服务端：${errorText(error)}）`,
+              "info",
+            );
+            stop = "daily-limit";
+            break;
+          }
+          if (attempt >= REQUEST_RETRY) break;
+          log(
+            tokenName,
+            `BOSS ${towerType} 战斗响应超时，第 ${attempt}/${REQUEST_RETRY} 次重试……`,
+            "warning",
+          );
+          await sleep(1500);
         }
-        await sleep(START_INTERVAL_MS);
       }
-
-      let fightRes;
-      try {
-        fightRes = await tokenStore.sendMessageWithPromise(
-          tokenId,
-          "towers_fight",
-          { actId: ANN_BOSS_ACT_ID, towerType },
-          8000,
-        );
-      } catch (error) {
-        if (isRateLimitError(error)) throw error;
-        if (isInactiveError(error)) {
-          log(tokenName, `BOSS ${towerType} 暂未开放：${errorText(error)}`, "warning");
-          return { cleared: false, fights, inactive: true };
+      if (!fightRes) {
+        if (stop !== "daily-limit") {
+          stop = "request-error";
+          log(
+            tokenName,
+            `BOSS ${towerType} 战斗请求失败（已重试 ${REQUEST_RETRY} 次），下次再跑会接着打`,
+            "error",
+          );
         }
-        log(tokenName, `BOSS ${towerType} 战斗请求失败：${errorText(error)}`, "error");
-        return { cleared: false, fights };
+        break;
       }
+      // 战斗响应里的 tick 同样是权威值（fight 本身不耗 tick，防服务端改口径）
+      const tickInFight = fightRes?.todayUseTickCnt;
+      if (Number.isFinite(tickInFight)) usedTicks = Math.max(usedTicks, tickInFight);
 
       fights += 1;
       const towerState = fightRes?.towerData ?? {};
       const level = towerState.actTowerLv ?? "?";
-      const won = isFightWin(fightRes, prevWinCnt);
+      // 胜负判定（服务端权威字段交叉验证，不用层数——层数会受 getinfo 时效影响）：
+      // isWin → 怪物 curHP 归零 → winCnt 比打之前涨了
+      const won =
+        isFightWin(fightRes, prevWinCnt) ||
+        (Number.isFinite(towerState.winCnt) && towerState.winCnt > prevWinCnt);
       prevWinCnt = towerState.winCnt ?? prevWinCnt;
 
+      const budgetText = `今日 ${usedTicks}/${ANN_BOSS_DAILY_LIMIT} 次`;
       if (won) {
         log(
           tokenName,
-          `BOSS ${towerType} 第 ${level} 层挑战成功（本 BOSS 第 ${fights}/${ANN_BOSS_MAX_FIGHTS} 战，累计 ${prevWinCnt} 胜）`,
+          `BOSS ${towerType} 第 ${level} 层挑战成功（第 ${fights} 战，${budgetText}）`,
           "success",
         );
         needStart = false; // 同一轮里连胜不需要重新 start
       } else {
         log(
           tokenName,
-          `BOSS ${towerType} 第 ${level} 层挑战失败（本 BOSS 第 ${fights}/${ANN_BOSS_MAX_FIGHTS} 战）`,
+          `BOSS ${towerType} 第 ${level} 层挑战失败（第 ${fights} 战，${budgetText}）`,
           "warning",
         );
         needStart = true; // 失败重新开打
@@ -545,26 +674,21 @@ export function createTasksAnnBoss(deps) {
 
       if (towerState.pass === true) {
         log(tokenName, `BOSS ${towerType} 已通关（共 ${fights} 战）`, "success");
-        return { cleared: true, fights };
+        return { cleared: true, fights, usedTicks, stop: "cleared" };
       }
 
       await sleep(FIGHT_INTERVAL_MS);
     }
 
-    if (fights >= ANN_BOSS_MAX_FIGHTS) {
-      log(
-        tokenName,
-        `BOSS ${towerType} 已达 ${ANN_BOSS_MAX_FIGHTS} 次机会上限，未通关，下次再试`,
-        "warning",
-      );
-    }
-    return { cleared: false, fights };
+    if (shouldStop.value) stop = "user-stop";
+    else if (fights >= ANN_BOSS_MAX_FIGHTS) stop = "exhausted";
+    return { cleared: false, fights, usedTicks, stop };
   };
 
   const fightBossesForToken = async ({ tokenId, token }) => {
     const tokenName = token?.name || tokenId;
 
-    // 前置探测：拿六宫格状态（活动未开时服务端拒/空响应，直接跳过）
+    // 前置探测：拿六宫格状态 + 今日已用次数（活动未开时服务端拒/空响应，直接跳过）
     let info;
     try {
       const response = await tokenStore.sendMessageWithPromise(
@@ -589,6 +713,20 @@ export function createTasksAnnBoss(deps) {
       return "nothing";
     }
 
+    // 今日剩余次数（服务端权威：todayUseTickCnt 只由 towers_start 消耗）
+    let usedTicks = Number.isFinite(info.todayUseTickCnt)
+      ? info.todayUseTickCnt
+      : 0;
+    const remainTicks = Math.max(0, ANN_BOSS_DAILY_LIMIT - usedTicks);
+    if (remainTicks <= 0) {
+      log(
+        tokenName,
+        `今日挑战次数已用完（${usedTicks}/${ANN_BOSS_DAILY_LIMIT}），跳过`,
+        "info",
+      );
+      return "nothing";
+    }
+
     const targets = pickBossTargets(info);
     if (targets.length === 0) {
       log(tokenName, "今日开放 BOSS 均已通关（或无开放 BOSS），跳过", "info");
@@ -597,26 +735,32 @@ export function createTasksAnnBoss(deps) {
 
     log(
       tokenName,
-      `今日开放 BOSS ${targets.join(", ")}，开始攻打（每个最多 ${ANN_BOSS_MAX_FIGHTS} 战）`,
+      `今日开放 BOSS ${targets.join(", ")}；次数已用 ${usedTicks}/${ANN_BOSS_DAILY_LIMIT}、剩 ${remainTicks} 次——没通关就一直打到用完为止`,
       "info",
     );
 
     let cleared = 0;
     for (const towerType of targets) {
       if (shouldStop.value) break;
+      if (usedTicks >= ANN_BOSS_DAILY_LIMIT) {
+        log(tokenName, `今日 ${ANN_BOSS_DAILY_LIMIT} 次机会已用完，跳过剩余 BOSS`, "info");
+        break;
+      }
       const result = await fightOneBoss({
         tokenId,
         tokenName,
         towerType,
         initialState: bossStateOf(info, towerType),
+        usedTicks,
       });
+      usedTicks = result.usedTicks;
       if (result.cleared) cleared += 1;
       await sleep(FIGHT_INTERVAL_MS);
     }
 
     log(
       tokenName,
-      cleared > 0 ? `周年庆闯关结束：通关 ${cleared} 个 BOSS` : "周年庆闯关结束：未有通关",
+      `周年庆闯关结束：${cleared > 0 ? `通关 ${cleared} 个 BOSS` : "未有通关"}（今日次数 ${usedTicks}/${ANN_BOSS_DAILY_LIMIT}）`,
       cleared > 0 ? "success" : "info",
     );
     return "done";

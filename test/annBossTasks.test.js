@@ -14,6 +14,7 @@ import { test } from "node:test";
 
 import {
   ANN_BOSS_ACT_ID,
+  ANN_BOSS_DAILY_LIMIT,
   ANN_BOSS_MAX_FIGHTS,
   ANN_BOSS_TYPES,
   ANN_CELEBRATE_FULLSERVER_IDS,
@@ -25,6 +26,7 @@ import {
   createTasksAnnBoss,
   getTodayOpenBossTypes,
   isAlreadyDoneError,
+  isDailyLimitError,
   isFightWin,
   isInactiveError,
   isNotCompletedError,
@@ -139,25 +141,43 @@ test("isFightWin：主判 result.isWin，兜底 accept.ext.curHP=0 / winCnt 上�
   assert.equal(isFightWin({ towerData: { winCnt: 4 } }, 4), false);
   // 什么都没给 → 不算赢
   assert.equal(isFightWin({}), false);
+  // ann_reward.jsonl 实证：**失败场 isWin 字段整个缺失**（只有胜场带 isWin:true），
+  // 且怪物 curHP 是个大数 ⇒ 必须走 curHP 兜底判负，不能因 isWin 缺失误判
+  const lossFromCapture = {
+    towerData: { towerType: 2, fighting: false, actTowerLv: 6, winCnt: 0, pass: false },
+    battleData: { result: { accept: { ext: { curHP: 78448673995 } } } },
+  };
+  assert.equal(isFightWin(lossFromCapture, 0), false);
 });
 
-test("错误分类：已领取/未达成/未开放/限流 与 tasksAnnDaily 同口径", () => {
+test("错误分类：已领取/未达成/未开放/限流/次数用完 与 tasksAnnDaily 同口径", () => {
   assert.equal(isRateLimitError({ code: 400340 }), true);
   assert.equal(isRateLimitError({ code: 200020 }), false);
 
   assert.equal(isAlreadyDoneError({ error: "已领取" }), true);
   assert.equal(isAlreadyDoneError({ error: "今日已签到" }), true);
   assert.equal(isAlreadyDoneError({ error: "重复领取" }), true);
+  assert.equal(isAlreadyDoneError({ error: "奖励已领完" }), true);
   assert.equal(isAlreadyDoneError({ error: "网络错误" }), false);
 
   assert.equal(isNotCompletedError({ error: "任务未达成" }), true);
   assert.equal(isNotCompletedError({ error: "条件不满足" }), true);
+  assert.equal(isNotCompletedError({ error: "暂不可领取" }), true);
   assert.equal(isNotCompletedError({ error: "已领取" }), false);
 
   assert.equal(isInactiveError({ error: "活动未开启" }), true);
   assert.equal(isInactiveError({ error: "活动已结束" }), true);
   assert.equal(isInactiveError({ error: "未开放" }), true);
   assert.equal(isInactiveError({ error: "未知错误" }), false);
+
+  // 今日次数用完类（服务端拒绝语义，命中即干净停不重试风暴）
+  assert.equal(isDailyLimitError({ error: "今日挑战次数已用完" }), true);
+  assert.equal(isDailyLimitError({ error: "已达上限" }), true);
+  assert.equal(isDailyLimitError({ error: "challenge limit reached" }), true);
+  // 超时/普通错误不能误命中（否则会跳过重试）
+  assert.equal(isDailyLimitError({ error: "请求超时" }), false);
+  assert.equal(isDailyLimitError({ error: "timeout" }), false);
+  assert.equal(isDailyLimitError({ error: "网络错误" }), false);
 });
 
 // ── 流程级测试（mock tokenStore，验命令顺序 / 提前停止 / 重试）────────────────
@@ -259,13 +279,13 @@ test("批量：每日签到助力按抓包顺序发 5 条命令（签到→助�
 });
 
 /** 构造抓包同构的 towers_getinfo 响应：只有 leaveUnclearedType 那个 BOSS 未通关 */
-const makeTowerInfoResponse = (leaveUnclearedType) => {
+const makeTowerInfoResponse = (leaveUnclearedType, todayUseTickCnt = 0, actTowerLv = 1) => {
   const towerData = {};
   for (const type of ANN_BOSS_TYPES) {
     towerData[String(type)] = {
       towerType: type,
       fighting: false,
-      actTowerLv: 1,
+      actTowerLv: type === leaveUnclearedType ? actTowerLv : 1,
       winCnt: 0,
       pass: type !== leaveUnclearedType,
     };
@@ -274,13 +294,26 @@ const makeTowerInfoResponse = (leaveUnclearedType) => {
     towerData: {
       actId: ANN_BOSS_ACT_ID,
       season: 45,
-      useTickCnt: 0,
-      todayUseTickCnt: 0,
+      useTickCnt: todayUseTickCnt,
+      todayUseTickCnt,
       towerData,
       levelRewardMap: {},
     },
   };
 };
+
+/** 失败的战斗响应（复刻 ann_reward.jsonl：isWin 缺失 + 怪物 curHP 未归零 + 无奖励） */
+const makeLossFightRes = (towerType, actTowerLv = 6) => ({
+  towerData: { towerType, fighting: false, actTowerLv, winCnt: 0, pass: false },
+  battleData: { result: { accept: { ext: { curHP: 78448673995 } } } },
+});
+
+/** 胜利的战斗响应（复刻主抓包：isWin=true + curHP=0） */
+const makeWinFightRes = (towerType, winCnt, pass = false) => ({
+  reward: [{ type: 3, itemId: 1001, value: 2 }],
+  towerData: { towerType, fighting: true, actTowerLv: winCnt + 1, winCnt, pass },
+  battleData: { result: { isWin: true, accept: { ext: { curHP: 0 } } } },
+});
 
 test("批量：闯关 8 场全胜即通关（第 8 场 pass=true，不多打）", async () => {
   const openToday = getTodayOpenBossTypes();
@@ -293,20 +326,13 @@ test("批量：闯关 8 场全胜即通关（第 8 场 pass=true，不多打）"
     async sendMessageWithPromise(_tokenId, command, body) {
       commands.push({ command, body });
       if (command === "towers_getinfo") return makeTowerInfoResponse(targetBoss);
-      if (command === "towers_start") return {};
+      if (command === "towers_start") {
+        // 服务端权威 tick：每次 start +1（从 0 起）
+        return { towerData: { todayUseTickCnt: commands.filter((c) => c.command === "towers_start").length } };
+      }
       if (command === "towers_fight") {
         fightCnt += 1;
-        return {
-          reward: [{ type: 3, itemId: 1001, value: 2 }],
-          towerData: {
-            towerType: body.towerType,
-            fighting: true,
-            actTowerLv: fightCnt + 1,
-            winCnt: fightCnt,
-            pass: fightCnt === 8, // 第 8 场通关
-          },
-          battleData: { result: { isWin: true, accept: { ext: { curHP: 0 } } } },
-        };
+        return makeWinFightRes(body.towerType, fightCnt, fightCnt === 8);
       }
       return {};
     },
@@ -328,24 +354,21 @@ test("批量：闯关 8 场全胜即通关（第 8 场 pass=true，不多打）"
   assert.ok(logs.some((l) => l.message.includes("已通关")));
 });
 
-test("批量：闯关连败打满 10 次机会上限即停，且每败重 start", async () => {
+test("批量：闯关连败打满 10 次机会即停（tick 只由 start 消耗，服务端口径校准）", async () => {
   const openToday = getTodayOpenBossTypes();
   const targetBoss = openToday[0];
 
   const commands = [];
-  let fightCnt = 0;
+  let startCnt = 0;
   const { deps, logs } = makeDeps({
     async sendMessageWithPromise(_tokenId, command, body) {
       commands.push({ command, body });
       if (command === "towers_getinfo") return makeTowerInfoResponse(targetBoss);
-      if (command === "towers_start") return {};
-      if (command === "towers_fight") {
-        fightCnt += 1;
-        return {
-          towerData: { towerType: body.towerType, fighting: false, actTowerLv: 1, winCnt: 0, pass: false },
-          battleData: { result: { isWin: false } },
-        };
+      if (command === "towers_start") {
+        startCnt += 1;
+        return { towerData: { todayUseTickCnt: startCnt } };
       }
+      if (command === "towers_fight") return makeLossFightRes(body.towerType);
       return {};
     },
     closeWebSocketConnection() {},
@@ -355,8 +378,131 @@ test("批量：闯关连败打满 10 次机会上限即停，且每败重 start"
   await tasks.batchAnnBossFight();
 
   assert.equal(commands.filter((c) => c.command === "towers_fight").length, ANN_BOSS_MAX_FIGHTS);
-  // 每败一次重新 start：10 战 = 1 首 start + 9 重 start
+  // 每败一次重新 start：10 战 = 10 次 start
   assert.equal(commands.filter((c) => c.command === "towers_start").length, ANN_BOSS_MAX_FIGHTS);
   assert.equal(deps.tokenStatus.value["token-1"], "completed");
-  assert.ok(logs.some((l) => l.message.includes(`${ANN_BOSS_MAX_FIGHTS} 次机会上限`)));
+  // 打满 10 战即停（exhausted），日志有每战的预算状态 + 收尾汇总
+  assert.ok(logs.some((l) => l.message.includes(`第 ${ANN_BOSS_MAX_FIGHTS} 战`)));
+  assert.ok(logs.some((l) => l.message.includes("未有通关")));
+});
+
+test("批量：今日次数已用完（todayUseTickCnt=10）→ 一发不打，直接跳过", async () => {
+  const openToday = getTodayOpenBossTypes();
+  const targetBoss = openToday[0];
+
+  const commands = [];
+  const { deps, logs } = makeDeps({
+    async sendMessageWithPromise(_tokenId, command) {
+      commands.push(command);
+      if (command === "towers_getinfo") {
+        return makeTowerInfoResponse(targetBoss, ANN_BOSS_DAILY_LIMIT);
+      }
+      return {};
+    },
+    closeWebSocketConnection() {},
+  });
+
+  const tasks = createTasksAnnBoss(deps);
+  await tasks.batchAnnBossFight();
+
+  assert.deepEqual(commands, ["towers_getinfo"]); // 只有探测，没有 start/fight
+  assert.equal(deps.tokenStatus.value["token-1"], "completed");
+  assert.ok(logs.some((l) => l.message.includes("次数已用完")));
+});
+
+test("批量：弱号只剩 5 次预算 → 打满 5 次即停（服务端 tick 校准，不多打）", async () => {
+  const openToday = getTodayOpenBossTypes();
+  const targetBoss = openToday[0];
+
+  const commands = [];
+  let startCnt = 5; // getinfo 时已用 5 次（复刻 ann_reward.jsonl 的 29号战士）
+  const { deps, logs } = makeDeps({
+    async sendMessageWithPromise(_tokenId, command, body) {
+      commands.push({ command, body });
+      if (command === "towers_getinfo") return makeTowerInfoResponse(targetBoss, 5);
+      if (command === "towers_start") {
+        startCnt += 1;
+        return { towerData: { todayUseTickCnt: startCnt } };
+      }
+      if (command === "towers_fight") return makeLossFightRes(body.towerType);
+      return {};
+    },
+    closeWebSocketConnection() {},
+  });
+
+  const tasks = createTasksAnnBoss(deps);
+  await tasks.batchAnnBossFight();
+
+  // 剩 5 次 = 5 个 start + 5 场战斗，第 6 次 start 预检拦截
+  assert.equal(commands.filter((c) => c.command === "towers_start").length, 5);
+  assert.equal(commands.filter((c) => c.command === "towers_fight").length, 5);
+  assert.ok(logs.some((l) => l.message.includes("剩 5 次")));
+  // 收尾汇总带服务端权威 tick：5 次预算全部用完
+  assert.ok(logs.some((l) => l.message.includes("今日次数 10/10")));
+});
+
+test("批量：start 被服务端拒「次数已用完」→ 干净停不重试风暴", async () => {
+  const openToday = getTodayOpenBossTypes();
+  const targetBoss = openToday[0];
+
+  const commands = [];
+  let startCnt = 8; // getinfo 时已用 8 次
+  const { deps, logs } = makeDeps({
+    async sendMessageWithPromise(_tokenId, command, body) {
+      commands.push({ command, body });
+      if (command === "towers_getinfo") return makeTowerInfoResponse(targetBoss, 8);
+      if (command === "towers_start") {
+        startCnt += 1;
+        if (startCnt === 9) return { towerData: { todayUseTickCnt: 9 } }; // 第 9 次成功
+        throw Object.assign(new Error("今日挑战次数已用完"), { code: 200001 });
+      }
+      if (command === "towers_fight") return makeLossFightRes(body.towerType);
+      return {};
+    },
+    closeWebSocketConnection() {},
+  });
+
+  const tasks = createTasksAnnBoss(deps);
+  await tasks.batchAnnBossFight();
+
+  // 第 2 个 start（第 10 次）被拒且命中 daily-limit 分类 ⇒ 不重试，只发 2 个 start
+  assert.equal(commands.filter((c) => c.command === "towers_start").length, 2);
+  assert.equal(commands.filter((c) => c.command === "towers_fight").length, 1);
+  assert.equal(deps.tokenStatus.value["token-1"], "completed");
+  assert.ok(logs.some((l) => l.message.includes("今日次数已用完")));
+});
+
+test("批量：start 瞬时超时会重试，重试成功后续打（不中断）", async () => {
+  const openToday = getTodayOpenBossTypes();
+  const targetBoss = openToday[0];
+
+  const commands = [];
+  let startAttempt = 0;
+  let fightCnt = 0;
+  const { deps, logs } = makeDeps({
+    async sendMessageWithPromise(_tokenId, command, body) {
+      commands.push({ command, body });
+      if (command === "towers_getinfo") return makeTowerInfoResponse(targetBoss);
+      if (command === "towers_start") {
+        startAttempt += 1;
+        if (startAttempt === 1) throw new Error("timeout"); // 首次超时
+        return { towerData: { todayUseTickCnt: 1 } };
+      }
+      if (command === "towers_fight") {
+        fightCnt += 1;
+        return makeWinFightRes(body.towerType, fightCnt, fightCnt === 8);
+      }
+      return {};
+    },
+    closeWebSocketConnection() {},
+  });
+
+  const tasks = createTasksAnnBoss(deps);
+  await tasks.batchAnnBossFight();
+
+  // 首次 start 超时 → 重试成功 → 8 连胜通关
+  assert.equal(commands.filter((c) => c.command === "towers_start").length, 2);
+  assert.equal(commands.filter((c) => c.command === "towers_fight").length, 8);
+  assert.ok(logs.some((l) => l.message.includes("重试")));
+  assert.ok(logs.some((l) => l.message.includes("已通关")));
 });
