@@ -27,6 +27,7 @@ import {
   createTasksAnnBoss,
   getTodayOpenBossTypes,
   isAlreadyDoneError,
+  isClaimUnavailableError,
   isDailyLimitError,
   isFightWin,
   isInactiveError,
@@ -174,6 +175,11 @@ test("错误分类：已领取/未达成/未开放/限流/次数用完 与 tasks
   assert.equal(isInactiveError({ error: "未开放" }), true);
   assert.equal(isInactiveError({ error: "未知错误" }), false);
 
+  // 领取类 200020（诊断抓包实证）：该奖励当前不可领 = benign 跳过
+  assert.equal(isClaimUnavailableError({ code: 200020, error: "出了点小问题，请尝试重启游戏解决～" }), true);
+  assert.equal(isClaimUnavailableError({ error: "出了点小问题" }), true);
+  assert.equal(isClaimUnavailableError({ error: "网络错误" }), false);
+
   // 今日次数用完类（服务端拒绝语义，命中即干净停不重试风暴）
   assert.equal(isDailyLimitError({ error: "今日挑战次数已用完" }), true);
   assert.equal(isDailyLimitError({ error: "已达上限" }), true);
@@ -248,6 +254,36 @@ test("批量：一次性奖励按抓包顺序发两条（总额奖 + 免费礼�
   assert.deepEqual(commands[1].body, { goodsId: ANN_ONETIME_FREE_GOODS_ID });
   assert.equal(deps.tokenStatus.value["token-1"], "completed");
   assert.ok(logs.some((l) => l.message.includes("5292") && l.message.includes("37011")));
+  assert.ok(logs.some((l) => l.message.includes("一次性礼包领取成功")));
+});
+
+test("批量：总额奖被拒 200020 不阻断礼包领取（master 要的 40009 不能陪葬）", async () => {
+  const commands = [];
+  const { deps, logs } = makeDeps({
+    async sendMessageWithPromise(_tokenId, command, body) {
+      commands.push({ command, body });
+      // 复刻 wss-diag-2026-10-17T09-11-50.jsonl：claimtotalreward 被拒 200020
+      if (command === "common_claimtotalreward") {
+        throw Object.assign(new Error("服务器错误: 200020 - 出了点小问题，请尝试重启游戏解决～"), { code: 200020 });
+      }
+      if (command === "activity_commonbuygoods") {
+        return { role: { items: { 40009: { quantity: 36 } } }, reward: [{ type: 3, itemId: 40009, value: 1 }] };
+      }
+      return {};
+    },
+    closeWebSocketConnection() {},
+  });
+
+  const tasks = createTasksAnnBoss(deps);
+  await tasks.batchAnnOneTimeReward();
+
+  // 两条都发出（①被拒后②照发）
+  assert.deepEqual(
+    commands.map((c) => c.command),
+    ["common_claimtotalreward", "activity_commonbuygoods"],
+  );
+  assert.equal(deps.tokenStatus.value["token-1"], "completed"); // ②成功 ⇒ 账号不算失败
+  assert.ok(logs.some((l) => l.message.includes("200020")));
   assert.ok(logs.some((l) => l.message.includes("一次性礼包领取成功")));
 });
 

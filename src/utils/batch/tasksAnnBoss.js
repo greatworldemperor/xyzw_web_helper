@@ -108,6 +108,15 @@ export const isInactiveError = (error) =>
 export const isDailyLimitError = (error) =>
   /次数|上限|已用完|已达|明日| exhausted|limit/i.test(errorText(error));
 
+/**
+ * 领取类 `200020`：服务端「出了点小问题，请尝试重启游戏解决～」= 该奖励当前不可领
+ * （已领过 / 未解锁，KB 口径 200020 = 目标不可查/会话异常）。诊断抓包
+ * wss-diag-2026-10-17T09-11-50.jsonl 实证（momo222 claimtotalreward 被拒）。
+ * 对领取类是 benign——跳过并在日志里带码，不当失败。
+ */
+export const isClaimUnavailableError = (error) =>
+  Number(error?.code) === 200020 || /出了点小问题/.test(errorText(error));
+
 /** 奖励字段 → 可读文案（Common_RewardResp / Celebrate_ClaimResp 同构：body.reward[]） */
 export const rewardText = (response) => {
   const list = Array.isArray(response?.reward) ? response.reward : [];
@@ -362,9 +371,26 @@ export function createTasksAnnBoss(deps) {
   const claimOneTimeForToken = async ({ tokenId, token }) => {
     const tokenName = token?.name || tokenId;
     let claimed = 0;
+    let hardFailure = false;
+
+    /** 领取类统一分类：benign（200020/已领过/未达成/未开放）返回 true（跳过） */
+    const isBenignClaimRejection = (error) =>
+      isClaimUnavailableError(error) ||
+      isAlreadyDoneError(error) ||
+      isNotCompletedError(error) ||
+      isInactiveError(error);
+    const benignReason = (error) =>
+      isClaimUnavailableError(error)
+        ? "服务端 200020（当前不可领：已领过/未解锁）"
+        : isAlreadyDoneError(error)
+          ? "已领取过"
+          : isNotCompletedError(error)
+            ? "条件未达成"
+            : "暂未开放";
 
     // ① common_claimtotalreward（actId 2610167 / configId 261016701 → 5292 + 37011）
     //    超时/断连由 sendWithRecovery 走「刷新 Token 后重试」（领取幂等，不会重复到账）
+    //    🔴 ①失败**不阻断** ②（master 2026-10-17：礼包才是他要的，别跟着陪葬）
     try {
       const response = await sendWithRecovery(
         tokenId,
@@ -378,19 +404,15 @@ export function createTasksAnnBoss(deps) {
       log(tokenName, `周年庆一次性奖励领取成功（${rewardText(response)}）`, "success");
     } catch (error) {
       if (isRateLimitError(error)) throw error;
-      if (isAlreadyDoneError(error)) {
-        log(tokenName, "周年庆一次性奖励已领取过，跳过");
-      } else if (isNotCompletedError(error)) {
-        log(tokenName, "周年庆一次性奖励条件未达成，跳过");
-      } else if (isInactiveError(error)) {
-        log(tokenName, `周年庆一次性奖励暂未开放：${errorText(error)}`, "warning");
+      if (isBenignClaimRejection(error)) {
+        log(tokenName, `周年庆一次性奖励跳过（${benignReason(error)}）`);
       } else {
+        hardFailure = true;
         log(
           tokenName,
           `周年庆一次性奖励领取失败：${errorText(error)}（请求 {activityId:${ANN_ONETIME_ACT_ID}, configId:${ANN_ONETIME_CONFIG_ID}}，如持续失败请把此条日志给开发）`,
           "error",
         );
-        return "failed";
       }
     }
     await sleep(CLAIM_INTERVAL_MS);
@@ -414,22 +436,19 @@ export function createTasksAnnBoss(deps) {
       );
     } catch (error) {
       if (isRateLimitError(error)) throw error;
-      if (isAlreadyDoneError(error)) {
-        log(tokenName, "周年庆一次性礼包已领取过，跳过");
-      } else if (isNotCompletedError(error)) {
-        log(tokenName, "周年庆一次性礼包条件未达成，跳过");
-      } else if (isInactiveError(error)) {
-        log(tokenName, `周年庆一次性礼包暂未开放：${errorText(error)}`, "warning");
+      if (isBenignClaimRejection(error)) {
+        log(tokenName, `周年庆一次性礼包跳过（${benignReason(error)}）`);
       } else {
+        hardFailure = true;
         log(
           tokenName,
           `周年庆一次性礼包领取失败：${errorText(error)}（请求 {goodsId:${ANN_ONETIME_FREE_GOODS_ID}}，如持续失败请把此条日志给开发）`,
           "error",
         );
-        return "failed";
       }
     }
 
+    if (hardFailure) return "failed";
     return claimed > 0 ? "claimed" : "nothing";
   };
 
