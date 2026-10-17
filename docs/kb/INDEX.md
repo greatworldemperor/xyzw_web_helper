@@ -89,6 +89,8 @@ L0  INDEX.md ← 你在这里（索引 + 路由 + 红线 + 当前状态）
 10. 🔴 **不要自动化盐场 PVP**（`war_startbattle` 被 3000070 拦）。
 11. 🔴 **运行时路径已变更**：node = `C:\Users\worldemperor\.workbuddy\binaries\node\versions\22.22.2-5\node.exe`（`-3` 已不存在）。
 12. 🔴 **`src/utils/batch/smartOpenBox.js` 不要照金鱼口径改**（那是日常开箱，与活动积分消耗不通用）。
+13. 🔴 **bundle 正向 ref 名必须写 `HEAD`**（`^<server_HEAD> HEAD`），脚本只 `git fetch bundle HEAD`；
+    **bundle 三连败先查坏 ref**（`.git/refs/original/*` 指向丢失对象，删之）。
 
 ---
 

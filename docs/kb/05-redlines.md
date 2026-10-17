@@ -33,6 +33,13 @@
 
 18. 🔴 **本地领先 myrepo 时不要跑 `deploy/update.sh`** — 会 `reset --hard origin/<分支>` 把线上回退到旧 tip。
 19. **多文件 scp 有时传旧包** → bundle 单独重传 + `git bundle verify` / `list-heads` 确认后再构建。
+19b. 🔴 **bundle 的正向 ref 名必须写 `HEAD`**（`git bundle create f ^<server_HEAD> HEAD`）：部署脚本
+  `git fetch "$BUNDLE" HEAD` 只认这个名字。用分支名 verify 会说 okay 但 fetch 报
+  `couldn't find remote ref HEAD`；用裸 SHA 当正向 ref 会 `Refusing to create empty bundle`。
+19c. 🔴 **bundle create/verify/fetch 全部失败先查坏 ref**：`.git/refs/original/*`（filter-branch
+  遗留）指向丢失对象时，git 枚举 refs 被打断，报 "Refusing to create empty bundle" /
+  "prerequisite commits ... not connected"，且 commit 时 geometric repack 一直报错。
+  修复：`git update-ref -d <坏ref>`（2026-10-17 部署实测，删 `refs/original/refs/heads/main` 后全恢复）。
 20. **`origin` 勿推**，推送目标只有 `myrepo`（greatworldemperor）。
 21. **push 前 `unset *_PROXY`**；多个分支**必须串行**推送（共用固定端口）。
 22. **`! [rejected] (fetch first)` = 引用层问题≠网络** → fetch → `merge --no-ff` → 再推。
