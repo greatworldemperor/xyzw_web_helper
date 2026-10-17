@@ -23,6 +23,7 @@ import {
   ANN_LINKCARD_READ_NUM,
   ANN_ONETIME_ACT_ID,
   ANN_ONETIME_CONFIG_ID,
+  ANN_ONETIME_FREE_GOODS_ID,
   createTasksAnnBoss,
   getTodayOpenBossTypes,
   isAlreadyDoneError,
@@ -35,9 +36,12 @@ import {
   pickBossTargets,
 } from "../src/utils/batch/tasksAnnBoss.js";
 
-test("周年庆一次性奖励：actId / configId 与抓包一致", () => {
+test("周年庆一次性奖励：actId / configId / 免费礼包 goodsId 与抓包一致", () => {
   assert.equal(ANN_ONETIME_ACT_ID, 2610167);
   assert.equal(ANN_ONETIME_CONFIG_ID, 261016701);
+  // ann_reward.jsonl id=1032 实证：master 指认的「一次性奖励」本体 =
+  // activity_commonbuygoods {goodsId: 26101661}（免费领取，isBought 恒 false，得 40009）
+  assert.equal(ANN_ONETIME_FREE_GOODS_ID, 26101661);
 });
 
 test("周年庆签到助力：档位与卡号与抓包一致", () => {
@@ -182,9 +186,10 @@ test("错误分类：已领取/未达成/未开放/限流/次数用完 与 tasks
 
 // ── 流程级测试（mock tokenStore，验命令顺序 / 提前停止 / 重试）────────────────
 
-/** 构造 createTasksAnnBoss 的 deps（tokenStore 可注入 mock） */
-const makeDeps = (tokenStore) => {
+/** 构造 createTasksAnnBoss 的 deps（tokenStore 可注入 mock；可覆盖额外 deps） */
+const makeDeps = (tokenStore, extraDeps = {}) => {
   const logs = [];
+  const calls = { tokenRefresh: 0 };
   return {
     deps: {
       selectedTokens: { value: ["token-1"] },
@@ -197,20 +202,33 @@ const makeDeps = (tokenStore) => {
       connectionQueue: { active: 1 },
       batchSettings: { maxActive: 1 },
       tokenStore,
+      // 超时恢复：强制刷新 Token + 重建 WSS（计数供断言）
+      reconnectWithFreshToken: async () => {
+        calls.tokenRefresh += 1;
+      },
       addLog: (entry) => logs.push(entry),
       message: { success: () => {}, warning: () => {} },
       currentRunningTokenId: { value: null },
+      ...extraDeps,
     },
     logs,
+    calls,
   };
 };
 
-test("批量：一次性奖励只发一条 common_claimtotalreward，参数与抓包一致", async () => {
+test("批量：一次性奖励按抓包顺序发两条（总额奖 + 免费礼包），参数与抓包一致", async () => {
   const commands = [];
   const { deps, logs } = makeDeps({
     async sendMessageWithPromise(_tokenId, command, body) {
       commands.push({ command, body });
-      return { reward: [{ type: 3, itemId: 5292, value: 1 }, { type: 3, itemId: 37011, value: 1 }] };
+      if (command === "common_claimtotalreward") {
+        return { reward: [{ type: 3, itemId: 5292, value: 1 }, { type: 3, itemId: 37011, value: 1 }] };
+      }
+      if (command === "activity_commonbuygoods") {
+        // 复刻 ann_reward.jsonl id=1032 的响应
+        return { role: { items: { 40009: { quantity: 36 } } }, reward: [{ type: 3, itemId: 40009, value: 1 }] };
+      }
+      return {};
     },
     closeWebSocketConnection() {},
   });
@@ -218,14 +236,19 @@ test("批量：一次性奖励只发一条 common_claimtotalreward，参数与�
   const tasks = createTasksAnnBoss(deps);
   await tasks.batchAnnOneTimeReward();
 
-  assert.equal(commands.length, 1);
-  assert.equal(commands[0].command, "common_claimtotalreward");
+  // 两条：①总额奖 ②免费礼包（master 指认的「一次性奖励」本体）
+  assert.deepEqual(
+    commands.map((c) => c.command),
+    ["common_claimtotalreward", "activity_commonbuygoods"],
+  );
   assert.deepEqual(commands[0].body, {
     activityId: ANN_ONETIME_ACT_ID,
     configId: ANN_ONETIME_CONFIG_ID,
   });
+  assert.deepEqual(commands[1].body, { goodsId: ANN_ONETIME_FREE_GOODS_ID });
   assert.equal(deps.tokenStatus.value["token-1"], "completed");
   assert.ok(logs.some((l) => l.message.includes("5292") && l.message.includes("37011")));
+  assert.ok(logs.some((l) => l.message.includes("一次性礼包领取成功")));
 });
 
 test("批量：每日签到助力按抓包顺序发 5 条命令（签到→助力1→读卡→助力2→个人）", async () => {
@@ -472,20 +495,21 @@ test("批量：start 被服务端拒「次数已用完」→ 干净停不重试�
   assert.ok(logs.some((l) => l.message.includes("今日次数已用完")));
 });
 
-test("批量：start 瞬时超时会重试，重试成功后续打（不中断）", async () => {
+test("批量：start 超时 → 强制刷新 Token 后重试，重试成功续打（master 口径）", async () => {
   const openToday = getTodayOpenBossTypes();
   const targetBoss = openToday[0];
 
   const commands = [];
   let startAttempt = 0;
   let fightCnt = 0;
-  const { deps, logs } = makeDeps({
+  const { deps, logs, calls } = makeDeps({
     async sendMessageWithPromise(_tokenId, command, body) {
       commands.push({ command, body });
       if (command === "towers_getinfo") return makeTowerInfoResponse(targetBoss);
       if (command === "towers_start") {
         startAttempt += 1;
-        if (startAttempt === 1) throw new Error("timeout"); // 首次超时
+        // 复刻真实超时文案（helperTaskRunner.isTimeoutError 的判定关键词）
+        if (startAttempt === 1) throw new Error("请求超时");
         return { towerData: { todayUseTickCnt: 1 } };
       }
       if (command === "towers_fight") {
@@ -500,9 +524,35 @@ test("批量：start 瞬时超时会重试，重试成功后续打（不中断�
   const tasks = createTasksAnnBoss(deps);
   await tasks.batchAnnBossFight();
 
-  // 首次 start 超时 → 重试成功 → 8 连胜通关
+  // 首次 start 超时 → 刷新 Token + 重建 WSS → 重发成功 → 8 连胜通关
   assert.equal(commands.filter((c) => c.command === "towers_start").length, 2);
   assert.equal(commands.filter((c) => c.command === "towers_fight").length, 8);
-  assert.ok(logs.some((l) => l.message.includes("重试")));
+  assert.equal(calls.tokenRefresh, 1); // 超时恢复走的是刷新 Token，不是同 token 盲发
+  assert.ok(logs.some((l) => l.message.includes("强制刷新Token")));
   assert.ok(logs.some((l) => l.message.includes("已通关")));
+});
+
+test("批量：非连接类错误（业务拒绝）不触发刷新 Token", async () => {
+  const openToday = getTodayOpenBossTypes();
+  const targetBoss = openToday[0];
+
+  const commands = [];
+  const { deps, calls } = makeDeps({
+    async sendMessageWithPromise(_tokenId, command, body) {
+      commands.push({ command, body });
+      if (command === "towers_getinfo") return makeTowerInfoResponse(targetBoss);
+      if (command === "towers_start") {
+        throw Object.assign(new Error("今日挑战次数已用完"), { code: 200001 });
+      }
+      return {};
+    },
+    closeWebSocketConnection() {},
+  });
+
+  const tasks = createTasksAnnBoss(deps);
+  await tasks.batchAnnBossFight();
+
+  // 业务拒绝原样抛出走分类，绝不刷新 Token（避免刷新风暴）
+  assert.equal(commands.filter((c) => c.command === "towers_start").length, 1);
+  assert.equal(calls.tokenRefresh, 0);
 });

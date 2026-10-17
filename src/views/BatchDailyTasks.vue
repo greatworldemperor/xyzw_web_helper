@@ -966,9 +966,11 @@
                   </n-button>
                 </n-space>
                 <span class="xiaoyaojin-hint">
-                  周年庆一次性奖励：对<b>所有选中账号</b>领取一次性总奖
-                  （common_claimtotalreward，actId 2610167 / configId 261016701，
-                  实测得道具 5292 + 37011 各 ×1）。
+                  周年庆一次性奖励：对<b>所有选中账号</b>领取两条一次性奖励——
+                  ①总额奖（common_claimtotalreward，actId 2610167 / configId 261016701，
+                  实测得道具 5292 + 37011 各 ×1）；
+                  ②一次性礼包（activity_commonbuygoods，goodsId 26101661，**免费领取**，
+                  实测得道具 40009 ×1）。已领取 / 未达成 / 活动未开按正常跳过处理。
                 </span>
                 <span class="xiaoyaojin-hint">
                   周年庆每日奖励/助力：按抓包顺序执行
@@ -8469,6 +8471,43 @@ const reconnectWithLatestToken = async (tokenId, reason) => {
   }
 };
 
+/**
+ * 任务执行中「超时/断连」恢复专用：**强制刷新 Token**（跳过复用窗口）后重建 WSS。
+ * 与 reconnectWithLatestToken 的区别：那个走 refreshTokenBeforeBatchConnection
+ * （近期刷过就复用，适合切账号场景）；超时恢复要治的正是 stale token，
+ * 同 token 重连治不好，必须拿新 token（master 2026-10-17 口径）。
+ * 供任务模块（tasksAnnBoss 等）经 deps.reconnectWithFreshToken 调用。
+ */
+const reconnectWithFreshToken = async (tokenId, reason) => {
+  addLog({
+    time: new Date().toLocaleTimeString(),
+    message: `${reason}，强制刷新Token并重建WSS`,
+    type: "warning",
+  });
+
+  await tokenStore.closeWebSocketConnection(tokenId);
+  await refreshTokenUntilSuccess(tokenId, `${reason}，开始刷新Token`);
+  await new Promise((resolve) =>
+    setTimeout(resolve, batchSettings.reconnectDelay),
+  );
+
+  const refreshedToken = tokens.value.find((t) => t.id === tokenId);
+  if (!refreshedToken) {
+    throw new Error(`Token刷新后未找到账号: ${tokenId}`);
+  }
+
+  await tokenStore.createWebSocketConnection(
+    tokenId,
+    refreshedToken.token,
+    refreshedToken.wsUrl,
+    { monitorTimeout: false, autoRefresh: false },
+  );
+
+  if (!(await waitForConnection(tokenId))) {
+    throw new Error("刷新Token后重建WSS失败");
+  }
+};
+
 const sendRoleInfo = async (
   tokenId,
   params = {},
@@ -8799,6 +8838,9 @@ const createTaskDeps = () => ({
   batchSettings,
   tokenStore: guardedTokenStore,
   sendRoleInfo,
+  // 任务执行中「超时/断连」恢复：强制刷新 Token + 重建 WSS（master 2026-10-17 口径：
+  // 超时重试不是固定次数重发，而是刷新 token 后重试——同 token 重连治不好 stale token）
+  reconnectWithFreshToken,
   addLog,
   message,
   currentRunningTokenId,
