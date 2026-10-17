@@ -133,6 +133,10 @@ export function registerDefaultCommands(reg) {
     .register("system_signinreward")
     .register("system_mysharecallback", { isSkipShareCard: true, type: 2 })
     .register("system_custom", { key: "", value: 0 })
+    // 兑换码（CDK）兑换：master 2026-10-17 抓包 local-data/misc/redemption_code.jsonl
+    // 实证 body = { key: "wuzhounian2026", platformType: "h5" }，响应 SyncRewardResp；
+    // key = 兑换码（大小写敏感），platformType 固定 "h5"（首帧口径同源）
+    .register("system_claimcdkreward", { key: "", platformType: "h5" })
 
     // ── 进主城初始化序列所需命令（2026-10-01 补注册）────────────────────────────
     // 🔴 背景：`tasksGoldenfish.GOLDENFISH_ENTER_GAME_SEQUENCE`（36 帧，照抄游戏本体进主城的
@@ -1334,6 +1338,8 @@ export class XyzwWebSocketClient {
         "hero_rebirth",
         // 逍遥津一次性礼包：成功后服务端回 SyncRewardResp
         "activity_commonbuygoods",
+        // 兑换码兑换：成功后回 SyncRewardResp（reward[] + role.statistics["cdk:<code>_0"]）
+        "system_claimcdkreward",
       ],
     };
 

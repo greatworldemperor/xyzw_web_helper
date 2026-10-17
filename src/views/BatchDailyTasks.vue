@@ -512,6 +512,33 @@
                   流程：store_getpurchase 读当前列表（页面刷新次数未配置时沿用服务端现值）→
                   store_setpurchase 写入勾选项 + 刷新次数；响应回显一致才记成功，未勾选的商品不在自动购买列表。
                 </span>
+                <n-divider style="margin: 4px 0" />
+                <span class="xiaoyaojin-hint">
+                  批量兑换码：每行一个兑换码（兼容空格/逗号/分号分割，自动去空去重、大小写敏感），
+                  对所有选中账号依次兑换同一批码；「已兑过」不算失败，限流自动停本账号。
+                </span>
+                <n-input
+                  v-model:value="redeemCodesInput"
+                  type="textarea"
+                  size="small"
+                  :rows="4"
+                  placeholder="每行一个兑换码，例如：&#10;wuzhounian2026&#10;xyzw666"
+                  :disabled="isRunning"
+                />
+                <n-space :size="8">
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="onBatchRedeemCodes"
+                    :disabled="
+                      isRunning ||
+                      selectedTokens.length === 0 ||
+                      !redeemCodesInput.trim()
+                    "
+                  >
+                    批量兑换码
+                  </n-button>
+                </n-space>
               </n-space>
             </n-tab-pane>
             <n-tab-pane name="dungeon" tab="副本">
@@ -4388,6 +4415,7 @@ import {
   createTasksSeasonOutCheer,
   createTasksAnnDaily,
   createTasksAnnBoss,
+  createTasksRedeemCode,
   createTasksWhiteJadePkroom,
   createTasksGoldenfish,
   GOLDENFISH_SHOP_DEFAULTS,
@@ -8909,6 +8937,32 @@ const tasksAnnBoss = createTasksAnnBoss(createTaskDeps());
 const { batchAnnOneTimeReward, batchAnnCelebrateClaim, batchAnnBossFight } =
   tasksAnnBoss;
 
+const tasksRedeemCode = createTasksRedeemCode(createTaskDeps());
+const { batchRedeemCodes } = tasksRedeemCode;
+
+// 兑换码输入（持久化：换页面/刷新不丢，方便多账号分批兑同一批码）
+const REDEEM_CODES_STORAGE_KEY = "redeemCodesInput";
+const loadRedeemCodesInput = () => {
+  try {
+    return localStorage.getItem(REDEEM_CODES_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+};
+const redeemCodesInput = ref(loadRedeemCodesInput());
+watch(
+  redeemCodesInput,
+  (val) => {
+    try {
+      localStorage.setItem(REDEEM_CODES_STORAGE_KEY, val ?? "");
+    } catch {
+      /* localStorage 不可用时静默降级为内存态 */
+    }
+  },
+  { deep: true },
+);
+const onBatchRedeemCodes = () => batchRedeemCodes(redeemCodesInput.value);
+
 const tasksBottle = createTasksBottle(createTaskDeps());
 const { resetBottles, batchlingguanzi } = tasksBottle;
 
@@ -9362,6 +9416,8 @@ const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksAnnDaily(deps),
   // 周年庆一次性奖励 + 每日签到助力 + 闯关打BOSS（临时活动分组，2026-10-17 接入）
   ...createTasksAnnBoss(deps),
+  // 批量兑换码（2026-10-17 接入；不进 flexibleTaskGroups，仅页面手动入口）
+  ...createTasksRedeemCode(deps),
   // 逍遥津已于 2026-09-26 活动结束后下线（UI 已摘除；源码与测试保留在
   // utils/batch/tasksXiaoyaojin.js + utils/xiaoyaojinPlan.js，下期接回只需恢复接线）
   ...createTasksGoldenfish(deps),
