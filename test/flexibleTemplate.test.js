@@ -92,6 +92,12 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     // 2026-10-16 新增：周年庆每日奖励（actId 2610169 的 5 个每日奖励），
     // 同样落在「临时活动」分组；活动轮换后更新 tasksAnnDaily.js 常量或移除。
     "batchAnnDailyClaim",
+    // 2026-10-17 新增：周年庆一次性奖励 + 每日签到助力 + 闯关打BOSS
+    // （actId 2610167 / celebrate / towers actId 2610163），抓包实证
+    // local-data/anniversary/ann_daily_boss_full.jsonl，同落「临时活动」分组。
+    "batchAnnOneTimeReward",
+    "batchAnnCelebrateClaim",
+    "batchAnnBossFight",
     // ⚠️ 逍遥津的 7 个任务（xiaoyaojinAll / DailyTask / PassChest / PassRewards /
     //    OneTimeGift / SignReward / Lottery）已于 2026-09-26 活动结束后下线，
     //    从「临时活动」分组移除；源码仍在 utils/batch/tasksXiaoyaojin.js，下期可接回。

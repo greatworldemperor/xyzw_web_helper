@@ -108,7 +108,22 @@
 `system_claimhangupreward` · `study_claimreward{rewardId:1..10}` · `club_sign` · `legion_storebuygoods` · `legionStoreBuySkinCoins` · `legionmatch_rolesignup`（**俱乐部排位报名**，非盐场/蟠桃报名）
 `legacy_claimhangup` · `legacy_sendgift`
 
-## 12. 已确认的业务错误码
+## 12. 换皮闯关 / 周年庆（临时活动）
+
+换皮闯关（每周五轮换，actId = `getTowerActId()` 按本周五推算 YYMMDD1）：
+`towers_getinfo{actId}` · `towers_start{actId,towerType}` · `towers_fight{actId,towerType}`
+→ `Towers_GetInfoResp`（**两层 towerData**：外层信息 + 内层六宫格 Map）/ `Towers_StartResp` / `Towers_FightResp`
+（`battleData.result.isWin` 判胜负；`towerData.pass` 判通关；通关后旧活动靠 `activity_startactegame{actId+1}` 轮领）
+
+周年庆（2026-10-16/17 临时活动，详见 `docs/anniversary-daily-boss-protocol.md`）：
+`activity_warordertaskclaim{2610169,2610169XX}`（每日奖励 ×5，回 Activity_WarOrderClaimResp）
+`common_claimtotalreward{2610167,261016701}`（一次性奖励，回 Common_RewardResp）
+`celebrate_sign{}`（签到，**回 Celebrate_GetCelebrateInfoResp 不是 _signresp**）
+`celebrate_claimfullserver{idList:[1,2]}` / `celebrate_claimpersonal{idList:[1]}`（助力/个人，回 Celebrate_ClaimResp）
+`linkcard_readcard{cardId:90111,readNum:1}`（读卡，回 SyncResp）
+`towers_*{actId:2610163}`（闯关，**与换皮闯关同命令不同 actId**，每 BOSS 8 层、最多 10 战）
+
+## 13. 已确认的业务错误码
 
 | 码 | 含义 |
 |---|---|

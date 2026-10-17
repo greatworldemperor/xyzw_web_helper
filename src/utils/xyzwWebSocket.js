@@ -461,6 +461,19 @@ export function registerDefaultCommands(reg) {
     .register("towers_start")
     .register("towers_fight")
 
+    // 周年庆（临时活动，2026-10-17 抓包实证，见 local-data/anniversary/ann_daily_boss_full.jsonl）
+    // ① 一次性奖励：common_claimtotalreward {activityId, configId} → Common_RewardResp
+    // ② 签到/助力：celebrate_sign / celebrate_claimfullserver {idList} /
+    //    celebrate_claimpersonal {idList} → Celebrate_ClaimResp；
+    //    celebrate_getcelebrateinfo → Celebrate_GetCelebrateInfoResp（celebrate_sign 也回这个）
+    // ③ 集卡读卡：linkcard_readcard {cardId, readNum} → SyncResp
+    .register("common_claimtotalreward", { activityId: 0, configId: 0 })
+    .register("celebrate_getcelebrateinfo")
+    .register("celebrate_sign")
+    .register("celebrate_claimfullserver", { idList: [] })
+    .register("celebrate_claimpersonal", { idList: [] })
+    .register("linkcard_readcard", { cardId: 0, readNum: 0 })
+
     //发送游戏内消息
     .register("system_sendchatmessage")
 
@@ -1249,7 +1262,8 @@ export class XyzwWebSocketClient {
       activity_lotteryresp: "activity_lottery",
       activity_claimlotterycumulativeresp: "activity_claimlotterycumulative",
       // 兑换商店回的是通用奖励响应 Common_RewardResp
-      commonrewardresp: "activity_exchange",
+      // 周年庆一次性奖励（common_claimtotalreward）也回 Common_RewardResp
+      commonrewardresp: ["activity_exchange", "common_claimtotalreward"],
       arena_getarearankresp: "arena_getarearank",
       bosstower_gethelprankresp: "bosstower_gethelprank",
       // 功法相关响应映射
@@ -1267,6 +1281,17 @@ export class XyzwWebSocketClient {
       towers_getinforesp: "towers_getinfo",
       towers_startresp: "towers_start",
       towers_fightresp: "towers_fight",
+      // 周年庆签到/助力（2026-10-17 抓包实证）：
+      // celebrate_sign 成功回的不是 *_signresp，而是 Celebrate_GetCelebrateInfoResp（resp=seq 可匹配）；
+      // celebrate_claimfullserver / celebrate_claimpersonal 都回 Celebrate_ClaimResp。
+      celebrate_getcelebrateinforesp: [
+        "celebrate_getcelebrateinfo",
+        "celebrate_sign",
+      ],
+      celebrate_claimresp: [
+        "celebrate_claimfullserver",
+        "celebrate_claimpersonal",
+      ],
       // 特殊响应映射 - 有些命令有独立响应，有些用同步响应
       task_claimdailyrewardresp: "task_claimdailyreward",
       task_claimweekrewardresp: "task_claimweekreward",
@@ -1290,6 +1315,8 @@ export class XyzwWebSocketClient {
         // 助威记录在 body.role.statistics["sr:out:cheer:<赛季首轮日期>"]。
         // 详见 docs/saltroad-season-out-cheer-protocol.md
         "saltroad_outcheer",
+        // 周年庆集卡读卡：成功后回 SyncResp（body.role.linkCard[cardId].readNum）
+        "linkcard_readcard",
       ],
       syncrewardresp: [
         "system_buygold",

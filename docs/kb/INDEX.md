@@ -34,6 +34,7 @@ L0  INDEX.md ← 你在这里（索引 + 路由 + 红线 + 当前状态）
 │   ├─ activity-saltfield.md           盐场（军团战）
 │   ├─ activity-xiaoyaojin-camp.md     逍遥津 + 营地挑战
 │   ├─ activity-pantao-weirdtower.md   蟠桃 + 怪异塔助力
+│   ├─ activity-anniversary.md         周年庆（每日奖励 + 签到助力 + 闯关打BOSS，2026-10-16/17 临时活动）
 │   └─ activity-misc.md                白玉/预约/黑市/宝箱/竞技场/副本/挂机/答题/推关…全部常驻
 │
 ├─ L2 模块（基础设施）
@@ -64,6 +65,7 @@ L0  INDEX.md ← 你在这里（索引 + 路由 + 红线 + 当前状态）
 | 盐场（组队/登场/攻击） | `activity-saltfield.md` |
 | 逍遥津 / 营地挑战 | `activity-xiaoyaojin-camp.md` |
 | 蟠桃 / 怪异塔助力 | `activity-pantao-weirdtower.md` |
+| 周年庆（每日奖励 / 签到助力 / 闯关打BOSS） | `activity-anniversary.md` |
 | 白玉 / 预约 / 黑市 / 宝箱 / 副本 / 挂机 / 答题 / 推关… | `activity-misc.md` |
 | Token 导入 / 登录 / 刷新 / 限流 | `module-auth-token.md` |
 | 连接失败 / 重连 / 多开 / 平台伪装 | `03-protocol-connection.md` |

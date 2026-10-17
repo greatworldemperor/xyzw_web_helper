@@ -912,7 +912,9 @@
             </n-tab-pane>
             <n-tab-pane name="temporary" tab="临时活动">
               <!-- 限时临时活动入口。2026-10-15 接入盐场「赛季淘汰赛助威」（天工投票）；
-                   2026-10-16 接入周年庆每日奖励（actId 2610169，5 个奖励） -->
+                   2026-10-16 接入周年庆每日奖励（actId 2610169，5 个奖励）；
+                   2026-10-17 接入周年庆一次性奖励 + 每日签到助力 + 闯关打BOSS
+                   （actId 2610167 / celebrate / towers actId 2610163） -->
               <n-space vertical :size="8">
                 <n-space align="center" :size="8" wrap>
                   <n-button
@@ -936,6 +938,52 @@
                  （activity_warordertaskclaim，actId 2610169，序号 01~05，每个得道具 5290
                   ×1）。已领取 / 任务未达成 / 活动未开的账号服务端会拒绝，按正常跳过处理；
                   触发限流(400340)会自动停该账号剩余领取，下次再跑即可。
+                </span>
+                <n-space align="center" :size="8" wrap>
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="batchAnnOneTimeReward"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    领取周年庆一次性奖励
+                  </n-button>
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="batchAnnCelebrateClaim"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    领取周年庆每日奖励/助力
+                  </n-button>
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="batchAnnBossFight"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    周年庆攻打BOSS
+                  </n-button>
+                </n-space>
+                <span class="xiaoyaojin-hint">
+                  周年庆一次性奖励：对<b>所有选中账号</b>领取一次性总奖
+                  （common_claimtotalreward，actId 2610167 / configId 261016701，
+                  实测得道具 5292 + 37011 各 ×1）。
+                </span>
+                <span class="xiaoyaojin-hint">
+                  周年庆每日奖励/助力：按抓包顺序执行
+                  <b>签到 → 全服助力奖励1 → 读卡 → 全服助力奖励2 → 个人每日奖励</b>
+                  （celebrate_sign / celebrate_claimfullserver / linkcard_readcard /
+                  celebrate_claimpersonal；实测奖励含集卡 90111、金币 1001）。
+                  已签到 / 已领取 / 未达成的账号服务端会拒绝，按正常跳过处理。
+                </span>
+                <span class="xiaoyaojin-hint">
+                  周年庆攻打BOSS：界面与「换皮闯关」相同但 actId 不同（换皮闯关按周五推算 =
+                  2610161，本活动 = 2610163，所以换皮闯关入口打不了本活动）。
+                  先拉取 towers_getinfo，对<b>今日开放且未通关</b>的 BOSS 逐个攻打
+                  （周五 BOSS1 / 周六 BOSS2 / 周日 BOSS3 / 周一 BOSS4 / 周二 BOSS5 /
+                  周三 BOSS6 / 周四全开），<b>每个 BOSS 最多 10 战</b>（8 关 + 失败冗余），
+                  通关（pass）即停；今日已通关或未开放的服务端会拒绝，按正常跳过处理。
                 </span>
                 <span class="xiaoyaojin-hint">
                   盐场赛季淘汰赛（64 强）助威：助威名单按淘汰赛胜场取前 64 家俱乐部，
@@ -8812,6 +8860,12 @@ const { batchSeasonOutCheer } = tasksSeasonOutCheer;
 const tasksAnnDaily = createTasksAnnDaily(createTaskDeps());
 const { batchAnnDailyClaim } = tasksAnnDaily;
 
+// 周年庆一次性奖励 + 每日签到助力 + 闯关打BOSS（临时活动，2026-10-17 抓包实证，
+// actId 2610167 / celebrate / towers actId 2610163，见 local-data/anniversary/）
+const tasksAnnBoss = createTasksAnnBoss(createTaskDeps());
+const { batchAnnOneTimeReward, batchAnnCelebrateClaim, batchAnnBossFight } =
+  tasksAnnBoss;
+
 const tasksBottle = createTasksBottle(createTaskDeps());
 const { resetBottles, batchlingguanzi } = tasksBottle;
 
@@ -9263,6 +9317,8 @@ const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksSeasonOutCheer(deps),
   // 周年庆每日奖励（临时活动分组，2026-10-16 接入）
   ...createTasksAnnDaily(deps),
+  // 周年庆一次性奖励 + 每日签到助力 + 闯关打BOSS（临时活动分组，2026-10-17 接入）
+  ...createTasksAnnBoss(deps),
   // 逍遥津已于 2026-09-26 活动结束后下线（UI 已摘除；源码与测试保留在
   // utils/batch/tasksXiaoyaojin.js + utils/xiaoyaojinPlan.js，下期接回只需恢复接线）
   ...createTasksGoldenfish(deps),

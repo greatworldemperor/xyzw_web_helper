@@ -39,6 +39,9 @@ export { createTasksXianMaster } from './tasksXianMaster.js';
 export { createTasksSeasonOutCheer } from './tasksSeasonOutCheer.js';
 // 周年庆每日奖励（临时活动，2026-10-16 抓包实证，见 local-data/ann_daily/）
 export { createTasksAnnDaily } from './tasksAnnDaily.js';
+// 周年庆一次性奖励 + 每日签到助力 + 闯关打BOSS（临时活动，2026-10-17 抓包实证，
+// 见 local-data/anniversary/ann_daily_boss_full.jsonl）
+export { createTasksAnnBoss } from './tasksAnnBoss.js';
 export { createTasksXiaoyaojin } from './tasksXiaoyaojin.js';
 export {
   createTasksGoldenfish,
