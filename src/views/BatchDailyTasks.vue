@@ -4385,6 +4385,7 @@ import {
   createTasksXianMaster,
   createTasksSeasonOutCheer,
   createTasksAnnDaily,
+  createTasksAnnBoss,
   createTasksWhiteJadePkroom,
   createTasksGoldenfish,
   GOLDENFISH_SHOP_DEFAULTS,
