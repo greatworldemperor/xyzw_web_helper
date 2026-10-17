@@ -75,6 +75,8 @@
 | `saltfield-auto-ui-design.md` | 盐场自动 UI 设计 |
 | `saltfield-deploy-team-enter-feasibility.md` | 盐场部署/组队/进场可行性 |
 | `saltroad-season-out-cheer-protocol.md` | 盐场「赛季淘汰赛助威」（天工投票，2026-10-15 抓包） |
+| `anniversary-daily-reward-protocol.md` | 周年庆每日奖励（warOrder，actId 2610169，2026-10-16 抓包） |
+| `anniversary-daily-boss-protocol.md` | 周年庆一次性奖励 + 签到助力 + 闯关打BOSS（2026-10-17 抓包，含与换皮闯关的 actId 差异） |
 | `weird-tower-share-code-protocol.md` / `weird-tower-share-assist-design.md` | 怪异塔助力共享码协议 / 设计 |
 | `weekly-event-blackmarket-analysis.md` | 黑市周协议 |
 | `monday-jade-and-pkroom-appoint-protocol.md` | 周一白玉 + 预约比赛 |
@@ -89,14 +91,15 @@
 | `reverse-engineering/7.7.12-skip150.md` | skip150 客户端配置 Hook 结论 |
 | `reverse-engineering/7.7.12-deobfuscation-progress.md` | 7.7.12 反混淆进度 |
 
-## 4. 测试清单（`test/`，54 个文件；2026-10-15 实测 690 例 / 过 684 / 红 6）
+## 4. 测试清单（`test/`，56 个文件；2026-10-17 实测 705 例 / 过 693 / 红 12）
 
-> 红 6 全部为**存量红**（干净 HEAD 上复现，与 10-15 淘汰赛助威改动无关）：
-> `tasksTower` 的 skinChallenge×1 + `tasksXiaoyaojinCoupon`×5（逍遥津下线后的遗留）。
+> 红 12 全部为**存量红**（stash 后在干净树上复现，与本次改动无关）：
+> 营地挑战「计划确认/降级」×3 + `tasksTower` 的 skinChallenge×1 + `tasksXiaoyaojinCoupon`×5
+> （逍遥津下线后的遗留）+ 营地挑战 partial-attack 相关×3。见 2026-10-17 日志的 worktree 对照实验。
 
 **批量/引擎**：`batchCmdRegistry` · `flexibleTemplate` · `helperTaskRunner` · `logRing` · `dailyTaskRunnerSelection` · `tasksHangUp` · `tasksTower`(🔴 skinChallenge 红) · `tasksXianMaster`
 **金鱼**：`tasksGoldenfishConsume` · `fishMerge` · `goldenfishConsumePlan` 相关
-**活动**：`xiaoyaojinPlan` · `tasksXiaoyaojinCoupon` · `campChallengePlanner` · `campChallengeTodayOppo` · `pantao*` · `saltfieldDeploy` · `whiteJadeAndPkroomAppoint` · `weirdTowerShare*` · `seasonOutCheer` + `tasksSeasonOutCheer`（2026-10-15 新增，18 例全绿）
+**活动**：`xiaoyaojinPlan` · `tasksXiaoyaojinCoupon` · `campChallengePlanner` · `campChallengeTodayOppo` · `pantao*` · `saltfieldDeploy` · `whiteJadeAndPkroomAppoint` · `weirdTowerShare*` · `seasonOutCheer` + `tasksSeasonOutCheer`（2026-10-15 新增，18 例全绿） · `annDailyClaim` + `annBossTasks`（周年庆，2026-10-16/17 新增，12+4 例全绿）
 **推关**：`pushLevelConfig` · `pushLevelDryRun` · `pushLevelEndLevel` · `pushLevelOutputCode` · `pushLevelResultTemplate` · `pushLevelScheduler` · `pushLevelTokenAdapter`
 **认证/多开/其它**：`tokenRefreshPolicy` · `hortorLogin` · `serverRole` · `worker` · `multiGameBootstrap` · `multiGamePageWarning` · `towerClimbLimit` · `towerClimbLimit` · `skinChallenge`(在 tasksTower 内) · `protocolError` · `tokenSort`
 
