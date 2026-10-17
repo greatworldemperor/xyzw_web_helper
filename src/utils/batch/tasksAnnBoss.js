@@ -463,6 +463,8 @@ export function createTasksAnnBoss(deps) {
   const claimCelebrateForToken = async ({ tokenId, token }) => {
     const tokenName = token?.name || tokenId;
     let claimed = 0;
+    // 🔴 单条失败不短路后面的领取（master：每天分几次领）；全部跑完才结算
+    let hardFailure = false;
 
     // 1) 每日签到（当日键 261017 形式；已签到服务端会拒，算 benign）
     try {
@@ -471,13 +473,15 @@ export function createTasksAnnBoss(deps) {
       log(tokenName, "周年庆每日签到成功", "success");
     } catch (error) {
       if (isRateLimitError(error)) throw error;
-      if (isAlreadyDoneError(error)) {
+      if (isClaimUnavailableError(error)) {
+        log(tokenName, "周年庆签到当前不可领（200020），跳过");
+      } else if (isAlreadyDoneError(error)) {
         log(tokenName, "周年庆今日已签到，跳过");
       } else if (isInactiveError(error)) {
         log(tokenName, `周年庆签到暂未开放：${errorText(error)}`, "warning");
       } else {
-        log(tokenName, `周年庆签到失败：${errorText(error)}`, "error");
-        return "failed";
+        log(tokenName, `周年庆签到失败：${errorText(error)}（继续领下面的奖励）`, "error");
+        hardFailure = true;
       }
     }
     await sleep(CLAIM_INTERVAL_MS);
@@ -500,7 +504,9 @@ export function createTasksAnnBoss(deps) {
       );
     } catch (error) {
       if (isRateLimitError(error)) throw error;
-      if (isAlreadyDoneError(error)) {
+      if (isClaimUnavailableError(error)) {
+        log(tokenName, `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[0]} 当前不可领（200020），跳过`);
+      } else if (isAlreadyDoneError(error)) {
         log(tokenName, `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[0]} 已领取过，跳过`);
       } else if (isNotCompletedError(error)) {
         log(tokenName, `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[0]} 未达成，跳过`);
@@ -509,10 +515,10 @@ export function createTasksAnnBoss(deps) {
       } else {
         log(
           tokenName,
-          `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[0]} 领取失败：${errorText(error)}`,
+          `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[0]} 领取失败：${errorText(error)}（继续领下面的奖励）`,
           "error",
         );
-        return "failed";
+        hardFailure = true;
       }
     }
     await sleep(CLAIM_INTERVAL_MS);
@@ -536,15 +542,17 @@ export function createTasksAnnBoss(deps) {
       );
     } catch (error) {
       if (isRateLimitError(error)) throw error;
-      if (isAlreadyDoneError(error)) {
+      if (isClaimUnavailableError(error)) {
+        log(tokenName, "周年庆读卡当前不可领（200020），跳过");
+      } else if (isAlreadyDoneError(error)) {
         log(tokenName, "周年庆今日已读过卡，跳过");
       } else if (isNotCompletedError(error)) {
         log(tokenName, "周年庆读卡条件未达成（卡未到手？），跳过");
       } else if (isInactiveError(error)) {
         log(tokenName, `周年庆读卡暂未开放：${errorText(error)}`, "warning");
       } else {
-        log(tokenName, `周年庆读卡失败：${errorText(error)}`, "error");
-        return "failed";
+        log(tokenName, `周年庆读卡失败：${errorText(error)}（继续领下面的奖励）`, "error");
+        hardFailure = true;
       }
     }
     await sleep(CLAIM_INTERVAL_MS);
@@ -567,7 +575,9 @@ export function createTasksAnnBoss(deps) {
       );
     } catch (error) {
       if (isRateLimitError(error)) throw error;
-      if (isAlreadyDoneError(error)) {
+      if (isClaimUnavailableError(error)) {
+        log(tokenName, `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[1]} 当前不可领（200020），跳过`);
+      } else if (isAlreadyDoneError(error)) {
         log(tokenName, `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[1]} 已领取过，跳过`);
       } else if (isNotCompletedError(error)) {
         log(tokenName, `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[1]} 未达成，跳过`);
@@ -576,10 +586,10 @@ export function createTasksAnnBoss(deps) {
       } else {
         log(
           tokenName,
-          `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[1]} 领取失败：${errorText(error)}`,
+          `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[1]} 领取失败：${errorText(error)}（继续领下面的奖励）`,
           "error",
         );
-        return "failed";
+        hardFailure = true;
       }
     }
     await sleep(CLAIM_INTERVAL_MS);
@@ -602,7 +612,9 @@ export function createTasksAnnBoss(deps) {
       );
     } catch (error) {
       if (isRateLimitError(error)) throw error;
-      if (isAlreadyDoneError(error)) {
+      if (isClaimUnavailableError(error)) {
+        log(tokenName, `周年庆个人每日奖励 ${ANN_CELEBRATE_PERSONAL_IDS[0]} 当前不可领（200020），跳过`);
+      } else if (isAlreadyDoneError(error)) {
         log(tokenName, `周年庆个人每日奖励 ${ANN_CELEBRATE_PERSONAL_IDS[0]} 已领取过，跳过`);
       } else if (isNotCompletedError(error)) {
         log(tokenName, `周年庆个人每日奖励 ${ANN_CELEBRATE_PERSONAL_IDS[0]} 未达成（未签到？），跳过`);
@@ -614,10 +626,11 @@ export function createTasksAnnBoss(deps) {
           `周年庆个人每日奖励 ${ANN_CELEBRATE_PERSONAL_IDS[0]} 领取失败：${errorText(error)}`,
           "error",
         );
-        return "failed";
+        hardFailure = true;
       }
     }
 
+    if (hardFailure) return "failed";
     return claimed > 0 ? "claimed" : "nothing";
   };
 

@@ -592,3 +592,48 @@ test("批量：非连接类错误（业务拒绝）不触发刷新 Token", async
   assert.equal(commands.filter((c) => c.command === "towers_start").length, 1);
   assert.equal(calls.tokenRefresh, 0);
 });
+
+test("批量：celebrate 签到硬失败不短路后面的领取（master：每天分几次领）", async () => {
+  const commands = [];
+  const { deps, logs } = makeDeps({
+    async sendMessageWithPromise(_tokenId, command, body) {
+      commands.push({ command, body });
+      // 签到硬失败（未分类错误），其余成功
+      if (command === "celebrate_sign") throw new Error("某种未知错误");
+      if (command === "celebrate_claimfullserver") {
+        return {
+          reward:
+            body.idList[0] === 1
+              ? [{ type: 21, itemId: ANN_LINKCARD_CARD_ID, value: 1 }]
+              : [{ type: 3, itemId: 1001, value: 10 }],
+        };
+      }
+      if (command === "linkcard_readcard") {
+        return { role: { linkCard: { [ANN_LINKCARD_CARD_ID]: { readNum: 1 } } } };
+      }
+      if (command === "celebrate_claimpersonal") {
+        return { reward: [{ type: 3, itemId: 1001, value: 3 }] };
+      }
+      return {};
+    },
+    closeWebSocketConnection() {},
+  });
+
+  const tasks = createTasksAnnBoss(deps);
+  await tasks.batchAnnCelebrateClaim();
+
+  // 5 条命令全部发出（签到失败后其余照发）
+  assert.deepEqual(
+    commands.map((c) => c.command),
+    [
+      "celebrate_sign",
+      "celebrate_claimfullserver",
+      "linkcard_readcard",
+      "celebrate_claimfullserver",
+      "celebrate_claimpersonal",
+    ],
+  );
+  // 4 条成功 + 1 条失败日志（账号标 failed 可见，但奖励没漏）
+  assert.equal(logs.filter((l) => l.message.includes("成功")).length >= 3, true);
+  assert.ok(logs.some((l) => l.message.includes("签到失败") && l.message.includes("继续领下面的奖励")));
+});
