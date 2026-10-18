@@ -181,6 +181,7 @@ export function createTasksPantao(deps = {}) {
         return result;
       }
       result.bfId = info.bfId;
+      result.endTime = Number(info.endTime || 0); // 秒；供批量循环做「比赛结束提前止损」
       result.stage = "probe";
       log(
         `${label} 战场 ${info.bfId}（phase=${info.phase || "?"}，战前准备 ${fmtTime(info.readyTime)} / 开打 ${fmtTime(info.startTime)} / 结束 ${fmtTime(info.endTime)}）`,
@@ -462,6 +463,36 @@ export function createTasksPantao(deps = {}) {
           );
         } else {
           results.push(...batchResults);
+        }
+
+        // 🔴 10-18 新增：比赛结束提前止损（当日事故：34 批跑到 20:32，尾部批次全撞「蟠桃大会已结束」）
+        //   判据 ①：本批任一结果带回了比赛 endTime 且当前已进入「结束前 90s」缓冲；
+        //   判据 ②：本批任一结果的服务端错误文本含「已结束」（更可靠，直接信服务端）。
+        //   命中即跳过剩余全部批次，避免浪费连接与限流额度。
+        const endedByText = results.some((r) => /已结束/.test(r.reason || ""));
+        const knownEndSec = results
+          .map((r) => Number(r.endTime || 0))
+          .find((t) => t > 0);
+        const endedByTime =
+          knownEndSec > 0 && Date.now() >= knownEndSec * 1000 - 90 * 1000;
+        if (endedByText || endedByTime) {
+          const remaining = batches.length - 1 - bi;
+          if (remaining > 0) {
+            const skipped = batches.slice(bi + 1).flat();
+            results.push(
+              ...skipped.map((id) => ({
+                tokenId: id,
+                name: findToken(id)?.name || id,
+                ok: false,
+                stage: "skipped-after-end",
+                reason: endedByText
+                  ? "比赛已结束（服务端确认），跳过剩余批次"
+                  : `比赛 endTime 前缓冲耗尽，跳过剩余批次（endTime=${new Date(knownEndSec * 1000).toLocaleTimeString()}）`,
+              })),
+            );
+            log(`🏁 蟠桃比赛已结束/临近结束——跳过剩余 ${remaining} 个批次（${skipped.length} 个角色）`, "warning");
+          }
+          break;
         }
 
         if (bi < batches.length - 1) await sleep(interval);

@@ -81,7 +81,13 @@ export function applyPantaoFrame(state, raw, { nowMs = Date.now(), cmd = "" } = 
   }
 
   if (body.bfId) state.bfId = body.bfId;
-  if (body.roleId !== undefined && body.roleId !== null) state.myRoleId = Number(body.roleId) || state.myRoleId;
+  // 🔴 10-18 实抓实锤：setbattleteamresp / enterbfresp 是**全战场广播**（body.roleId = 实际登场者，
+  //    可以是战场上任何玩家）。这里绝不能用帧内 roleId 覆盖 myRoleId，否则别人的广播会劫持身份，
+  //    getMyRole 返回别人的 role → setBattleTeam 误判「已登场」（10-18 蟠桃 23号战士假阳性根因）。
+  //    myRoleId 只允许在为空时被补齐（fallback），固定值以 createPantaoState 的 myRoleId 为准。
+  if (!state.myRoleId && body.roleId !== undefined && body.roleId !== null) {
+    state.myRoleId = Number(body.roleId) || 0;
+  }
 
   if (isObj(body.bf)) {
     if (!isObj(state.bf)) state.bf = {};

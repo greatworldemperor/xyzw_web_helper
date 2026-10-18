@@ -268,13 +268,10 @@ export class PantaoSession {
 
   /* ------------------------------ 业务动作 ------------------------------ */
 
-  /** 进战场。成功判据：拿到包含自己的 bf.roles */
+  /** 进战场。成功判据：拿到包含自己的 bf.roles（🔴 不能用 `myRoleId > 0` 兜底——那是构造时就有的，恒真） */
   async enterBattlefield(timeoutMs = 15000) {
     this.client.send("payload_enterbf", { bfId: this.bfId });
-    const ok = await this.waitForState(
-      (s) => !!s.bf && (!!getMyRole(s) || Number(s.myRoleId || 0) > 0),
-      timeoutMs,
-    );
+    const ok = await this.waitForState((s) => !!s.bf && !!getMyRole(s), timeoutMs);
     return { ok, summary: this.summary };
   }
 
