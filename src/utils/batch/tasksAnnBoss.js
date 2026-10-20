@@ -141,15 +141,100 @@ export const ANN_ONETIME_CONFIG_ID = 261016701;
  */
 export const ANN_ONETIME_FREE_GOODS_ID = 26101661;
 
-/** 全服助力奖励档位（fullServerClaimMap 里出现过的 id；未领的档位服务端会拒，算 benign） */
-export const ANN_CELEBRATE_FULLSERVER_IDS = Object.freeze([1, 2]);
+// ── 签到助力（celebrate）────────────────────────────────────────────────────
+// 🔴 2026-10-21 改版（抓包 `local-data/anniversary/ann_rewards.jsonl` + `zhuli/*.jsonl`
+//    双号实证）：档位**不再硬编码**，全部由响应里的状态驱动 ——
+//    ① 个人档位 = 累计签到天数，签到后 personalClaimMap 会多出当天的档（双号实证：
+//       4 天签到 → id 1~4；再签到一天 → 冒出 id 5 且可领）⇒ 档位集合直接读 personalClaimMap；
+//    ② 全服档位随本服签到数解锁，**两个服当天分别到 13 / 14 档**（fsCnt 835 万 / 856 万），
+//       且阈值表 GlobalSignConf.globalNum 是客户端配置（运行时 HTTP 下载，抓包里取不到）
+//       ⇒ 跳过已领档位后升序试，第一次「未达成/不可领」即停（阈值单调递增，安全）；
+//    ③ 某些全服档**掉落集卡**（实测 90112/90113/90114/90115/90116/90117），必须领到卡后
+//       linkcard_readcard 读掉才算领完 ⇒ 卡 id 从响应的 role.linkCard（readNum===0）里取，
+//       **不猜、不硬编码**。
 
-/** 个人每日奖励档位（personalClaimMap 的键 "1"） */
-export const ANN_CELEBRATE_PERSONAL_IDS = Object.freeze([1]);
+/** 全服助力档位扫描上界（防配置异常时空转；实测一天最多十几档） */
+export const ANN_CELEBRATE_FULLSERVER_SCAN_MAX = 30;
 
-/** 集卡：全服助力第 1 档给的卡（type 21 item 90111），每日可读 1 次 */
-export const ANN_LINKCARD_CARD_ID = 90111;
+/** 读卡：每卡每日 1 次（抓包 readNum 恒为 1） */
 export const ANN_LINKCARD_READ_NUM = 1;
+
+/**
+ * 从各类庆祝响应里取 `signCelebrate` 状态块
+ * （`celebrate_sign` 回 `body.signCelebrate`；`celebrate_getcelebrateinfo` 回 `body.signCelebrate`；
+ *   `Celebrate_ClaimResp` 回 `body.celebrateInfoResp.signCelebrate`）。
+ */
+export function pickSignCelebrate(response) {
+  if (!response || typeof response !== "object") return null;
+  const candidates = [
+    response.signCelebrate,
+    response.body?.signCelebrate,
+    response.celebrateInfoResp?.signCelebrate,
+    response.body?.celebrateInfoResp?.signCelebrate,
+  ];
+  for (const info of candidates) {
+    if (info && typeof info === "object") return info;
+  }
+  return null;
+}
+
+/**
+ * 待领取的**个人每日奖励**档位（升序）
+ *
+ * 判据：`claimCnt < canClaimCnt`（未领满）。两号实证：签到后 personalClaimMap 里
+ * 新增当天的档位，未签到的号该档不存在，已领的档 `claimCnt>=canClaimCnt`。
+ */
+export function listPendingPersonalIds(signCelebrate) {
+  const map = signCelebrate?.personalClaimMap;
+  if (!map || typeof map !== "object") return [];
+  return Object.keys(map)
+    .map((key) => Number(key))
+    .filter((id) => Number.isFinite(id))
+    .sort((a, b) => a - b)
+    .filter((id) => {
+      const entry = map[String(id)] || map[id];
+      if (!entry || typeof entry !== "object") return true; // 读不到结构就试一次，由服务端裁定
+      const claimCnt = Number(entry.claimCnt) || 0;
+      const canClaimCnt =
+        entry.canClaimCnt === undefined || entry.canClaimCnt === null
+          ? 1
+          : Number(entry.canClaimCnt) || 0;
+      return claimCnt < canClaimCnt;
+    });
+}
+
+/** 已领取的全服助力档位集合（fullServerClaimMap 的键；值为领取时间戳） */
+export function claimedFullServerIdSet(signCelebrate) {
+  const map = signCelebrate?.fullServerClaimMap;
+  const out = new Set();
+  if (!map || typeof map !== "object") return out;
+  for (const key of Object.keys(map)) {
+    const id = Number(key);
+    if (Number.isFinite(id)) out.add(id);
+  }
+  return out;
+}
+
+/**
+ * 响应里**还没读过**的集卡 id（升序）
+ *
+ * 实证：`Celebrate_ClaimResp.body.role.linkCard[cardId] = {cardId, quantity, readNum}`，
+ * 刚到手 `readNum=0`，`linkcard_readcard` 后回 `readNum=1`。
+ */
+export function listUnreadCardIds(response) {
+  const linkCard = response?.role?.linkCard || response?.body?.role?.linkCard;
+  if (!linkCard || typeof linkCard !== "object") return [];
+  return Object.keys(linkCard)
+    .map((key) => Number(key))
+    .filter((id) => Number.isFinite(id))
+    .sort((a, b) => a - b)
+    .filter((id) => {
+      const entry = linkCard[String(id)] || linkCard[id];
+      if (!entry || typeof entry !== "object") return false;
+      const readNum = entry.readNum;
+      return readNum === undefined ? true : Number(readNum) === 0;
+    });
+}
 
 /** 闯关活动 actId（ Towers_GetInfoResp.towerData.actId 实证） */
 export const ANN_BOSS_ACT_ID = 2610163;
@@ -466,11 +551,34 @@ export function createTasksAnnBoss(deps) {
     // 🔴 单条失败不短路后面的领取（master：每天分几次领）；全部跑完才结算
     let hardFailure = false;
 
-    // 1) 每日签到（当日键 261017 形式；已签到服务端会拒，算 benign）
+    /**
+     * 领取类错误归类：
+     *   ratelimit = 限流（立即停本账号） / boundary = 该档没解锁或不可领（**扫档到此为止**）
+     *   benign = 已领过/未开放（跳过继续） / hard = 真失败（记 failed 但继续跑后面的）
+     */
+    const classifyClaimError = (error) => {
+      if (isRateLimitError(error)) return "ratelimit";
+      if (isNotCompletedError(error)) return "boundary"; // 未达成 = 该档还没解锁
+      if (isClaimUnavailableError(error)) return "boundary"; // 200020 = 当前不可领
+      if (isAlreadyDoneError(error) || isInactiveError(error)) return "benign";
+      return "hard";
+    };
+
+    // 1) 每日签到 —— **响应自带全量状态**（signCelebrate），且签到会解锁当天新增的个人档
+    //    （2026-10-21 双号实证：签到后 personalClaimMap 冒出新的 id 且可领）
+    let info = null;
     try {
-      await sendWithRecovery(tokenId, tokenName, "celebrate_sign", {}, 8000, "周年庆签到");
+      const response = await sendWithRecovery(
+        tokenId,
+        tokenName,
+        "celebrate_sign",
+        {},
+        8000,
+        "周年庆签到",
+      );
       claimed += 1;
       log(tokenName, "周年庆每日签到成功", "success");
+      info = pickSignCelebrate(response);
     } catch (error) {
       if (isRateLimitError(error)) throw error;
       if (isClaimUnavailableError(error)) {
@@ -486,148 +594,146 @@ export function createTasksAnnBoss(deps) {
     }
     await sleep(CLAIM_INTERVAL_MS);
 
-    // 2) 全服助力第 1 档（给集卡 90111；必须先领到卡才能读卡，顺序按抓包）
-    try {
-      const response = await sendWithRecovery(
-        tokenId,
-        tokenName,
-        "celebrate_claimfullserver",
-        { idList: [ANN_CELEBRATE_FULLSERVER_IDS[0]] },
-        8000,
-        `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[0]}`,
-      );
-      claimed += 1;
-      log(
-        tokenName,
-        `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[0]} 领取成功（${rewardText(response)}）`,
-        "success",
-      );
-    } catch (error) {
-      if (isRateLimitError(error)) throw error;
-      if (isClaimUnavailableError(error)) {
-        log(tokenName, `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[0]} 当前不可领（200020），跳过`);
-      } else if (isAlreadyDoneError(error)) {
-        log(tokenName, `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[0]} 已领取过，跳过`);
-      } else if (isNotCompletedError(error)) {
-        log(tokenName, `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[0]} 未达成，跳过`);
-      } else if (isInactiveError(error)) {
-        log(tokenName, `周年庆全服助力暂未开放：${errorText(error)}`, "warning");
-      } else {
+    // 1b) 签到没拿到状态（今日已签到/被拒）→ 补一次只读查询
+    if (!info) {
+      try {
+        const response = await sendWithRecovery(
+          tokenId,
+          tokenName,
+          "celebrate_getcelebrateinfo",
+          {},
+          8000,
+          "周年庆助力状态",
+        );
+        info = pickSignCelebrate(response);
+      } catch (error) {
+        if (isRateLimitError(error)) throw error;
         log(
           tokenName,
-          `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[0]} 领取失败：${errorText(error)}（继续领下面的奖励）`,
-          "error",
+          `周年庆状态读取失败：${errorText(error)}（按无状态继续试领）`,
+          "warning",
         );
-        hardFailure = true;
       }
     }
-    await sleep(CLAIM_INTERVAL_MS);
 
-    // 3) 集卡读卡（每日助力；卡不在手上 / 今日已读都会被拒，算 benign）
-    try {
-      const response = await sendWithRecovery(
-        tokenId,
-        tokenName,
-        "linkcard_readcard",
-        { cardId: ANN_LINKCARD_CARD_ID, readNum: ANN_LINKCARD_READ_NUM },
-        8000,
-        "周年庆读卡",
-      );
-      claimed += 1;
-      const readNum = response?.role?.linkCard?.[String(ANN_LINKCARD_CARD_ID)]?.readNum;
+    // 2) 个人每日奖励：personalClaimMap 里没领满的档位，**一帧一个 id**（抓包口径）
+    const personalIds = listPendingPersonalIds(info);
+    if (personalIds.length === 0) {
       log(
         tokenName,
-        `周年庆读卡成功（cardId ${ANN_LINKCARD_CARD_ID}，累计阅读 ${readNum ?? "?"} 次）`,
-        "success",
+        info
+          ? "周年庆个人每日奖励已全部领过"
+          : "周年庆个人档位读不到（状态缺失），跳过",
       );
-    } catch (error) {
-      if (isRateLimitError(error)) throw error;
-      if (isClaimUnavailableError(error)) {
-        log(tokenName, "周年庆读卡当前不可领（200020），跳过");
-      } else if (isAlreadyDoneError(error)) {
-        log(tokenName, "周年庆今日已读过卡，跳过");
-      } else if (isNotCompletedError(error)) {
-        log(tokenName, "周年庆读卡条件未达成（卡未到手？），跳过");
-      } else if (isInactiveError(error)) {
-        log(tokenName, `周年庆读卡暂未开放：${errorText(error)}`, "warning");
-      } else {
-        log(tokenName, `周年庆读卡失败：${errorText(error)}（继续领下面的奖励）`, "error");
-        hardFailure = true;
-      }
     }
-    await sleep(CLAIM_INTERVAL_MS);
-
-    // 4) 全服助力第 2 档
-    try {
-      const response = await sendWithRecovery(
-        tokenId,
-        tokenName,
-        "celebrate_claimfullserver",
-        { idList: [ANN_CELEBRATE_FULLSERVER_IDS[1]] },
-        8000,
-        `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[1]}`,
-      );
-      claimed += 1;
-      log(
-        tokenName,
-        `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[1]} 领取成功（${rewardText(response)}）`,
-        "success",
-      );
-    } catch (error) {
-      if (isRateLimitError(error)) throw error;
-      if (isClaimUnavailableError(error)) {
-        log(tokenName, `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[1]} 当前不可领（200020），跳过`);
-      } else if (isAlreadyDoneError(error)) {
-        log(tokenName, `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[1]} 已领取过，跳过`);
-      } else if (isNotCompletedError(error)) {
-        log(tokenName, `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[1]} 未达成，跳过`);
-      } else if (isInactiveError(error)) {
-        log(tokenName, `周年庆全服助力暂未开放：${errorText(error)}`, "warning");
-      } else {
+    for (const id of personalIds) {
+      try {
+        const response = await sendWithRecovery(
+          tokenId,
+          tokenName,
+          "celebrate_claimpersonal",
+          { idList: [id] },
+          8000,
+          `周年庆个人每日奖励 ${id}`,
+        );
+        claimed += 1;
         log(
           tokenName,
-          `周年庆全服助力奖励 ${ANN_CELEBRATE_FULLSERVER_IDS[1]} 领取失败：${errorText(error)}（继续领下面的奖励）`,
-          "error",
+          `周年庆个人每日奖励 ${id} 领取成功（${rewardText(response)}）`,
+          "success",
         );
-        hardFailure = true;
+      } catch (error) {
+        const kind = classifyClaimError(error);
+        if (kind === "ratelimit") throw error;
+        if (kind === "boundary") {
+          log(tokenName, `周年庆个人每日奖励 ${id} 未达成/不可领，跳过`);
+        } else if (kind === "benign") {
+          log(tokenName, `周年庆个人每日奖励 ${id} 跳过：${errorText(error)}`);
+        } else {
+          log(
+            tokenName,
+            `周年庆个人每日奖励 ${id} 领取失败：${errorText(error)}（继续领下面的奖励）`,
+            "error",
+          );
+          hardFailure = true;
+        }
       }
+      await sleep(CLAIM_INTERVAL_MS);
     }
-    await sleep(CLAIM_INTERVAL_MS);
 
-    // 5) 个人每日奖励（签到后 signState 1→2；未签到会被拒，算 benign）
-    try {
-      const response = await sendWithRecovery(
-        tokenId,
-        tokenName,
-        "celebrate_claimpersonal",
-        { idList: [...ANN_CELEBRATE_PERSONAL_IDS] },
-        8000,
-        `周年庆个人每日奖励 ${ANN_CELEBRATE_PERSONAL_IDS[0]}`,
-      );
-      claimed += 1;
-      log(
-        tokenName,
-        `周年庆个人每日奖励 ${ANN_CELEBRATE_PERSONAL_IDS[0]} 领取成功（${rewardText(response)}）`,
-        "success",
-      );
-    } catch (error) {
-      if (isRateLimitError(error)) throw error;
-      if (isClaimUnavailableError(error)) {
-        log(tokenName, `周年庆个人每日奖励 ${ANN_CELEBRATE_PERSONAL_IDS[0]} 当前不可领（200020），跳过`);
-      } else if (isAlreadyDoneError(error)) {
-        log(tokenName, `周年庆个人每日奖励 ${ANN_CELEBRATE_PERSONAL_IDS[0]} 已领取过，跳过`);
-      } else if (isNotCompletedError(error)) {
-        log(tokenName, `周年庆个人每日奖励 ${ANN_CELEBRATE_PERSONAL_IDS[0]} 未达成（未签到？），跳过`);
-      } else if (isInactiveError(error)) {
-        log(tokenName, `周年庆个人奖励暂未开放：${errorText(error)}`, "warning");
-      } else {
+    // 3) 全服助力：跳过已领档，升序试领，**第一次未达成/不可领即停**（阈值单调递增）
+    const doneFullServer = claimedFullServerIdSet(info);
+    for (let id = 1; id <= ANN_CELEBRATE_FULLSERVER_SCAN_MAX; id += 1) {
+      if (doneFullServer.has(id)) continue;
+      let response;
+      try {
+        response = await sendWithRecovery(
+          tokenId,
+          tokenName,
+          "celebrate_claimfullserver",
+          { idList: [id] },
+          8000,
+          `周年庆全服助力奖励 ${id}`,
+        );
+        claimed += 1;
         log(
           tokenName,
-          `周年庆个人每日奖励 ${ANN_CELEBRATE_PERSONAL_IDS[0]} 领取失败：${errorText(error)}`,
-          "error",
+          `周年庆全服助力奖励 ${id} 领取成功（${rewardText(response)}）`,
+          "success",
         );
-        hardFailure = true;
+      } catch (error) {
+        const kind = classifyClaimError(error);
+        if (kind === "ratelimit") throw error;
+        if (kind === "boundary") {
+          log(
+            tokenName,
+            `全服助力第 ${id} 档尚未解锁（${errorText(error) || "未达成"}），扫档到此为止`,
+          );
+          break;
+        }
+        if (kind === "benign") {
+          log(tokenName, `周年庆全服助力奖励 ${id} 跳过：${errorText(error)}`);
+        } else {
+          log(
+            tokenName,
+            `周年庆全服助力奖励 ${id} 领取失败：${errorText(error)}（继续下一档）`,
+            "error",
+          );
+          hardFailure = true;
+        }
+        continue;
       }
+
+      // 3b) 本档掉落的集卡：到手后必须读掉才算领完（卡 id 从响应读，不猜不硬编码）
+      for (const cardId of listUnreadCardIds(response)) {
+        try {
+          await sendWithRecovery(
+            tokenId,
+            tokenName,
+            "linkcard_readcard",
+            { cardId, readNum: ANN_LINKCARD_READ_NUM },
+            8000,
+            `周年庆读卡 ${cardId}`,
+          );
+          claimed += 1;
+          log(tokenName, `周年庆读卡成功（cardId ${cardId}）`, "success");
+        } catch (error) {
+          const kind = classifyClaimError(error);
+          if (kind === "ratelimit") throw error;
+          if (kind === "hard") {
+            log(
+              tokenName,
+              `周年庆读卡 ${cardId} 失败：${errorText(error)}（继续）`,
+              "error",
+            );
+            hardFailure = true;
+          } else {
+            log(tokenName, `周年庆读卡 ${cardId} 跳过：${errorText(error)}`);
+          }
+        }
+        await sleep(CLAIM_INTERVAL_MS);
+      }
+      await sleep(CLAIM_INTERVAL_MS);
     }
 
     if (hardFailure) return "failed";

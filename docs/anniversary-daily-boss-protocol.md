@@ -144,8 +144,13 @@ body = {
 
 ## 7. 待确认 / 风险
 
-- 全服助力档位可能随全服签到量解锁更多（抓包时刻 148 万签，只有 1/2 两档可领）——
-  解锁新档位后往 `ANN_CELEBRATE_FULLSERVER_IDS` 追加即可。
+- ~~全服助力档位随全服签到量解锁~~ ✅ **2026-10-21 已解决**：改为状态驱动 + 扫档
+  （跳过 `fullServerClaimMap` 已领档，升序试领，第一次「未达成/200020」即停）。
+  双号实证：同日 A 服到 13 档（fsCnt 835 万）/ B 服 9735 到 14 档（fsCnt 856 万）
+  ⇒ 硬编码档位列表必然漏领，已废弃 `ANN_CELEBRATE_FULLSERVER_IDS` / `PERSONAL_IDS` / `ANN_LINKCARD_CARD_ID`。
+- 个人档位 = 累计签到天数，签到后 `personalClaimMap` 新增当天档（`claimCnt < canClaimCnt` 即待领）。
+- 全服阈值表 `GlobalSignConf.globalNum` 是运行时 HTTP 下发配置，bundle 与 WSS 抓包里都取不到
+  ⇒ 只能靠「试领 + 未达成即停」逼近。
 - 周四全开 6 BOSS × 最多 10 战 = 60 请求/账号；若服务端有每日 fight 上限
   （`todayUseTickCnt` 只记 start 次数，未能可靠反映），超限会走 benign 错误分支，
   日志可见，不影响其他账号。

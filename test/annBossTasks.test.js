@@ -17,13 +17,12 @@ import {
   ANN_BOSS_DAILY_LIMIT,
   ANN_BOSS_MAX_FIGHTS,
   ANN_BOSS_TYPES,
-  ANN_CELEBRATE_FULLSERVER_IDS,
-  ANN_CELEBRATE_PERSONAL_IDS,
-  ANN_LINKCARD_CARD_ID,
+  ANN_CELEBRATE_FULLSERVER_SCAN_MAX,
   ANN_LINKCARD_READ_NUM,
   ANN_ONETIME_ACT_ID,
   ANN_ONETIME_CONFIG_ID,
   ANN_ONETIME_FREE_GOODS_ID,
+  claimedFullServerIdSet,
   createTasksAnnBoss,
   getTodayOpenBossTypes,
   isAlreadyDoneError,
@@ -33,8 +32,11 @@ import {
   isInactiveError,
   isNotCompletedError,
   isRateLimitError,
+  listPendingPersonalIds,
+  listUnreadCardIds,
   normalizeTowerInfo,
   pickBossTargets,
+  pickSignCelebrate,
 } from "../src/utils/batch/tasksAnnBoss.js";
 
 test("周年庆一次性奖励：actId / configId / 免费礼包 goodsId 与抓包一致", () => {
@@ -45,11 +47,60 @@ test("周年庆一次性奖励：actId / configId / 免费礼包 goodsId 与抓�
   assert.equal(ANN_ONETIME_FREE_GOODS_ID, 26101661);
 });
 
-test("周年庆签到助力：档位与卡号与抓包一致", () => {
-  assert.deepEqual([...ANN_CELEBRATE_FULLSERVER_IDS], [1, 2]);
-  assert.deepEqual([...ANN_CELEBRATE_PERSONAL_IDS], [1]);
-  assert.equal(ANN_LINKCARD_CARD_ID, 90111);
+// ── 签到助力：2026-10-21 改版为「状态驱动」（档位/卡号全部从响应读，不再硬编码）────
+// 证据：ann_rewards.jsonl（A 号：全服领到 13 档、个人 2~4、卡 90112~90116）
+//     + zhuli/*.jsonl（B 号 9735 服：签到后冒出个人 5 档、全服到 14 档，fsCnt 856 万）
+// ⇒ 两个服当天档位数不同，硬编码列表必然漏领，故改为读状态 + 扫档。
+
+test("周年庆签到助力：扫描上界 30 兜底，读卡 1 次（档位/卡号不再硬编码）", () => {
+  assert.equal(ANN_CELEBRATE_FULLSERVER_SCAN_MAX, 30);
   assert.equal(ANN_LINKCARD_READ_NUM, 1);
+});
+
+test("pickSignCelebrate：签到 / 查询 / 领取三类响应都能取到 signCelebrate", () => {
+  const state = { fullServerSignCnt: 8352000 };
+  assert.equal(pickSignCelebrate({ signCelebrate: state }), state);
+  assert.equal(pickSignCelebrate({ body: { signCelebrate: state } }), state);
+  assert.equal(pickSignCelebrate({ celebrateInfoResp: { signCelebrate: state } }), state);
+  assert.equal(pickSignCelebrate({ body: { celebrateInfoResp: { signCelebrate: state } } }), state);
+  assert.equal(pickSignCelebrate({}), null);
+  assert.equal(pickSignCelebrate(null), null);
+});
+
+test("listPendingPersonalIds：只挑没领满的档（claimCnt < canClaimCnt），升序", () => {
+  // 实证：签到 4 天 → personalClaimMap 出 id 1~4；已领的 claimCnt===canClaimCnt
+  const info = {
+    personalClaimMap: {
+      4: { claimCnt: 0, canClaimCnt: 1 },
+      1: { claimCnt: 1, canClaimCnt: 1 },
+      3: { claimCnt: 1, canClaimCnt: 1 },
+      2: { claimCnt: 0, canClaimCnt: 2 },
+    },
+  };
+  assert.deepEqual(listPendingPersonalIds(info), [2, 4]);
+  assert.deepEqual(listPendingPersonalIds({}), []);
+  assert.deepEqual(listPendingPersonalIds(null), []);
+});
+
+test("claimedFullServerIdSet：fullServerClaimMap 的键即已领全服档位", () => {
+  const set = claimedFullServerIdSet({ fullServerClaimMap: { 1: 1690000000, 13: 1690000100 } });
+  assert.deepEqual([...set].sort((a, b) => a - b), [1, 13]);
+  assert.equal(claimedFullServerIdSet({}).size, 0);
+});
+
+test("listUnreadCardIds：只挑 readNum===0 的集卡（90112+ 从响应读，不硬编码）", () => {
+  const resp = {
+    role: {
+      linkCard: {
+        90112: { cardId: 90112, quantity: 1, readNum: 0 },
+        90113: { cardId: 90113, quantity: 1, readNum: 1 },
+        90114: { cardId: 90114, quantity: 1, readNum: 0 },
+      },
+    },
+  };
+  assert.deepEqual(listUnreadCardIds(resp), [90112, 90114]);
+  assert.deepEqual(listUnreadCardIds({}), []);
+  assert.deepEqual(listUnreadCardIds(null), []);
 });
 
 test("周年庆闯关：actId 2610163（换皮闯关 getTowerActId 当周推算是 2610161，故旧入口打不了）", () => {
@@ -287,24 +338,40 @@ test("批量：总额奖被拒 200020 不阻断礼包领取（master 要的 4000
   assert.ok(logs.some((l) => l.message.includes("一次性礼包领取成功")));
 });
 
-test("批量：每日签到助力按抓包顺序发 5 条命令（签到→助力1→读卡→助力2→个人）", async () => {
+test("批量：助力按状态发命令（签到→个人未领档→全服未领档→读卡→未达成即停）", async () => {
   const commands = [];
   const { deps, logs } = makeDeps({
     async sendMessageWithPromise(_tokenId, command, body) {
       commands.push({ command, body });
-      if (command === "celebrate_claimfullserver") {
+      if (command === "celebrate_sign") {
+        // 实证结构：个人档 1 已领、2 待领；全服档 1 已领
         return {
-          reward:
-            body.idList[0] === 1
-              ? [{ type: 21, itemId: ANN_LINKCARD_CARD_ID, value: 1 }]
-              : [{ type: 3, itemId: 1001, value: 10 }],
+          signCelebrate: {
+            personalClaimMap: {
+              1: { claimCnt: 1, canClaimCnt: 1 },
+              2: { claimCnt: 0, canClaimCnt: 1 },
+            },
+            fullServerClaimMap: { 1: 1690000000 },
+            fullServerSignCnt: 8352000,
+          },
         };
-      }
-      if (command === "linkcard_readcard") {
-        return { role: { linkCard: { [ANN_LINKCARD_CARD_ID]: { readNum: 1 } } } };
       }
       if (command === "celebrate_claimpersonal") {
         return { reward: [{ type: 3, itemId: 1001, value: 3 }] };
+      }
+      if (command === "celebrate_claimfullserver") {
+        const id = body.idList[0];
+        // 阈值单调递增：第 4 档还没解锁（200020 未达成）⇒ 扫档到此为止
+        if (id >= 4) throw Object.assign(new Error("出了点小问题"), { code: 200020 });
+        return id === 2
+          ? {
+              reward: [{ type: 21, itemId: 90112, value: 1 }],
+              role: { linkCard: { 90112: { cardId: 90112, quantity: 1, readNum: 0 } } },
+            }
+          : { reward: [{ type: 3, itemId: 1001, value: 10 }] };
+      }
+      if (command === "linkcard_readcard") {
+        return { role: { linkCard: { [body.cardId]: { readNum: 1 } } } };
       }
       return {};
     },
@@ -314,27 +381,22 @@ test("批量：每日签到助力按抓包顺序发 5 条命令（签到→助�
   const tasks = createTasksAnnBoss(deps);
   await tasks.batchAnnCelebrateClaim();
 
+  // 命令+参数逐条对：跳过已领的 1，个人 2，全服 2（掉卡→读卡）/3，第 4 档未达成即停
   assert.deepEqual(
-    commands.map((c) => c.command),
+    commands.map((c) => `${c.command} ${JSON.stringify(c.body)}`),
     [
-      "celebrate_sign",
-      "celebrate_claimfullserver",
-      "linkcard_readcard",
-      "celebrate_claimfullserver",
-      "celebrate_claimpersonal",
+      "celebrate_sign {}",
+      'celebrate_claimpersonal {"idList":[2]}',
+      'celebrate_claimfullserver {"idList":[2]}',
+      'linkcard_readcard {"cardId":90112,"readNum":1}',
+      'celebrate_claimfullserver {"idList":[3]}',
+      'celebrate_claimfullserver {"idList":[4]}',
     ],
   );
-  // 参数逐条对（读卡必须在助力1 拿到卡之后，顺序即证据）
-  assert.deepEqual(commands[1].body, { idList: [ANN_CELEBRATE_FULLSERVER_IDS[0]] });
-  assert.deepEqual(commands[2].body, {
-    cardId: ANN_LINKCARD_CARD_ID,
-    readNum: ANN_LINKCARD_READ_NUM,
-  });
-  assert.deepEqual(commands[3].body, { idList: [ANN_CELEBRATE_FULLSERVER_IDS[1]] });
-  assert.deepEqual(commands[4].body, { idList: [...ANN_CELEBRATE_PERSONAL_IDS] });
   assert.equal(deps.tokenStatus.value["token-1"], "completed");
   assert.ok(logs.some((l) => l.message.includes("签到成功")));
   assert.ok(logs.some((l) => l.message.includes("读卡成功")));
+  assert.ok(logs.some((l) => l.message.includes("扫档到此为止")));
 });
 
 /** 构造抓包同构的 towers_getinfo 响应：只有 leaveUnclearedType 那个 BOSS 未通关 */
@@ -598,21 +660,21 @@ test("批量：celebrate 签到硬失败不短路后面的领取（master：每�
   const { deps, logs } = makeDeps({
     async sendMessageWithPromise(_tokenId, command, body) {
       commands.push({ command, body });
-      // 签到硬失败（未分类错误），其余成功
+      // 签到硬失败（未分类错误）⇒ 补一次只读查询，再按无状态继续试领
       if (command === "celebrate_sign") throw new Error("某种未知错误");
+      if (command === "celebrate_getcelebrateinfo") return {};
       if (command === "celebrate_claimfullserver") {
-        return {
-          reward:
-            body.idList[0] === 1
-              ? [{ type: 21, itemId: ANN_LINKCARD_CARD_ID, value: 1 }]
-              : [{ type: 3, itemId: 1001, value: 10 }],
-        };
+        const id = body.idList[0];
+        if (id >= 3) throw new Error("未达成：全服助力人数不足");
+        return id === 1
+          ? {
+              reward: [{ type: 21, itemId: 90112, value: 1 }],
+              role: { linkCard: { 90112: { cardId: 90112, quantity: 1, readNum: 0 } } },
+            }
+          : { reward: [{ type: 3, itemId: 1001, value: 10 }] };
       }
       if (command === "linkcard_readcard") {
-        return { role: { linkCard: { [ANN_LINKCARD_CARD_ID]: { readNum: 1 } } } };
-      }
-      if (command === "celebrate_claimpersonal") {
-        return { reward: [{ type: 3, itemId: 1001, value: 3 }] };
+        return { role: { linkCard: { [body.cardId]: { readNum: 1 } } } };
       }
       return {};
     },
@@ -622,18 +684,19 @@ test("批量：celebrate 签到硬失败不短路后面的领取（master：每�
   const tasks = createTasksAnnBoss(deps);
   await tasks.batchAnnCelebrateClaim();
 
-  // 5 条命令全部发出（签到失败后其余照发）
+  // 签到失败不短路：补查询 → 全服 1（掉卡→读卡）/2 → 3 未达成即停
   assert.deepEqual(
     commands.map((c) => c.command),
     [
       "celebrate_sign",
+      "celebrate_getcelebrateinfo",
       "celebrate_claimfullserver",
       "linkcard_readcard",
       "celebrate_claimfullserver",
-      "celebrate_claimpersonal",
+      "celebrate_claimfullserver",
     ],
   );
-  // 4 条成功 + 1 条失败日志（账号标 failed 可见，但奖励没漏）
+  // 3 条成功 + 签到失败日志（账号标 failed 可见，但奖励没漏）
   assert.equal(logs.filter((l) => l.message.includes("成功")).length >= 3, true);
   assert.ok(logs.some((l) => l.message.includes("签到失败") && l.message.includes("继续领下面的奖励")));
 });
