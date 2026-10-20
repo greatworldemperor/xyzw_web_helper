@@ -742,8 +742,8 @@ export function createTasksAnnBoss(deps) {
 
   const batchAnnCelebrateClaim = async () =>
     runForSelectedTokens(
-      { label: "周年庆每日奖励/助力", run: claimCelebrateForToken },
-      "批量领取周年庆每日奖励/助力结束",
+      { label: "周年庆助力奖励（签到+全服档+集卡）", run: claimCelebrateForToken },
+      "批量领取周年庆助力奖励结束（另一套「战令·5档」是独立按钮，需另外点）",
     );
 
   // ── ③ 攻打 BOSS（towers：start + fight，没通关就一直打到日预算用完）──────────

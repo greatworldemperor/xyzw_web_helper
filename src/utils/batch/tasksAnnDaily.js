@@ -196,7 +196,12 @@ export function createTasksAnnDaily(deps) {
     return claimed > 0 ? "claimed" : "nothing";
   };
 
-  /** 批量领取周年庆每日奖励（对所有选中账号） */
+  /**
+   * 批量领取周年庆每日奖励（战令·5档，对所有选中账号）
+   *
+   * ⚠️ 与 `tasksAnnBoss.batchAnnCelebrateClaim`（celebrate 助力）是**两套独立系统**，
+   *    两者都要跑；日志文案统一带「（战令·5档）」以免与助力那条混淆（2026-10-21）。
+   */
   const batchAnnDailyClaim = async () => {
     if (selectedTokens.value.length === 0) {
       message.warning("请先选择账号");
@@ -219,7 +224,7 @@ export function createTasksAnnDaily(deps) {
       try {
         addLog({
           time: nowText(),
-          message: `=== 开始领取周年庆每日奖励: ${tokenName} ===`,
+          message: `=== 开始领取周年庆每日奖励（战令·5档）: ${tokenName} ===`,
           type: "info",
         });
 
@@ -259,7 +264,7 @@ export function createTasksAnnDaily(deps) {
     currentRunningTokenId.value = null;
     isRunning.value = false;
     shouldStop.value = false;
-    message.success("批量领取周年庆每日奖励结束");
+    message.success("批量领取周年庆每日奖励（战令·5档）结束");
   };
 
   return { batchAnnDailyClaim };

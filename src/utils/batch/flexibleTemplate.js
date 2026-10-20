@@ -146,11 +146,13 @@ export const flexibleTaskGroups = [
         requires: "seasonOutCheer",
       }),
       // 周年庆每日奖励（2026-10-16 接入）：actId 2610169 的 5 个每日奖励，无额外参数
-      batchTask("batchAnnDailyClaim", "领取周年庆每日奖励"),
+      // ⚠️ 名字带「战令·5档」是为了和下面那条 celebrate「助力」区分——两者是**两套独立系统**，
+      //    文本只差「/助力」两个字极易点错，2026-10-21 改名。
+      batchTask("batchAnnDailyClaim", "领取周年庆每日奖励（战令·5档）"),
       // 周年庆一次性奖励 + 每日签到助力 + 闯关打BOSS（2026-10-17 接入，
       // 抓包实证 local-data/anniversary/ann_daily_boss_full.jsonl），无额外参数
       batchTask("batchAnnOneTimeReward", "领取周年庆一次性奖励"),
-      batchTask("batchAnnCelebrateClaim", "领取周年庆每日奖励/助力"),
+      batchTask("batchAnnCelebrateClaim", "领取周年庆助力奖励（签到+全服档+集卡）"),
       batchTask("batchAnnBossFight", "周年庆攻打BOSS"),
     ],
   },

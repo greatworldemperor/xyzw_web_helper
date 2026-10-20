@@ -957,7 +957,7 @@
                     @click="batchAnnDailyClaim"
                     :disabled="isRunning || selectedTokens.length === 0"
                   >
-                    领取周年庆每日奖励
+                    领取周年庆每日奖励（战令·5档）
                   </n-button>
                 </n-space>
                 <span class="xiaoyaojin-hint">
@@ -981,7 +981,7 @@
                     @click="batchAnnCelebrateClaim"
                     :disabled="isRunning || selectedTokens.length === 0"
                   >
-                    领取周年庆每日奖励/助力
+                    领取周年庆助力奖励（签到+全服档+集卡）
                   </n-button>
                   <n-button
                     size="small"
@@ -1000,11 +1000,14 @@
                   实测得道具 40009 ×1）。已领取 / 未达成 / 活动未开按正常跳过处理。
                 </span>
                 <span class="xiaoyaojin-hint">
-                  周年庆每日奖励/助力：按抓包顺序执行
-                  <b>签到 → 全服助力奖励1 → 读卡 → 全服助力奖励2 → 个人每日奖励</b>
-                  （celebrate_sign / celebrate_claimfullserver / linkcard_readcard /
-                  celebrate_claimpersonal；实测奖励含集卡 90111、金币 1001）。
-                  已签到 / 已领取 / 未达成的账号服务端会拒绝，按正常跳过处理。
+                  周年庆助力奖励（<b>与上面的「战令·5档」是两套独立系统，两个都要点</b>）：
+                  <b>签到 → 个人每日档 → 全服助力档（掉卡就读卡）</b>
+                  （celebrate_sign / celebrate_claimpersonal / celebrate_claimfullserver /
+                  linkcard_readcard）。
+                  <b>档位不再写死，全部按账号实际状态领</b>：个人档 = 签到天数；
+                  全服档跳过已领的、升序试领，<b>碰到第一个未达成即停</b>；
+                  掉落的集卡（实测 90112~90117）自动读掉。
+                  日志出现「<b>扫档到此为止</b>」= 该账号已领干净，属正常收尾。
                 </span>
                 <span class="xiaoyaojin-hint">
                   周年庆攻打BOSS：界面与「换皮闯关」相同但 actId 不同（换皮闯关按周五推算 =
