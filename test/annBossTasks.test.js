@@ -19,10 +19,20 @@ import {
   ANN_BOSS_TYPES,
   ANN_CELEBRATE_FULLSERVER_SCAN_MAX,
   ANN_LINKCARD_READ_NUM,
+  ANN_LOTTERY_EXCHANGE_ACT_ID,
+  ANN_LOTTERY_FISH_PEARL_COST,
+  ANN_LOTTERY_FISH_PEARL_GOODS_ID,
+  ANN_LOTTERY_FRAG_ITEM_ID,
+  ANN_LOTTERY_PET_EGG_GOODS_ID,
+  ANN_LOTTERY_TEN_TIMES,
+  ANN_LOTTERY_TICKET_ITEM_ID,
   ANN_ONETIME_ACT_ID,
   ANN_ONETIME_CONFIG_ID,
   ANN_ONETIME_FREE_GOODS_ID,
   claimedFullServerIdSet,
+  classifyClaimError,
+  countFragDropped,
+  fishPearlExchanges,
   createTasksAnnBoss,
   getTodayOpenBossTypes,
   isAlreadyDoneError,
@@ -37,6 +47,7 @@ import {
   normalizeTowerInfo,
   pickBossTargets,
   pickSignCelebrate,
+  readItemQuantity,
 } from "../src/utils/batch/tasksAnnBoss.js";
 
 test("周年庆一次性奖励：actId / configId / 免费礼包 goodsId 与抓包一致", () => {
@@ -699,4 +710,188 @@ test("批量：celebrate 签到硬失败不短路后面的领取（master：每�
   // 3 条成功 + 签到失败日志（账号标 failed 可见，但奖励没漏）
   assert.equal(logs.filter((l) => l.message.includes("成功")).length >= 3, true);
   assert.ok(logs.some((l) => l.message.includes("签到失败") && l.message.includes("继续领下面的奖励")));
+});
+
+// ── 周年庆抽奖（2026-10-22 抓包实证 local-data/anniversary/ann_lottery.jsonl）────
+// 9724服「特别老实-2」：164 张券 → 16 次十连 + 4 次单抽抽干；
+// 碎片 1→11（本次抽到 10 个）；换 1 鱼珠（-10），剩 1 个 → 手動换 5 宠物蛋。
+// 🔴 master 口径：特别奖（二选一）不自动化；碎片不满 10 个不碰。
+
+test("周年庆抽奖：命令与道具 id 与抓包一致", () => {
+  assert.equal(ANN_LOTTERY_TICKET_ITEM_ID, 40009); // 券
+  assert.equal(ANN_LOTTERY_FRAG_ITEM_ID, 5292); // 碎片（特殊道具）
+  assert.equal(ANN_LOTTERY_TEN_TIMES, 10); // 十连
+  assert.equal(ANN_LOTTERY_EXCHANGE_ACT_ID, 2610165);
+  assert.equal(ANN_LOTTERY_FISH_PEARL_GOODS_ID, 261016526); // 得 1034 ×1，耗 10 碎片
+  assert.equal(ANN_LOTTERY_FISH_PEARL_COST, 10);
+  assert.equal(ANN_LOTTERY_PET_EGG_GOODS_ID, 261016510); // 得 37011 ×5，仅登记不自动
+});
+
+test("readItemQuantity：{quantity:N} 取数 / 键不存在返回 null / 清空时是 null", () => {
+  const resp = { role: { items: { 40009: { quantity: 154 }, 5292: null } } };
+  assert.equal(readItemQuantity(resp, 40009), 154);
+  assert.equal(readItemQuantity(resp, 5292), 0); // 被清空
+  assert.equal(readItemQuantity(resp, 1001), null); // 这次响应里没变动
+  assert.equal(readItemQuantity(null, 40009), null);
+  assert.equal(readItemQuantity({}, 40009), null);
+});
+
+test("countFragDropped：只累加 itemId 5292 的 value", () => {
+  const resp = {
+    reward: [
+      { type: 3, itemId: 1001, value: 30 },
+      { type: 3, itemId: 5292, value: 2 },
+      { type: 3, itemId: 5292, value: 3 },
+    ],
+  };
+  assert.equal(countFragDropped(resp), 5);
+  assert.equal(countFragDropped({ reward: [{ itemId: 1001, value: 1 }] }), 0);
+  assert.equal(countFragDropped({}), 0);
+});
+
+test("fishPearlExchanges：只算满 10 的部分，零头一律不算", () => {
+  assert.equal(fishPearlExchanges(11), 1); // 抓包现场：11 → 换 1 个，剩 1
+  assert.equal(fishPearlExchanges(10), 1);
+  assert.equal(fishPearlExchanges(9), 0);
+  assert.equal(fishPearlExchanges(25), 2);
+  assert.equal(fishPearlExchanges(0), 0);
+});
+
+test("classifyClaimError：限流/未达成/已领过/真失败四类归类", () => {
+  assert.equal(classifyClaimError({ code: 400340 }), "ratelimit");
+  assert.equal(classifyClaimError(new Error("未达成")), "boundary");
+  assert.equal(classifyClaimError({ code: 200020 }), "boundary");
+  assert.equal(classifyClaimError(new Error("已经领取")), "benign");
+  assert.equal(classifyClaimError(new Error("活动不存在")), "benign");
+  assert.equal(classifyClaimError(new Error("网络错误")), "hard");
+});
+
+/** 构造抽奖响应的 mock：按 times 扣券、按剧本掉碎片 */
+const makeLotteryDeps = (script, extra = {}) => {
+  const commands = [];
+  const state = { tickets: script.tickets, frag: script.frag };
+  const { deps, logs, calls } = makeDeps({
+    async sendMessageWithPromise(_tokenId, command, body) {
+      commands.push({ command, body });
+      if (command === "activity_maydaylottery") {
+        if (script.rejectTen && body.times === ANN_LOTTERY_TEN_TIMES) {
+          throw Object.assign(new Error("道具数量不足"), { code: 200001 });
+        }
+        state.tickets -= body.times;
+        // 碎片只在十连那一次掉（单抽不掉，与抓包一致：4 次单抽 0 掉落）
+        const dropped =
+          body.times === ANN_LOTTERY_TEN_TIMES ? (script.dropPerDraw ?? 0) : 0;
+        state.frag += dropped;
+        const items = { [ANN_LOTTERY_TICKET_ITEM_ID]: { quantity: state.tickets } };
+        if (script.alwaysReportFrag) {
+          items[ANN_LOTTERY_FRAG_ITEM_ID] = { quantity: state.frag };
+        } else if (dropped > 0) {
+          items[ANN_LOTTERY_FRAG_ITEM_ID] = { quantity: state.frag };
+        }
+        return {
+          role: { items },
+          reward: [
+            ...(dropped > 0
+              ? [{ type: 3, itemId: ANN_LOTTERY_FRAG_ITEM_ID, value: dropped }]
+              : []),
+            { type: 3, itemId: 1001, value: 30 },
+          ],
+          mayDayLotteryInfo: { fragProgress: 100 },
+        };
+      }
+      if (command === "activity_exchange") {
+        return { reward: [{ type: 3, itemId: 1034, value: 1 }] };
+      }
+      return {};
+    },
+    closeWebSocketConnection() {},
+    ...extra,
+  });
+  return { deps, logs, calls, commands, state };
+};
+
+test("批量：抽奖 十连→券剩个位数转单抽→抽干；碎片满 10 换 1 鱼珠，剩 1 不碰", async () => {
+  const { deps, logs, commands, state } = makeLotteryDeps({
+    tickets: 14,
+    frag: 5,
+    dropPerDraw: 6, // 十连掉 6 个 ⇒ 抽完共 11 个
+  });
+
+  const tasks = createTasksAnnBoss(deps);
+  await tasks.batchAnnLotteryDraw();
+
+  // 十连 1 次（14→4）后转单抽 4 次（4→0）
+  assert.deepEqual(
+    commands.filter((c) => c.command === "activity_maydaylottery").map((c) => c.body.times),
+    [10, 1, 1, 1, 1],
+  );
+  assert.equal(state.tickets, 0);
+
+  // 碎片 11 个 ⇒ 只换 1 个鱼珠，剩 1 个留给手动
+  const exchanges = commands.filter((c) => c.command === "activity_exchange");
+  assert.equal(exchanges.length, 1);
+  assert.deepEqual(exchanges[0].body, {
+    activityId: ANN_LOTTERY_EXCHANGE_ACT_ID,
+    goodsId: ANN_LOTTERY_FISH_PEARL_GOODS_ID,
+    quantity: 1,
+  });
+  assert.ok(logs.some((l) => l.message.includes("剩余碎片 1 个")));
+  assert.ok(logs.some((l) => l.message.includes("共抽 14 次")));
+  assert.equal(deps.tokenStatus.value["token-1"], "completed");
+});
+
+test("批量：碎片不足 10 个 ⇒ 一条兑换都不发（master：不满 10 别操作，我手动）", async () => {
+  const { deps, logs, commands, state } = makeLotteryDeps({
+    tickets: 13,
+    frag: 9,
+    dropPerDraw: 0,
+    alwaysReportFrag: true,
+  });
+
+  const tasks = createTasksAnnBoss(deps);
+  await tasks.batchAnnLotteryDraw();
+
+  assert.deepEqual(
+    commands.filter((c) => c.command === "activity_maydaylottery").map((c) => c.body.times),
+    [10, 1, 1, 1],
+  );
+  // 🔴 核心断言：碎片 9 个 ⇒ 零条兑换
+  assert.equal(commands.filter((c) => c.command === "activity_exchange").length, 0);
+  assert.ok(logs.some((l) => l.message.includes("碎片 9 个，不足 10 个")));
+  assert.equal(state.tickets, 0);
+});
+
+test("批量：十连被拒（券不足 10 张）⇒ 自动转单抽，不猜服务端文案", async () => {
+  const { deps, logs, commands, state } = makeLotteryDeps({
+    tickets: 3,
+    frag: 0,
+    rejectTen: true,
+    dropPerDraw: 0,
+    alwaysReportFrag: true,
+  });
+
+  const tasks = createTasksAnnBoss(deps);
+  await tasks.batchAnnLotteryDraw();
+
+  assert.deepEqual(
+    commands.filter((c) => c.command === "activity_maydaylottery").map((c) => c.body.times),
+    [10, 1, 1, 1],
+  );
+  assert.equal(state.tickets, 0);
+  assert.ok(logs.some((l) => l.message.includes("转单抽")));
+  assert.equal(deps.tokenStatus.value["token-1"], "completed");
+});
+
+test("批量：特别奖（二选一）不在本批量任务里 —— 一条 claimbox/claimreward 都不发", async () => {
+  const { deps, commands } = makeLotteryDeps({ tickets: 20, frag: 10, dropPerDraw: 10 });
+
+  const tasks = createTasksAnnBoss(deps);
+  await tasks.batchAnnLotteryDraw();
+
+  assert.equal(
+    commands.filter((c) =>
+      ["activity_maydayclaimbox", "activity_maydayclaimreward"].includes(c.command),
+    ).length,
+    0,
+  );
 });

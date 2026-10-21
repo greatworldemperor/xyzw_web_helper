@@ -365,6 +365,15 @@ export function registerDefaultCommands(reg) {
     .register("activity_warorderrewardclaim", { actId: 0 })
     .register("activity_commonbuygoods", { goodsId: 0 })
     .register("activity_claimsignreward", { activityId: 0, patchDay: 0 })
+    // 周年庆抽奖（2026-10-22 接入，抓包实证 local-data/anniversary/ann_lottery.jsonl）：
+    //   activity_maydaylottery {times} → Activity_MayDayLotteryResp（十连 times=10 / 单抽 times=1）
+    //   activity_maydayclaimbox {times} → Activity_MayDayClaimBoxResp（消耗积分开箱，出二选一候选）
+    //   activity_maydayclaimreward {index} → Activity_MayDayClaimRewardResp（二选一领奖）
+    // 🔴 后两条 master 明确要求**不自动化**（特别奖是二选一、要人判断），他自己在游戏里手点；
+    //    此处注册只为协议完整 + 日后可能手动诊断，批处理里不接按钮。
+    .register("activity_maydaylottery", { times: 1 })
+    .register("activity_maydayclaimbox", { times: 1 })
+    .register("activity_maydayclaimreward", { index: 0 })
     // 🔴 金鱼消耗活动「领取进度奖励」（2026-10-01 补注册）：`missionId = (slot-1)*20 + round`，
     // 必须带 activityId（只发 missionId 服务端不响应）。响应 cmd = Activity_RewardResp。
     // ⚠️ 此前**漏注册** ⇒ 生产发送即抛 `Unknown cmd: activity_claimtaskreward`，
@@ -1265,6 +1274,10 @@ export class XyzwWebSocketClient {
       activity_getlotteryinforesp: "activity_getlotteryinfo",
       activity_lotteryresp: "activity_lottery",
       activity_claimlotterycumulativeresp: "activity_claimlotterycumulative",
+      // 周年庆抽奖（2026-10-22）
+      activity_maydaylotteryresp: "activity_maydaylottery",
+      activity_maydayclaimboxresp: "activity_maydayclaimbox",
+      activity_maydayclaimrewardresp: "activity_maydayclaimreward",
       // 兑换商店回的是通用奖励响应 Common_RewardResp
       // 周年庆一次性奖励（common_claimtotalreward）也回 Common_RewardResp
       commonrewardresp: ["activity_exchange", "common_claimtotalreward"],

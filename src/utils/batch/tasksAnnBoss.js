@@ -117,6 +117,20 @@ export const isDailyLimitError = (error) =>
 export const isClaimUnavailableError = (error) =>
   Number(error?.code) === 200020 || /出了点小问题/.test(errorText(error));
 
+/**
+ * 领取/兑换类错误归类（celebrate 助力与 mayday 抽奖共用）
+ *
+ *   ratelimit = 限流（立即停本账号） / boundary = 该档没解锁或不可领（扫档/兑换到此为止）
+ *   benign    = 已领过/未开放（跳过继续） / hard = 真失败（记 failed 但继续跑后面的）
+ */
+export const classifyClaimError = (error) => {
+  if (isRateLimitError(error)) return "ratelimit";
+  if (isNotCompletedError(error)) return "boundary"; // 未达成 = 该档还没解锁
+  if (isClaimUnavailableError(error)) return "boundary"; // 200020 = 当前不可领
+  if (isAlreadyDoneError(error) || isInactiveError(error)) return "benign";
+  return "hard";
+};
+
 /** 奖励字段 → 可读文案（Common_RewardResp / Celebrate_ClaimResp 同构：body.reward[]） */
 export const rewardText = (response) => {
   const list = Array.isArray(response?.reward) ? response.reward : [];
@@ -234,6 +248,76 @@ export function listUnreadCardIds(response) {
       const readNum = entry.readNum;
       return readNum === undefined ? true : Number(readNum) === 0;
     });
+}
+
+// ── 周年庆抽奖（mayday lottery：抽券 + 碎片兑换）──────────────────────────────
+// 2026-10-22 抓包实证 `local-data/anniversary/ann_lottery.jsonl`
+// （9724服「特别老实-2」：164 张券 → 16 次十连 + 4 次单抽，全部抽干）：
+//   SEND activity_maydaylottery {times:10 ×16, times:1 ×4}
+//   RECV Activity_MayDayLotteryResp：
+//     role.items.40009 = 券余量 154→144→…→4→3→2→1→0（十连 -10 / 单抽 -1）⇒ **剩余量可读，无需前置探测**
+//     role.items.5292  = 碎片存量 3→6→8→9→11（本次抽到 10 个）
+//     mayDayLotteryInfo.fragProgress = 积分 16→327
+//   SEND activity_exchange {activityId:2610165, goodsId:261016526, quantity:1} → 得 1034（鱼珠）×1，5292: 11→1
+//   SEND activity_exchange {activityId:2610165, goodsId:261016510, quantity:1} → 得 37011（宠物蛋）×5，5292: 1→0
+//
+// 🔴 master 口径（2026-10-22，活动最后一天）：
+//   ① **十连抽，券剩个位数后改单抽，抽完为止** —— 本次自动化；
+//   ② 消耗积分开「特别奖」（activity_maydayclaimbox → activity_maydayclaimreward {index}）
+//      —— **是二选一、需要人判断，master 自己在游戏里手点，绝不自动化**；
+//   ③ 碎片兑换：满 10 个才换鱼珠，**不足 10 个一律不碰**，留给 master 手动（掉落随机，可能凑不满）。
+
+/** 抽奖道具（券）itemId */
+export const ANN_LOTTERY_TICKET_ITEM_ID = 40009;
+
+/** 抽奖产出的特殊道具（碎片）itemId */
+export const ANN_LOTTERY_FRAG_ITEM_ID = 5292;
+
+/** 十连抽一次抽几张 */
+export const ANN_LOTTERY_TEN_TIMES = 10;
+
+/** 碎片兑换的活动 actId（activity_exchange.activityId） */
+export const ANN_LOTTERY_EXCHANGE_ACT_ID = 2610165;
+
+/** 鱼珠 goodsId（消耗 10 碎片 → 得 1034 ×1） */
+export const ANN_LOTTERY_FISH_PEARL_GOODS_ID = 261016526;
+
+/** 鱼珠单价（碎片个数） */
+export const ANN_LOTTERY_FISH_PEARL_COST = 10;
+
+/** 宠物蛋 goodsId（消耗 1 碎片 → 得 37011 ×5）—— 仅登记备用，不自动兑换 */
+export const ANN_LOTTERY_PET_EGG_GOODS_ID = 261016510;
+
+/** 抽奖轮数上限（防响应异常时空转；实测 164 券 = 20 轮） */
+export const ANN_LOTTERY_MAX_ROUNDS = 400;
+
+/**
+ * 读 `role.items[itemId]` 的数量
+ *
+ * 实证：`role.items[itemId]` 形如 `{quantity:N}`，**被清空时是 `null`**，
+ * 没变动时**整个键不存在**。返回 `null` 表示「这次响应里读不到」。
+ */
+export function readItemQuantity(response, itemId) {
+  const items = response?.role?.items;
+  if (!items || typeof items !== "object") return null;
+  if (!(itemId in items)) return null;
+  const v = items[itemId];
+  if (v === null || v === undefined) return 0;
+  return typeof v === "object" ? Number(v.quantity || 0) : Number(v || 0);
+}
+
+/** 本次抽奖掉落的碎片数量（把 reward 里 itemId===5292 的 value 加起来） */
+export function countFragDropped(response) {
+  const list = Array.isArray(response?.reward) ? response.reward : [];
+  return list
+    .filter((r) => Number(r?.itemId) === ANN_LOTTERY_FRAG_ITEM_ID)
+    .reduce((sum, r) => sum + (Number(r.value) || 0), 0);
+}
+
+/** 满 10 个能换几个鱼珠（零头不算 —— 不满 10 一律留给手动） */
+export function fishPearlExchanges(fragOwned) {
+  if (!Number.isFinite(fragOwned) || fragOwned < ANN_LOTTERY_FISH_PEARL_COST) return 0;
+  return Math.floor(fragOwned / ANN_LOTTERY_FISH_PEARL_COST);
 }
 
 /** 闯关活动 actId（ Towers_GetInfoResp.towerData.actId 实证） */
@@ -550,19 +634,6 @@ export function createTasksAnnBoss(deps) {
     let claimed = 0;
     // 🔴 单条失败不短路后面的领取（master：每天分几次领）；全部跑完才结算
     let hardFailure = false;
-
-    /**
-     * 领取类错误归类：
-     *   ratelimit = 限流（立即停本账号） / boundary = 该档没解锁或不可领（**扫档到此为止**）
-     *   benign = 已领过/未开放（跳过继续） / hard = 真失败（记 failed 但继续跑后面的）
-     */
-    const classifyClaimError = (error) => {
-      if (isRateLimitError(error)) return "ratelimit";
-      if (isNotCompletedError(error)) return "boundary"; // 未达成 = 该档还没解锁
-      if (isClaimUnavailableError(error)) return "boundary"; // 200020 = 当前不可领
-      if (isAlreadyDoneError(error) || isInactiveError(error)) return "benign";
-      return "hard";
-    };
 
     // 1) 每日签到 —— **响应自带全量状态**（signCelebrate），且签到会解锁当天新增的个人档
     //    （2026-10-21 双号实证：签到后 personalClaimMap 冒出新的 id 且可领）
@@ -964,9 +1035,134 @@ export function createTasksAnnBoss(deps) {
       "批量攻打周年庆 BOSS 结束",
     );
 
+  // ── ④ 周年庆抽奖（十连 → 个位数转单抽 → 碎片满 10 换鱼珠）────────────────
+
+  /**
+   * 抽干一个账号的抽奖券 + 兑换碎片
+   *
+   * 🔴 三条 master 口径（2026-10-22，活动最后一天）：
+   *   ① 十连抽到券剩个位数，再单抽抽完；
+   *   ② 「特别奖」不碰（二选一，master 手点）；
+   *   ③ 碎片满 10 才换鱼珠，零头不动。
+   */
+  const drawLotteryForToken = async ({ tokenId, token }) => {
+    const tokenName = token?.name || tokenId;
+    let drawCount = 0;
+    let claimedCount = 0;
+    let fragOwned = null; // 响应里读到过的最新存量；null = 一次都没读到
+    let hardFailure = false;
+    // 十连优先；十连被拒（券不足 10 张）⇒ 转单抽 —— **不猜服务端文案，靠状态推进**
+    let phase = "ten";
+
+    // 1) 抽干券：剩余量每次都从响应的 role.items.40009 读（抓包实证该字段恒定存在）
+    for (let round = 0; round < ANN_LOTTERY_MAX_ROUNDS; round += 1) {
+      const times = phase === "ten" ? ANN_LOTTERY_TEN_TIMES : 1;
+      let response;
+      try {
+        response = await sendWithRecovery(
+          tokenId,
+          tokenName,
+          "activity_maydaylottery",
+          { times },
+          8000,
+          `周年庆抽奖（${times}连）`,
+        );
+      } catch (error) {
+        if (isRateLimitError(error)) throw error;
+        if (phase === "ten") {
+          phase = "one";
+          log(tokenName, `十连抽失败（券不足 ${ANN_LOTTERY_TEN_TIMES} 张），转单抽`);
+          continue;
+        }
+        // 单抽也失败 ⇒ 券没了（或有别的拒绝），干净收尾
+        log(tokenName, `周年庆抽奖结束：${errorText(error)}`);
+        break;
+      }
+
+      drawCount += times;
+      const dropped = countFragDropped(response);
+      const owned = readItemQuantity(response, ANN_LOTTERY_FRAG_ITEM_ID);
+      if (owned !== null) fragOwned = owned;
+      else if (fragOwned !== null) fragOwned += dropped;
+
+      const left = readItemQuantity(response, ANN_LOTTERY_TICKET_ITEM_ID);
+      if (left === null) {
+        log(tokenName, "响应读不到剩余券数，停止抽奖", "warning");
+        break;
+      }
+      if (left < ANN_LOTTERY_TEN_TIMES) phase = "one";
+      if (left <= 0) break;
+      await sleep(CLAIM_INTERVAL_MS);
+    }
+
+    if (drawCount > 0) {
+      log(tokenName, `周年庆抽奖完成：共抽 ${drawCount} 次`, "success");
+    } else {
+      log(tokenName, "周年庆抽奖：没有可抽的券");
+    }
+
+    // 2) 碎片兑换：满 10 个才换鱼珠，零头一律不动（掉落随机，凑不满很正常）
+    const current = fragOwned ?? 0;
+    const exchangeTimes = fishPearlExchanges(current);
+    if (current < ANN_LOTTERY_FISH_PEARL_COST) {
+      log(
+        tokenName,
+        `碎片 ${current} 个，不足 ${ANN_LOTTERY_FISH_PEARL_COST} 个 ⇒ 不兑换（留给手动处理）`,
+      );
+    }
+    for (let i = 0; i < exchangeTimes; i += 1) {
+      try {
+        await sendWithRecovery(
+          tokenId,
+          tokenName,
+          "activity_exchange",
+          {
+            activityId: ANN_LOTTERY_EXCHANGE_ACT_ID,
+            goodsId: ANN_LOTTERY_FISH_PEARL_GOODS_ID,
+            quantity: 1,
+          },
+          8000,
+          `周年庆碎片换鱼珠（第 ${i + 1}/${exchangeTimes} 个）`,
+        );
+        claimedCount += 1;
+        log(tokenName, `碎片换鱼珠成功（第 ${i + 1}/${exchangeTimes} 个）`, "success");
+      } catch (error) {
+        const kind = classifyClaimError(error);
+        if (kind === "ratelimit") throw error;
+        if (kind !== "hard") {
+          // boundary（不可领）/ benign（已换过）：记一条日志就停，不算失败
+          log(tokenName, `碎片换鱼珠跳过：${errorText(error)}`);
+        } else {
+          log(
+            tokenName,
+            `碎片换鱼珠失败：${errorText(error)}（停止后续兑换）`,
+            "error",
+          );
+          hardFailure = true;
+        }
+        break;
+      }
+      await sleep(CLAIM_INTERVAL_MS);
+    }
+    const leftover = current - exchangeTimes * ANN_LOTTERY_FISH_PEARL_COST;
+    if (current >= ANN_LOTTERY_FISH_PEARL_COST && leftover > 0) {
+      log(tokenName, `剩余碎片 ${leftover} 个（不足 10），留给手动处理`);
+    }
+
+    if (hardFailure) return "failed";
+    return drawCount + claimedCount > 0 ? "claimed" : "nothing";
+  };
+
+  const batchAnnLotteryDraw = async () =>
+    runForSelectedTokens(
+      { label: "周年庆抽奖", run: drawLotteryForToken },
+      "批量周年庆抽奖结束（特别奖是二选一，需到游戏里手点）",
+    );
+
   return {
     batchAnnOneTimeReward,
     batchAnnCelebrateClaim,
     batchAnnBossFight,
+    batchAnnLotteryDraw,
   };
 }

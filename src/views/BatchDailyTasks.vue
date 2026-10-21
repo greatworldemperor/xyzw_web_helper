@@ -991,6 +991,14 @@
                   >
                     周年庆攻打BOSS
                   </n-button>
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="batchAnnLotteryDraw"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    周年庆抽奖（抽券+碎片换鱼珠）
+                  </n-button>
                 </n-space>
                 <span class="xiaoyaojin-hint">
                   周年庆一次性奖励：对<b>所有选中账号</b>领取两条一次性奖励——
@@ -1008,6 +1016,15 @@
                   全服档跳过已领的、升序试领，<b>碰到第一个未达成即停</b>；
                   掉落的集卡（实测 90112~90117）自动读掉。
                   日志出现「<b>扫档到此为止</b>」= 该账号已领干净，属正常收尾。
+                </span>
+                <span class="xiaoyaojin-hint">
+                  周年庆抽奖：对<b>所有选中账号</b>把抽奖券抽干——
+                  <b>十连抽，券剩个位数后自动转单抽</b>（activity_maydaylottery
+                  {times:10 / 1}，券 = 道具 40009，余量从响应读，不前置探测）。
+                  抽到的碎片（道具 5292）<b>满 10 个才换鱼珠</b>
+                  （activity_exchange，activityId 2610165 / goodsId 261016526，得 1034 ×1），
+                  <b>不足 10 个的零头一律不碰</b>——掉落随机，凑不满很正常，留给手动处理。
+                  <b>「特别奖」（消耗积分的二选一）本按钮不碰</b>，请到游戏里手点。
                 </span>
                 <span class="xiaoyaojin-hint">
                   周年庆攻打BOSS：界面与「换皮闯关」相同但 actId 不同（换皮闯关按周五推算 =
@@ -8937,8 +8954,12 @@ const { batchAnnDailyClaim } = tasksAnnDaily;
 // 周年庆一次性奖励 + 每日签到助力 + 闯关打BOSS（临时活动，2026-10-17 抓包实证，
 // actId 2610167 / celebrate / towers actId 2610163，见 local-data/anniversary/）
 const tasksAnnBoss = createTasksAnnBoss(createTaskDeps());
-const { batchAnnOneTimeReward, batchAnnCelebrateClaim, batchAnnBossFight } =
-  tasksAnnBoss;
+const {
+  batchAnnOneTimeReward,
+  batchAnnCelebrateClaim,
+  batchAnnBossFight,
+  batchAnnLotteryDraw,
+} = tasksAnnBoss;
 
 const tasksRedeemCode = createTasksRedeemCode(createTaskDeps());
 const { batchRedeemCodes } = tasksRedeemCode;

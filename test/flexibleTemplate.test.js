@@ -98,6 +98,9 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "batchAnnOneTimeReward",
     "batchAnnCelebrateClaim",
     "batchAnnBossFight",
+    // 2026-10-22 新增：周年庆抽奖（十连/单抽 + 碎片换鱼珠），同落「临时活动」分组。
+    // 「特别奖」是二选一，刻意不做成任务。
+    "batchAnnLotteryDraw",
     // ⚠️ 逍遥津的 7 个任务（xiaoyaojinAll / DailyTask / PassChest / PassRewards /
     //    OneTimeGift / SignReward / Lottery）已于 2026-09-26 活动结束后下线，
     //    从「临时活动」分组移除；源码仍在 utils/batch/tasksXiaoyaojin.js，下期可接回。

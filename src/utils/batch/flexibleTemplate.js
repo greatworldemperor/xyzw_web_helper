@@ -154,6 +154,10 @@ export const flexibleTaskGroups = [
       batchTask("batchAnnOneTimeReward", "领取周年庆一次性奖励"),
       batchTask("batchAnnCelebrateClaim", "领取周年庆助力奖励（签到+全服档+集卡）"),
       batchTask("batchAnnBossFight", "周年庆攻打BOSS"),
+      // 周年庆抽奖（2026-10-22 接入，抓包实证 local-data/anniversary/ann_lottery.jsonl）：
+      // 十连抽 → 券剩个位数转单抽 → 碎片满 10 换鱼珠。
+      // ⚠️ 消耗积分的「特别奖」是二选一，master 手点，**刻意不做成任务**。
+      batchTask("batchAnnLotteryDraw", "周年庆抽奖（抽券+碎片换鱼珠）"),
     ],
   },
   // 逍遥津（"临时活动" 分组）已于 2026-09-26 活动结束后下线：
