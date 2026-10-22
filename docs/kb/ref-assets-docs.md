@@ -12,6 +12,9 @@
 | `_remote_deploy.sh` / `_deploy.bundle` | bundle 直连部署 |
 
 ### 抓包与解码
+| 文件 | 用途 |
+|---|---|
+| `tools/mumu_capture_gui.py` + `tools/mumu_capture.bat` | **MuMu tcpdump 抓包 GUI**（2026-10-23 接入，零依赖 tkinter；双击 bat 启动）。连接 adb → 设备端脱离会话起 tcpdump（`nohup … &`）→ SIGINT 停 → pull 回 `local-data/captures/` → 自动抽 RFC6455 WS 帧（`<pcap>_streams/sNN_{c2s,s2c}.frames.txt`）。带 `--cli connect/start/stop/auto` 无头模式。⚠️ 抓到的帧喂给 skill `xyzw-protocol-re` bon.mjs / `_gf.mjs` 解 BON |
 | 路径 | 内容 |
 |---|---|
 | `goldenfish/_gf.mjs` | **标准解码工具**：`cmds \| sends \| struct \| grep \| num \| dump`（底层 = 生产 `bonProtocol.js`） |
