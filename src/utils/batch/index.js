@@ -42,6 +42,9 @@ export { createTasksAnnDaily } from './tasksAnnDaily.js';
 // 周年庆一次性奖励 + 每日签到助力 + 闯关打BOSS（临时活动，2026-10-17 抓包实证，
 // 见 local-data/anniversary/ann_daily_boss_full.jsonl）
 export { createTasksAnnBoss } from './tasksAnnBoss.js';
+// 周年庆周任务奖励 + 拼图兑换（临时活动，2026-10-22 抓包实证，
+// 见 local-data/anniversary/xyzw_1022.pcap）
+export { createTasksAnnWeek } from './tasksAnnWeek.js';
 // 批量兑换码（CDK，2026-10-17 抓包实证，见 local-data/misc/redemption_code.jsonl）
 export { createTasksRedeemCode, parseRedeemCodes } from './tasksRedeemCode.js';
 export { createTasksXiaoyaojin } from './tasksXiaoyaojin.js';

@@ -365,6 +365,13 @@ export function registerDefaultCommands(reg) {
     .register("activity_warorderrewardclaim", { actId: 0 })
     .register("activity_commonbuygoods", { goodsId: 0 })
     .register("activity_claimsignreward", { activityId: 0, patchDay: 0 })
+    // 周年庆拼图（2026-10-22 接入，抓包实证 local-data/anniversary/xyzw_1022.pcap）：
+    //   activity_photo {activityId, num, pieceId} → Activity_PhotoResp
+    //     （每块投 num 个 5290；photoActivityInfo.num=已投入数，num 传差值 10-num）
+    //   activity_claimphotoreward {activityId, pieceId} → Activity_RewardResp
+    //     （每块 50×5293 + 2000 钻石 + 1×5291，响应内 photoActivityInfo 指针已指向下一块）
+    .register("activity_photo", { activityId: 0, num: 0, pieceId: 0 })
+    .register("activity_claimphotoreward", { activityId: 0, pieceId: 0 })
     // 周年庆抽奖（2026-10-22 接入，抓包实证 local-data/anniversary/ann_lottery.jsonl）：
     //   activity_maydaylottery {times} → Activity_MayDayLotteryResp（十连 times=10 / 单抽 times=1）
     //   activity_maydayclaimbox {times} → Activity_MayDayClaimBoxResp（消耗积分开箱，出二选一候选）
@@ -1268,7 +1275,14 @@ export class XyzwWebSocketClient {
       ],
       // 逍遥津（限时临时活动）响应映射
       activity_warordergetresp: "activity_warorderget",
-      activity_rewardresp: ["activity_claimsignreward", "activity_claimtaskreward"],
+      // Activity_RewardResp 多命令共用：签到 / 每日任务 / 周年庆拼图领奖（2026-10-22）
+      activity_rewardresp: [
+        "activity_claimsignreward",
+        "activity_claimtaskreward",
+        "activity_claimphotoreward",
+      ],
+      // 周年庆拼图（2026-10-22）：activity_photo → Activity_PhotoResp
+      activity_photoresp: "activity_photo",
       // 宝箱周达标奖励：响应 Activity_ClaimWeekActRewardResp（抓包 resp=seq 可匹配）
       activity_claimweekactrewardresp: "activity_claimweekactreward",
       activity_getlotteryinforesp: "activity_getlotteryinfo",

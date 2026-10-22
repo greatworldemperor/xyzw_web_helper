@@ -158,6 +158,10 @@ export const flexibleTaskGroups = [
       // 十连抽 → 券剩个位数转单抽 → 碎片满 10 换鱼珠。
       // ⚠️ 消耗积分的「特别奖」是二选一，master 手点，**刻意不做成任务**。
       batchTask("batchAnnLotteryDraw", "周年庆抽奖（抽券+碎片换鱼珠）"),
+      // 周年庆周任务奖励 + 拼图兑换（2026-10-22 接入，抓包实证
+      // local-data/anniversary/xyzw_1022.pcap）：战令 06~14 门槛表领取 + photo 指针循环兑换
+      batchTask("batchAnnWeekTaskClaim", "领取周年庆周任务奖励（战令·周任务）"),
+      batchTask("batchAnnPuzzleExchange", "周年庆拼图兑换（5290→拼图→领奖）"),
     ],
   },
   // 逍遥津（"临时活动" 分组）已于 2026-09-26 活动结束后下线：

@@ -999,6 +999,22 @@
                   >
                     周年庆抽奖（抽券+碎片换鱼珠）
                   </n-button>
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="batchAnnWeekTaskClaim"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    领取周年庆周任务奖励（战令·周任务）
+                  </n-button>
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="batchAnnPuzzleExchange"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    周年庆拼图兑换（5290→拼图→领奖）
+                  </n-button>
                 </n-space>
                 <span class="xiaoyaojin-hint">
                   周年庆一次性奖励：对<b>所有选中账号</b>领取两条一次性奖励——
@@ -1033,6 +1049,21 @@
                   （周五 BOSS1 / 周六 BOSS2 / 周日 BOSS3 / 周一 BOSS4 / 周二 BOSS5 /
                   周三 BOSS6 / 周四全开），<b>每个 BOSS 最多 10 战</b>（8 关 + 失败冗余），
                   通关（pass）即停；今日已通关或未开放的服务端会拒绝，按正常跳过处理。
+                </span>
+                <span class="xiaoyaojin-hint">
+                  周年庆周任务奖励：对<b>所有选中账号</b>查询战令周任务（actId 2610169 序号
+                  06~14，activity_warorderget），<b>未领且达标</b>才发领取（门槛表：
+                  06/07 达标 1、08 达标 2、09/10/11 达标 8（11 = 营地挑战达标）、
+                  12/13/14 达标 3），每个得道具 5290 ×10（拼图货币）。
+                  未达标 / 已领取 / 活动未开的服务端拒绝按正常跳过处理。
+                </span>
+                <span class="xiaoyaojin-hint">
+                  周年庆拼图兑换：按<b>活动指针</b>循环「投 10 个 5290 拼一块
+                  （activity_photo）→ 领块奖励（activity_claimphotoreward，
+                  每块 50×5293 + 2000 钻石 + 1×5291）」，直到 5290 不足或本期拼图全部完成。
+                  5290 靠上面的「周任务奖励」攒——<b>建议先点周任务再点拼图</b>。
+                  上次投满没领的存量块会直接领奖、不重复投币；中途失败重跑幂等
+                  （自动从最新指针继续）。
                 </span>
                 <span class="xiaoyaojin-hint">
                   盐场赛季淘汰赛（64 强）助威：助威名单按淘汰赛胜场取前 64 家俱乐部，
@@ -4435,6 +4466,7 @@ import {
   createTasksSeasonOutCheer,
   createTasksAnnDaily,
   createTasksAnnBoss,
+  createTasksAnnWeek,
   createTasksRedeemCode,
   createTasksWhiteJadePkroom,
   createTasksGoldenfish,
@@ -8961,6 +8993,11 @@ const {
   batchAnnLotteryDraw,
 } = tasksAnnBoss;
 
+// 周年庆周任务奖励 + 拼图兑换（临时活动，2026-10-22 抓包实证，
+// 战令 2610169 序号 06~14 + 拼图 2610168，见 local-data/anniversary/xyzw_1022.pcap）
+const tasksAnnWeek = createTasksAnnWeek(createTaskDeps());
+const { batchAnnWeekTaskClaim, batchAnnPuzzleExchange } = tasksAnnWeek;
+
 const tasksRedeemCode = createTasksRedeemCode(createTaskDeps());
 const { batchRedeemCodes } = tasksRedeemCode;
 
@@ -9440,6 +9477,8 @@ const createFlexibleTaskHandlers = (deps) => ({
   ...createTasksAnnDaily(deps),
   // 周年庆一次性奖励 + 每日签到助力 + 闯关打BOSS（临时活动分组，2026-10-17 接入）
   ...createTasksAnnBoss(deps),
+  // 周年庆周任务奖励 + 拼图兑换（临时活动分组，2026-10-22 接入）
+  ...createTasksAnnWeek(deps),
   // 批量兑换码（2026-10-17 接入；不进 flexibleTaskGroups，仅页面手动入口）
   ...createTasksRedeemCode(deps),
   // 逍遥津已于 2026-09-26 活动结束后下线（UI 已摘除；源码与测试保留在
