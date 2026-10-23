@@ -36,6 +36,8 @@ node --test --test-reporter=tap test/*.test.js
 
 **背景**：金鱼第一阶段约束 = **不 push GitHub**（联网不稳、耗时），改动只走 bundle 直连。本地 commit 照常。
 
+**例行换串已脚本化（2026-10-24）**：clientVersion 每周换串直接跑 `node tools/version-rotate.mjs`（detect：解包→提串→改文件→测试，停在 commit 前）→ `node tools/version-rotate.mjs --yes`（commit + bundle 部署 + 双向核验）。幂等、失败即停；§3 的 4 个坑（bundle 名字 / 单独 scp / verify 后构建 / 末行 commit 断言）已内建为脚本断言。唯一人工点 = PC 微信打开一次游戏。下述手动流程保留作后备。
+
 ```bash
 KEY="C:/Users/worldemperor/.ssh/id_xyzw_server"
 SSH="ssh -i $KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@111.229.64.152"

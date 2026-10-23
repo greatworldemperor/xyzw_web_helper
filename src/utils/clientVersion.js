@@ -5,11 +5,11 @@
  * 从 PC 微信小游戏包解出三代真串：2.21.2-fa918e1997301834-wx（03 月）/ 2.44.2-e1853b3c1fe23f57-wx（构建356）/
  * 2.48.2-cbe6e57c59db01c2-wx（构建361）—— 三个版本三个 hash）。
  *
- * 🔧 换版本流程（**每周固定机制，10-18 与 master 约定**）：PC 微信打开一次小游戏（更新包）→
- *    node tools/saltfield/wxapkg-decrypt.mjs
- *      "C:\Users\<user>\AppData\Roaming\Tencent\xwechat\radium\users\<uid>\applet\packages\wx0840558555a454ed\<新构建号>\__APP__.wxapkg"
- *      <outDir>
- *    → grep game.js 的 GAME_VERSION → 改这里 → 测试 → commit → deploy。
+ * 🔧 换版本流程（**每周固定机制，10-18 与 master 约定**；10-24 起脚本化）：PC 微信打开一次小游戏（触发下载新构建）→
+ *    node tools/version-rotate.mjs        （解包+提串+改这里+测试，停在 commit 前，幂等可重跑）
+ *    → 确认汇总无误后 node tools/version-rotate.mjs --yes（commit + bundle 部署 + 双向核验）。
+ *    手动后备：node tools/saltfield/wxapkg-decrypt.mjs "<新构建号>\__APP__.wxapkg" <outDir>
+ *    → grep game.js 的 GAME_VERSION → 手改这里 → 测试 → commit → 按 docs/kb/02-toolchain-deploy.md 部署。
  *
  * ⚠️ 版本史与 3000070（「客户端数据异常」）实验记录：
  *   - 2.21.2-fa918e1997301834-wx（09-27~10-03 在用）：盐场 war_setbattleteam ✅（10-03 实战）/
