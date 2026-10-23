@@ -81,6 +81,9 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "batchClearItems",
     "legion_storebuygoods",
     "legionStoreBuySkinCoins",
+    // 2026-10-24 新增：批量启动功法（每期结束后 hangUpBeginTime 归 0，
+    // 直接 legacy_claimhangup 会报错，必须先 beginhangup）。
+    "batchLegacyStartHangUp",
     "batchLegacyClaim",
     "batchLegacyGiftSendEnhanced",
     "batchTopUpFish",

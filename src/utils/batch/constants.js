@@ -77,6 +77,8 @@ export const availableTasks = [
   { label: "智能黑市购物", value: "store_purchase" },
   { label: "免费领取珍宝阁", value: "collection_claimfreereward" },
   { label: "批量领取功法残卷", value: "batchLegacyClaim" },
+  // 每期功法结束后 hangUpBeginTime 归 0，领取会报错 → 必须先启动（2026-10-24）
+  { label: "批量启动功法", value: "batchLegacyStartHangUp" },
   { label: "批量赠送功法残卷", value: "batchLegacyGiftSendEnhanced" },
   { label: "一键使用怪异塔道具", value: "batchUseItems" },
   { label: "一键怪异塔合成", value: "batchMergeItems" },

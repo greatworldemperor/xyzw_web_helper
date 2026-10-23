@@ -438,6 +438,12 @@ export function registerDefaultCommands(reg) {
     // 功法
     .register("legacy_getinfo")
     .register("legacy_claimhangup")
+    // 启动功法产出（body 全空）：抓包实证 local-data/misc/gongfa_start.jsonl（2026-10-24）
+    //   SEND legacy_getinfo     seq=47 → Legacy_GetInfoResp    { roleLegacy.hangUpBeginTime: 0 }
+    //   SEND legacy_beginhangup seq=48 → Legacy_BeginHangUpResp { roleLegacy.hangUpBeginTime: 1792728830001 }
+    // 🔴 每期功法结束后服务端的 hangUpBeginTime 归 0，此时直接 legacy_claimhangup 会报错，
+    //    必须先发本命令重启本期产出计时。
+    .register("legacy_beginhangup")
     // 功法残卷赠送
     .register("legacy_gift_getlist")
     .register("legacy_gift_send", { recipientId: 0, itemId: 0, quantity: 0 })
@@ -1300,6 +1306,7 @@ export class XyzwWebSocketClient {
       // 功法相关响应映射
       legacy_getinforesp: "legacy_getinfo",
       legacy_claimhangupresp: "legacy_claimhangup",
+      legacy_beginhangupresp: "legacy_beginhangup",
       legacy_sendgiftresp: "legacy_sendgift",
       legacy_getgiftsresp: "legacy_getgifts",
       // 盐杯竞猜响应映射

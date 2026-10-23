@@ -1,6 +1,6 @@
 /**
  * 功法类任务
- * 包含: batchLegacyClaim, batchLegacyGiftSendEnhanced
+ * 包含: batchLegacyClaim, batchLegacyStartHangUp, batchLegacyGiftSendEnhanced
  */
 
 /**
@@ -43,7 +43,152 @@ export function createTasksLegacy(deps) {
           ));
 
   /**
+   * 读取功法产出起始时间（hangUpBeginTime）
+   * 抓包实证：local-data/misc/gongfa_start.jsonl（2026-10-24）
+   *   legacy_getinfo → Legacy_GetInfoResp { roleLegacy: { hangUpBeginTime } }
+   * @returns {Promise<number>} 0=未启动/查询失败，-1=请求异常（未知状态）
+   */
+  const readHangUpBeginTime = async (tokenId) => {
+    try {
+      const infoResp = await tokenStore.sendMessageWithPromise(
+        tokenId,
+        "legacy_getinfo",
+        {},
+        5000,
+      );
+      return Number(infoResp?.roleLegacy?.hangUpBeginTime) || 0;
+    } catch (error) {
+      console.error(error);
+      return -1;
+    }
+  };
+
+  /**
+   * 启动功法产出（legacy_beginhangup）
+   * @returns {Promise<number>} 新的 hangUpBeginTime（毫秒时间戳），0 表示启动失败
+   */
+  const beginHangUp = async (tokenId) => {
+    const resp = await tokenStore.sendMessageWithPromise(
+      tokenId,
+      "legacy_beginhangup",
+      {},
+      5000,
+    );
+    return Number(resp?.roleLegacy?.hangUpBeginTime) || 0;
+  };
+
+  /**
+   * 批量启动功法
+   * 🔴 每期功法结束后服务端会把 roleLegacy.hangUpBeginTime 归 0，此时直接
+   *    legacy_claimhangup 会报错 —— 必须先 legacy_beginhangup 重启本期产出。
+   * 幂等：hangUpBeginTime > 0（已在产出中）直接跳过，不重复启动。
+   */
+  const batchLegacyStartHangUp = async () => {
+    if (selectedTokens.value.length === 0) {
+      message.warning("请先选择要操作的角色");
+      return;
+    }
+    isRunning.value = true;
+    shouldStop.value = false;
+
+    selectedTokens.value.forEach((id) => {
+      tokenStatus.value[id] = "waiting";
+    });
+
+    let totalStarted = 0;
+    let totalSkipped = 0;
+    let totalFailed = 0;
+
+    const taskPromises = selectedTokens.value.map(async (tokenId) => {
+      if (shouldStop.value) return;
+      tokenStatus.value[tokenId] = "running";
+
+      const token = tokens.value.find((t) => t.id === tokenId);
+      try {
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `=== 开始启动功法: ${token.name} ===`,
+          type: "info",
+        });
+        await ensureConnection(tokenId);
+
+        const beginTime = await readHangUpBeginTime(tokenId);
+        if (beginTime > 0) {
+          totalSkipped++;
+          tokenStatus.value[tokenId] = "completed";
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `=== ${token.name} 功法已在产出中（开始于 ${new Date(beginTime).toLocaleString()}），无需启动 ===`,
+            type: "success",
+          });
+          return;
+        }
+        if (beginTime < 0) {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `=== ${token.name} 功法状态查询失败，直接尝试启动 ===`,
+            type: "warning",
+          });
+        }
+
+        const newBeginTime = await beginHangUp(tokenId);
+        if (!newBeginTime) {
+          throw new Error("启动响应未返回 hangUpBeginTime");
+        }
+        totalStarted++;
+        tokenStatus.value[tokenId] = "completed";
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `=== ${token.name} 功法已启动，产出开始于 ${new Date(newBeginTime).toLocaleString()} ===`,
+          type: "success",
+        });
+      } catch (error) {
+        console.error(error);
+        tokenStatus.value[tokenId] = "failed";
+        totalFailed++;
+
+        let errorMsg = error.message || "未知错误";
+        if (errorMsg.includes("200160")) {
+          errorMsg = "功法系统未开启";
+        } else if (errorMsg.includes("timeout")) {
+          errorMsg = "请求超时";
+        }
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `=== ${token.name} 启动功法失败: ${errorMsg} ===`,
+          type: "error",
+        });
+      } finally {
+        tokenStore.closeWebSocketConnection(tokenId);
+        releaseConnectionSlot();
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${token.name} 连接已关闭  (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
+          type: "info",
+        });
+      }
+    });
+
+    await Promise.all(taskPromises);
+
+    isRunning.value = false;
+    currentRunningTokenId.value = null;
+
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `=== 批量启动功法完成: 新启动 ${totalStarted} 个，已启动 ${totalSkipped} 个，失败 ${totalFailed} 个 ===`,
+      type: "success",
+    });
+
+    message.success(
+      `批量启动功法结束，新启动 ${totalStarted} 个，已启动 ${totalSkipped} 个，失败 ${totalFailed} 个`,
+    );
+  };
+
+  /**
    * 批量领取功法残卷
+   * 🔴 2026-10-24：每期功法结束后 hangUpBeginTime 归 0，直接领取会报错。
+   *    领取前先查一次状态，未启动则自动 legacy_beginhangup（失败不阻断原有领取流程）。
    */
   const batchLegacyClaim = async () => {
     if (selectedTokens.value.length === 0) return;
@@ -66,6 +211,32 @@ export function createTasksLegacy(deps) {
           type: "info",
         });
         await ensureConnection(tokenId);
+
+        // 前置：功法未启动（hangUpBeginTime==0）时先重启本期产出，否则领取会报错。
+        // -1 = 状态查询失败 → 保持旧行为直接领取，不改变原有成功率。
+        const beforeClaimBeginTime = await readHangUpBeginTime(tokenId);
+        if (beforeClaimBeginTime === 0) {
+          addLog({
+            time: new Date().toLocaleTimeString(),
+            message: `=== ${token.name} 功法未启动，先启动再领取 ===`,
+            type: "info",
+          });
+          try {
+            const startedAt = await beginHangUp(tokenId);
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `=== ${token.name} 功法已启动${startedAt ? `（${new Date(startedAt).toLocaleString()}）` : ""} ===`,
+              type: "success",
+            });
+          } catch (startError) {
+            console.error(startError);
+            addLog({
+              time: new Date().toLocaleTimeString(),
+              message: `=== ${token.name} 功法启动失败: ${startError.message || "未知错误"}，继续尝试领取 ===`,
+              type: "warning",
+            });
+          }
+        }
 
         const LegacyClaimHangUpResp = await tokenStore.sendMessageWithPromise(
           tokenId,
@@ -359,6 +530,7 @@ export function createTasksLegacy(deps) {
 
   return {
     batchLegacyClaim,
+    batchLegacyStartHangUp,
     batchLegacyGiftSendEnhanced,
   };
 }

@@ -119,6 +119,9 @@ export const flexibleTaskGroups = [
     name: "legacy",
     label: "功法",
     tasks: [
+      // 🔴 每期功法结束后必须先启动才能领取（hangUpBeginTime 归 0，直接领取报错）。
+      //    排序上要排在「批量功法残卷领取」之前（2026-10-24，抓包 gongfa_start.jsonl）。
+      batchTask("batchLegacyStartHangUp", "批量启动功法"),
       batchTask("batchLegacyClaim", "批量功法残卷领取"),
       batchTask("batchLegacyGiftSendEnhanced", "批量功法残卷赠送", {
         scheduledArgument: true,

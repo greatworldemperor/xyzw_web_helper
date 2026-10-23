@@ -889,6 +889,13 @@
               <n-space>
                 <n-button
                   size="small"
+                  @click="batchLegacyStartHangUp"
+                  :disabled="isRunning || selectedTokens.length === 0"
+                >
+                  批量启动功法
+                </n-button>
+                <n-button
+                  size="small"
                   @click="batchLegacyClaim"
                   :disabled="isRunning || selectedTokens.length === 0"
                 >
@@ -5924,7 +5931,11 @@ const taskGroupDefinitions = [
   {
     name: "legacy",
     label: "功法",
-    tasks: ["batchLegacyClaim", "batchLegacyGiftSendEnhanced"],
+    tasks: [
+      "batchLegacyStartHangUp",
+      "batchLegacyClaim",
+      "batchLegacyGiftSendEnhanced",
+    ],
   },
   {
     name: "monthly",
@@ -9231,7 +9242,11 @@ watch(
 );
 
 const tasksLegacy = createTasksLegacy(createTaskDeps());
-const { batchLegacyClaim, batchLegacyGiftSendEnhanced } = tasksLegacy;
+const {
+  batchLegacyClaim,
+  batchLegacyStartHangUp,
+  batchLegacyGiftSendEnhanced,
+} = tasksLegacy;
 
 const tasksFootball = createTasksFootball(createTaskDeps());
 const { batchFootballBet } = tasksFootball;
