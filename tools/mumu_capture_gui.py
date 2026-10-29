@@ -340,11 +340,10 @@ def _join(segs):
 
 
 def _ws_frames(stream, is_client):
-    """跳过握手头，解析 RFC6455 帧；client 方向 unmask。返回 [(opcode, payload)]"""
+    """解析 RFC6455 帧；client 方向 unmask。返回 [(opcode, payload)]
+    有 HTTP 握手则跳过握手头；没有（连接建立于抓包开始前 / 无握手协议）则从字节 0 直接解。"""
     idx = stream.find(b"\r\n\r\n")
-    if idx < 0:
-        return []
-    pos, n, frames = idx + 4, len(stream), []
+    pos, n, frames = (idx + 4 if idx >= 0 else 0), len(stream), []
     while pos + 2 <= n:
         opcode = stream[pos] & 0x0F
         masked = stream[pos + 1] >> 7
@@ -398,7 +397,14 @@ def extract_ws_frames(pcap_path, logfn=print):
         if not c2s and not s2c:
             continue
         low = (c2s[:2048] + s2c[:2048]).lower()
-        if b"upgrade: websocket" in low or c2s[:4] in (b"GET ", b"POST"):
+        # WS 识别：有 HTTP 升级头，或任一方向首字节 = 0x8x（WS 帧头，连接先于抓包建立时无握手）
+        looks_ws = (
+            b"upgrade: websocket" in low
+            or c2s[:4] in (b"GET ", b"POST")
+            or (c2s[:1] and 0x80 <= c2s[0] <= 0x8F and (c2s[0] & 0x0F) in (1, 2))
+            or (s2c[:1] and 0x80 <= s2c[0] <= 0x8F and (s2c[0] & 0x0F) in (1, 2))
+        )
+        if looks_ws:
             pairs.append((key, c2s, s2c))
     pairs.sort(key=lambda p: -(len(p[1]) + len(p[2])))
     lines = [f"WS 流 {len(pairs)} 条 → {out_dir}"]
