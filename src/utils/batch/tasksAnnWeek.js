@@ -18,14 +18,24 @@
  *      兑换 activity_photo {activityId, num, pieceId}（每块 10 个 5290）
  *        → Activity_PhotoResp（role.items["5290"] 余额快照）
  *      领奖 activity_claimphotoreward {activityId, pieceId}
- *        → Activity_RewardResp（每块 50×5293 + 2000 钻石 + 1×5291；
- *          photoActivityInfo 指针已指向下一块）
+ *        → Activity_RewardResp（奖励分档，2026-10-29 实测：普通块 30×5293+1000 钻，
+ *          每周第 3 块（51/61）50×5293+2000 钻+1×5291；photoActivityInfo 指针已指向下一块）
  *      指针实证：角色A 起始 {num:10, pieceId:11}（昨日投满未领）→ 先领 11 → 兑 12…；
  *      两角色均 5290 耗尽即停（领任务数 == 兑块数）。
  *
- * 实现口径（master 2026-10-22 拍板）：
+ * 2026-10-29 抓包（xyzw_1029.pcap）补充实证：
+ *   - pieceId 线性序列延伸到 41~44 / 51~54 / 61~64（第 5/6 周），指针模型不变；
+ *   - **num=9 部分投入**：余额不足 10 时客户端发差值（activity_photo {num:9}），
+ *     服务端照收（5290 归零、块留 num<10 半满）⇒ 「用光道具」按差值投入合法；
+ *   - 拼图领奖**掉新集卡**（type:21，cardId 9014/9015/9016，响应 role.linkCard readNum=0），
+ *     客户端随即 linkcard_readcard {cardId, readNum:1} 读掉；
+ *   - 战令 09/10/11 本周 complete=15 仍领（门槛≤8 成立）；07 进度 0 领不了。
+ *
+ * 实现口径（master 2026-10-29 拍板：合并为一个「领取周年庆每周奖励」按钮，一周一次）：
  *   - 周任务用**门槛表**：complete≥门槛且未领才发请求，不发无效帧；
- *   - 拼图 photo→claim 顺序循环，5290 不足即停；num 已满 10 的存量块直接领、不重投；
+ *   - 拼图 photo→claim 顺序循环，**用光 5290**：余额不足一块时按差值部分投入
+ *     （半满块不可领，留待下周补满后自动领——重跑幂等）；
+ *   - 拼图领奖掉的新集卡**自动读掉**（listUnreadCardIds + linkcard_readcard）；
  *   - 错误分类复用 tasksAnnBoss 导出的 classifyClaimError / rewardText / readItemQuantity；
  *   - 限流(400340)立即停本账号剩余动作；超时/断连走 sendWithRecovery（刷新Token重发）；
  *   - 连接生命周期与 daily/boss 模块同口径：ensureConnection → finally close + releaseSlot。
@@ -37,9 +47,11 @@ import {
   isRateLimitError as isProjectRateLimitError,
 } from "../helperTaskRunner.js";
 import {
+  ANN_LINKCARD_READ_NUM,
   classifyClaimError,
   isInactiveError,
   isRateLimitError,
+  listUnreadCardIds,
   readItemQuantity,
   rewardText,
 } from "./tasksAnnBoss.js";
@@ -79,8 +91,8 @@ export const ANN_PUZZLE_ACT_ID = 2610168;
 export const ANN_PUZZLE_CURRENCY_ITEM_ID = 5290;
 export const ANN_PUZZLE_PIECE_COST = 10;
 
-/** 拼图块总数（11~14 / 21~24 / 31~34），仅作死循环保险丝 */
-export const ANN_PUZZLE_MAX_PIECES = 12;
+/** 拼图块总数保险丝（2026-10-29 实证序列已到 61+；留多周追赶余量） */
+export const ANN_PUZZLE_MAX_PIECES = 16;
 
 const ACTION_INTERVAL_MS = 500;
 
@@ -358,12 +370,53 @@ export function createTasksAnnWeek(deps) {
       const need = ANN_PUZZLE_PIECE_COST - invested;
 
       if (balance < need) {
-        log(
-          tokenName,
-          `周年庆拼图：5290 余额 ${balance} 不足（块 ${pieceId} 还差 ${need} 个），停——先跑「周任务奖励」攒币后重跑`,
-          "warning",
-        );
-        break;
+        if (balance <= 0) {
+          log(
+            tokenName,
+            `周年庆拼图：5290 余额 0，停——先跑「周任务奖励」攒币后重跑`,
+            "warning",
+          );
+          break;
+        }
+        // 2026-10-29 抓包实证：余额不足一块时客户端按差值投入（num:9 服务端照收），
+        // 块留在 num<10 的半满状态 ⇒ 这里把最后一个 5290 也用光（master 口径：用光道具）
+        const spent = balance;
+        try {
+          const photoResp = await sendWithRecovery(
+            tokenId,
+            tokenName,
+            "activity_photo",
+            { activityId: ANN_PUZZLE_ACT_ID, num: spent, pieceId },
+            8000,
+            `周年庆拼图 ${pieceId} 部分投入`,
+          );
+          const shown = readItemQuantity(photoResp, ANN_PUZZLE_CURRENCY_ITEM_ID);
+          balance = shown === null ? 0 : shown;
+          log(
+            tokenName,
+            `周年庆拼图 ${pieceId} 部分投入（投 ${spent} 个 5290，还差 ${need - spent} 个，下周补满后自动领）`,
+            "warning",
+          );
+        } catch (error) {
+          const kind = classifyClaimError(error);
+          if (kind === "ratelimit") {
+            log(tokenName, "触发限流(400340)，周年庆拼图下次再兑", "warning");
+          } else if (kind === "hard") {
+            log(
+              tokenName,
+              `周年庆拼图 ${pieceId} 部分投入失败：${errorText(error)}`,
+              "error",
+            );
+            hardFailed = true;
+          } else {
+            log(
+              tokenName,
+              `周年庆拼图 ${pieceId} 部分投入被拒（${errorText(error)}）`,
+              "warning",
+            );
+          }
+        }
+        break; // 半满块不可领奖，本轮收工（重跑幂等：activity_get 重读指针）
       }
 
       // 2.3 兑换（num 已满的存量块直接跳到领奖，不重投）
@@ -421,6 +474,34 @@ export function createTasksAnnWeek(deps) {
           `周年庆拼图 ${pieceId} 领奖成功（${rewardText(claimResp)}）`,
           "success",
         );
+        // 2026-10-29 抓包实证：拼图领奖可能掉新集卡（type:21，role.linkCard readNum=0），
+        // 客户端随即 linkcard_readcard 读掉 ⇒ 这里自动跟读（失败只记日志，不阻塞拼图主流程）
+        for (const cardId of listUnreadCardIds(claimResp)) {
+          if (shouldStop.value) break;
+          try {
+            await sendWithRecovery(
+              tokenId,
+              tokenName,
+              "linkcard_readcard",
+              { cardId, readNum: ANN_LINKCARD_READ_NUM },
+              8000,
+              `周年庆拼图读卡 ${cardId}`,
+            );
+            log(tokenName, `周年庆拼图读卡成功（cardId ${cardId}）`, "success");
+          } catch (error) {
+            const kind = classifyClaimError(error);
+            if (kind === "ratelimit") {
+              log(tokenName, "触发限流(400340)，读卡下次再读", "warning");
+              break;
+            }
+            log(
+              tokenName,
+              `周年庆拼图读卡 ${cardId} 失败（${errorText(error)}），不阻塞后续拼图`,
+              "warning",
+            );
+          }
+          await sleep(ACTION_INTERVAL_MS);
+        }
         const next = readNextPuzzleState(claimResp);
         if (!next) {
           log(tokenName, "周年庆拼图：本期已全部完成 🎉");
@@ -456,5 +537,22 @@ export function createTasksAnnWeek(deps) {
       "周年庆拼图兑换结束",
     );
 
-  return { batchAnnWeekTaskClaim, batchAnnPuzzleExchange };
+  // ── ③ 合并：领取周年庆每周奖励（一周一次，master 2026-10-29 口径）────────────
+  //    同一连接先领周任务（攒 5290）→ 再「放入胶卷」用光 5290（含部分投入+掉卡读卡）
+  const weekRewardForToken = async ({ tokenId, token }) => {
+    const outcomeClaim = await claimWeekForToken({ tokenId, token });
+    const outcomePuzzle = await exchangePuzzleForToken({ tokenId, token });
+    if (outcomeClaim === "failed" || outcomePuzzle === "failed") return "failed";
+    return outcomeClaim === "claimed" || outcomePuzzle === "claimed"
+      ? "claimed"
+      : "nothing";
+  };
+
+  const batchAnnWeekReward = async () =>
+    runForSelectedTokens(
+      { label: "领取周年庆每周奖励", run: weekRewardForToken },
+      "批量领取周年庆每周奖励结束",
+    );
+
+  return { batchAnnWeekTaskClaim, batchAnnPuzzleExchange, batchAnnWeekReward };
 }

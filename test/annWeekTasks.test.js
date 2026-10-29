@@ -370,13 +370,13 @@ test("批量拼图：余额 30 + 指针 {num:0, pieceId:14} → 恰好 3 轮 pho
     commands.filter((c) => c.command === "activity_claimphotoreward").map((c) => c.body.pieceId),
     [14, 21, 22],
   );
-  assert.ok(logs.some((l) => l.message.includes("5290 余额 0 不足")));
+  assert.ok(logs.some((l) => l.message.includes("5290 余额 0")));
   // 余额不足是正常停（不是硬失败）
   assert.equal(logs.filter((l) => l.type === "error").length, 0);
 });
 
-test("批量拼图：存量块 {num:10, pieceId:11} → 直接领奖不重投，下一块正常投币", async () => {
-  // 余额 15：够投 1 块（12）后剩 5，到块 13 时不足 → 正常停
+test("批量拼图：存量块 {num:10, pieceId:11} → 直接领奖不重投；末块余额不足按差值用光（10-29 口径）", async () => {
+  // 余额 15：块 12 投 10 剩 5，到块 13 时不足一块 → 按差值 num:5 投入用光（半满待下周补）
   let balance = 15;
   let pointer = { num: 10, pieceId: 11 }; // 存量块：昨天投满没领
   const nextOf = { 11: 12, 12: 13, 13: 14 };
@@ -391,8 +391,10 @@ test("批量拼图：存量块 {num:10, pieceId:11} → 直接领奖不重投，
       if (command === "activity_photo") {
         balance -= body.num; // 真实扣币
         return {
-          role: { items: { 5290: { quantity: balance } } },
-          activity: { photoActivityInfo: { 2610168: { num: 10, pieceId: body.pieceId } } },
+          role: { items: balance > 0 ? { 5290: { quantity: balance } } : { 5290: null } },
+          activity: {
+            photoActivityInfo: { 2610168: { num: body.num, pieceId: body.pieceId } },
+          },
         };
       }
       if (command === "activity_claimphotoreward") {
@@ -408,17 +410,18 @@ test("批量拼图：存量块 {num:10, pieceId:11} → 直接领奖不重投，
 
   await tasks.batchAnnPuzzleExchange();
 
-  // 块 11 没有发过 photo（存量已满 10，直接领）；块 12 正常投币
+  // 块 11 没有发过 photo（存量已满 10，直接领）；块 12 整投；块 13 差值投光
+  const photos = commands.filter((c) => c.command === "activity_photo");
   assert.deepEqual(
-    commands.filter((c) => c.command === "activity_photo").map((c) => c.body.pieceId),
-    [12],
+    photos.map((c) => [c.body.pieceId, c.body.num]),
+    [[12, 10], [13, 5]],
   );
   assert.deepEqual(
     commands.filter((c) => c.command === "activity_claimphotoreward").map((c) => c.body.pieceId),
     [11, 12],
   );
-  // 块 13 前余额 5 < 10 → 正常停（提示先跑周任务攒币）
-  assert.ok(logs.some((l) => l.message.includes("5290 余额 5 不足")));
+  // 部分投入后收工（半满块不可领，下周补满自动领）
+  assert.ok(logs.some((l) => l.message.includes("部分投入（投 5 个 5290，还差 5 个")));
   assert.equal(logs.filter((l) => l.type === "error").length, 0);
 });
 
@@ -440,6 +443,140 @@ test("批量拼图：余额为 0 → 除查询外一帧不发，账号 completed
   assert.equal(commands.filter((c) => c.command === "activity_photo").length, 0);
   assert.equal(commands.filter((c) => c.command === "activity_claimphotoreward").length, 0);
   assert.ok(logs.some((l) => l.message.includes("周任务")));
+  assert.equal(logs.filter((l) => l.type === "error").length, 0);
+});
+
+test("批量拼图：余额 9（不足一块）→ 按差值投入 num:9 用光道具，不发领奖帧（10-29 抓包实证）", async () => {
+  let balance = 9;
+  const { tasks, commands, logs } = makeTasks({
+    send: (command, body) => {
+      if (command === "activity_get") {
+        return { activity: { photoActivityInfo: { 2610168: { num: 0, pieceId: 63 } } } };
+      }
+      if (command === "role_getroleinfo") {
+        return { role: { items: { 5290: { quantity: balance } } } };
+      }
+      if (command === "activity_photo") {
+        // 复刻 10-29 抓包：num:9 服务端照收，块留半满 {num:9}
+        assert.equal(body.num, 9);
+        balance -= body.num;
+        return {
+          role: { items: { 5290: balance > 0 ? { quantity: balance } : null } },
+          activity: { photoActivityInfo: { 2610168: { num: body.num, pieceId: body.pieceId } } },
+        };
+      }
+      if (command === "activity_claimphotoreward") {
+        throw new Error("半满块不该发领奖帧");
+      }
+      return {};
+    },
+  });
+
+  await tasks.batchAnnPuzzleExchange();
+
+  // 唯一一帧 photo 按余额差值投入，之后收工（半满块不可领）
+  assert.deepEqual(
+    commands.filter((c) => c.command === "activity_photo").map((c) => c.body.num),
+    [9],
+  );
+  assert.equal(commands.filter((c) => c.command === "activity_claimphotoreward").length, 0);
+  assert.ok(logs.some((l) => l.message.includes("还差 1 个")));
+  assert.equal(logs.filter((l) => l.type === "error").length, 0);
+});
+
+test("批量拼图：领奖掉的新集卡自动读掉（linkcard_readcard readNum:1）", async () => {
+  let balance = 10;
+  const { tasks, commands } = makeTasks({
+    send: (command, body) => {
+      if (command === "activity_get") {
+        return { activity: { photoActivityInfo: { 2610168: { num: 0, pieceId: 41 } } } };
+      }
+      if (command === "role_getroleinfo") {
+        return { role: { items: { 5290: { quantity: balance } } } };
+      }
+      if (command === "activity_photo") {
+        balance -= body.num;
+        return {
+          role: { items: { 5290: { quantity: balance } } },
+          activity: { photoActivityInfo: { 2610168: { num: 10, pieceId: body.pieceId } } },
+        };
+      }
+      if (command === "activity_claimphotoreward") {
+        // 复刻 10-29 抓包：领奖掉卡 9014（type:21，readNum=0），指针跳 42
+        return {
+          reward: [{ type: 21, itemId: 9014, value: 1 }],
+          role: {
+            items: { 5293: { quantity: 450 } },
+            linkCard: { 9014: { cardId: 9014, quantity: 1, readNum: 0 } },
+          },
+          activity: { photoActivityInfo: { 2610168: { num: 0, pieceId: 42 } } },
+        };
+      }
+      if (command === "linkcard_readcard") {
+        return {};
+      }
+      return {};
+    },
+  });
+
+  await tasks.batchAnnPuzzleExchange();
+
+  const reads = commands.filter((c) => c.command === "linkcard_readcard");
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].body.cardId, 9014);
+  assert.equal(reads[0].body.readNum, 1);
+});
+
+test("合并：batchAnnWeekReward = 周任务领取（攒币）→ 拼图兑换用光（同一连接按序跑完）", async () => {
+  let balance = 0;
+  let pointer = { num: 0, pieceId: 41 };
+  const nextOf = { 41: 42, 42: 43, 43: 44, 44: 51, 51: 52, 52: 53, 53: 54, 54: 61, 61: 62 };
+  const { tasks, commands, logs } = makeTasks({
+    send: (command, body) => {
+      if (command === "activity_warorderget") {
+        return { activity: { warOrderActivityInfo: { 2610169: ROLE_B_WARORDER } } };
+      }
+      if (command === "activity_warordertaskclaim") {
+        balance += 10; // 每领一个任务 +10 个 5290
+        return { reward: [{ type: 3, itemId: 5290, value: 10 }] };
+      }
+      if (command === "activity_get") {
+        return { activity: { photoActivityInfo: { 2610168: { ...pointer } } } };
+      }
+      if (command === "role_getroleinfo") {
+        return { role: { items: balance > 0 ? { 5290: { quantity: balance } } : { 5290: null } } };
+      }
+      if (command === "activity_photo") {
+        balance -= body.num;
+        return {
+          role: { items: balance > 0 ? { 5290: { quantity: balance } } : { 5290: null } },
+          activity: { photoActivityInfo: { 2610168: { num: 10, pieceId: body.pieceId } } },
+        };
+      }
+      if (command === "activity_claimphotoreward") {
+        pointer = { num: 0, pieceId: nextOf[body.pieceId] ?? 0 };
+        return {
+          reward: [{ type: 3, itemId: 5293, value: 30 }],
+          activity: { photoActivityInfo: { 2610168: { ...pointer } } },
+        };
+      }
+      return {};
+    },
+  });
+
+  await tasks.batchAnnWeekReward();
+
+  // ① 战令 9 个任务全部领取（攒 90 个 5290）
+  const claims = commands.filter((c) => c.command === "activity_warordertaskclaim");
+  assert.equal(claims.length, 9);
+  // ② 拼图阶段：90 个 5290 → 恰好 9 块 photo+claim
+  assert.equal(commands.filter((c) => c.command === "activity_photo").length, 9);
+  assert.equal(commands.filter((c) => c.command === "activity_claimphotoreward").length, 9);
+  // ③ 顺序：战令阶段全部先于拼图阶段（activity_get 是拼图的第一帧）
+  const firstPuzzleIdx = commands.findIndex((c) => c.command === "activity_get");
+  const lastClaimIdx = commands.map((c) => c.command).lastIndexOf("activity_warordertaskclaim");
+  assert.ok(firstPuzzleIdx > lastClaimIdx);
+  // ④ 全程无硬失败
   assert.equal(logs.filter((l) => l.type === "error").length, 0);
 });
 

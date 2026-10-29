@@ -966,6 +966,14 @@
                   >
                     领取周年庆每日奖励（战令·5档）
                   </n-button>
+                  <n-button
+                    size="small"
+                    type="primary"
+                    @click="batchAnnWeekReward"
+                    :disabled="isRunning || selectedTokens.length === 0"
+                  >
+                    领取周年庆每周奖励
+                  </n-button>
                 </n-space>
                 <span class="xiaoyaojin-hint">
                   周年庆每日奖励：对<b>所有选中账号</b>依次领取 5 个每日奖励
@@ -1006,22 +1014,6 @@
                   >
                     周年庆抽奖（抽券+碎片换鱼珠）
                   </n-button>
-                  <n-button
-                    size="small"
-                    type="primary"
-                    @click="batchAnnWeekTaskClaim"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    领取周年庆周任务奖励（战令·周任务）
-                  </n-button>
-                  <n-button
-                    size="small"
-                    type="primary"
-                    @click="batchAnnPuzzleExchange"
-                    :disabled="isRunning || selectedTokens.length === 0"
-                  >
-                    周年庆拼图兑换（5290→拼图→领奖）
-                  </n-button>
                 </n-space>
                 <span class="xiaoyaojin-hint">
                   周年庆一次性奖励：对<b>所有选中账号</b>领取两条一次性奖励——
@@ -1058,19 +1050,16 @@
                   通关（pass）即停；今日已通关或未开放的服务端会拒绝，按正常跳过处理。
                 </span>
                 <span class="xiaoyaojin-hint">
-                  周年庆周任务奖励：对<b>所有选中账号</b>查询战令周任务（actId 2610169 序号
-                  06~14，activity_warorderget），<b>未领且达标</b>才发领取（门槛表：
-                  06/07 达标 1、08 达标 2、09/10/11 达标 8（11 = 营地挑战达标）、
-                  12/13/14 达标 3），每个得道具 5290 ×10（拼图货币）。
+                  周年庆每周奖励（<b>一周一次</b>，2026-10-29 接入，抓包实证
+                  local-data/anniversary/xyzw_1029.pcap）：两步一气呵成——
+                  ①领取战令周任务奖励（actId 2610169 序号 06~14，activity_warorderget 查询 +
+                  activity_warordertaskclaim 领取，门槛表：06/07 达标 1、08 达标 2、
+                  09/10/11 达标 8（11 = 营地挑战达标）、12/13/14 达标 3，
+                  每个得道具 5290 ×10）；②「放入胶卷」用光 5290（activity_photo →
+                  activity_claimphotoreward 指针循环，每块得 5293/钻石/集卡）。
+                  余额不足一块时按差值投入最后一块（10-29 抓包实证 num:9 服务端照收），
+                  下周补满自动领；拼图掉的新集卡（9014 系）自动读掉。
                   未达标 / 已领取 / 活动未开的服务端拒绝按正常跳过处理。
-                </span>
-                <span class="xiaoyaojin-hint">
-                  周年庆拼图兑换：按<b>活动指针</b>循环「投 10 个 5290 拼一块
-                  （activity_photo）→ 领块奖励（activity_claimphotoreward，
-                  每块 50×5293 + 2000 钻石 + 1×5291）」，直到 5290 不足或本期拼图全部完成。
-                  5290 靠上面的「周任务奖励」攒——<b>建议先点周任务再点拼图</b>。
-                  上次投满没领的存量块会直接领奖、不重复投币；中途失败重跑幂等
-                  （自动从最新指针继续）。
                 </span>
                 <span class="xiaoyaojin-hint">
                   盐场赛季淘汰赛（64 强）助威：助威名单按淘汰赛胜场取前 64 家俱乐部，
@@ -9004,10 +8993,10 @@ const {
   batchAnnLotteryDraw,
 } = tasksAnnBoss;
 
-// 周年庆周任务奖励 + 拼图兑换（临时活动，2026-10-22 抓包实证，
-// 战令 2610169 序号 06~14 + 拼图 2610168，见 local-data/anniversary/xyzw_1022.pcap）
+// 周年庆每周奖励（临时活动，2026-10-29 抓包实证：战令 2610169 周任务 + 拼图 2610168
+// 「放入胶卷」合并为一键，见 local-data/anniversary/xyzw_1029.pcap）
 const tasksAnnWeek = createTasksAnnWeek(createTaskDeps());
-const { batchAnnWeekTaskClaim, batchAnnPuzzleExchange } = tasksAnnWeek;
+const { batchAnnWeekReward } = tasksAnnWeek;
 
 const tasksRedeemCode = createTasksRedeemCode(createTaskDeps());
 const { batchRedeemCodes } = tasksRedeemCode;
