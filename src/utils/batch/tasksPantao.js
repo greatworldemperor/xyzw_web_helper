@@ -19,7 +19,7 @@
  */
 // 用相对路径（保持纯 node 下可单测；@/ 别名只有 vite 能解析）
 import * as cfg from "../pantaoConfig.js";
-import { ACTION, batchIntervalMs, buildBattleTeamFromPreset, planPollingBatches } from "../pantaoPlan.js";
+import { ACTION, batchIntervalMs, buildBattleTeamFromPreset, createGate, planPollingBatches } from "../pantaoPlan.js";
 import { PantaoSession, buildPayloadUrl } from "../pantaoSession.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -31,22 +31,7 @@ function pickRole(resp) {
 /** 兼容旧调用方：阵容解析已下沉到纯逻辑层 pantaoPlan */
 export { buildBattleTeamFromPreset };
 
-/** 战场并发闸门（与批量任务的 maxActive 分开，避免主连接被占满） */
-function createGate(max) {
-  let active = 0;
-  return {
-    async acquire() {
-      while (active >= Math.max(1, max)) await sleep(500);
-      active++;
-    },
-    release() {
-      if (active > 0) active--;
-    },
-    get active() {
-      return active;
-    },
-  };
-}
+/* createGate 亦已下沉到 pantaoPlan（纯逻辑层，可单测）；战场并发闸门说明见彼处。 */
 
 export function createTasksPantao(deps = {}) {
   const {
@@ -415,6 +400,9 @@ export function createTasksPantao(deps = {}) {
     }
 
     const size = Math.max(1, Number(concurrency ?? s.concurrency) || 1);
+    // 2026-11-01：战场闸门跟随「每批并发」抬升（旧配置 maxActiveBattlefield 作下限）。
+    // 主连接槽位（connectionManager 的 maxActive）在 PantaoAuto.vue 侧同样跟随该值。
+    gate.setMax(Math.max(Number(s.maxActiveBattlefield) || 3, size));
     const batches = planPollingBatches(list, size);
     const interval = batchIntervalMs({ concurrency: size, minIntervalMs: Number(s.minIntervalMs) || 1200 });
 

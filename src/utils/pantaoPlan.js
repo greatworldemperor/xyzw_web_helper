@@ -415,3 +415,37 @@ export function batchIntervalMs({ concurrency = 1, minIntervalMs = 1200 } = {}) 
   const c = Math.max(1, Math.floor(num(concurrency, 1)));
   return Math.max(num(minIntervalMs, 1200), Math.round(num(minIntervalMs, 1200) * Math.log2(c + 1)));
 }
+
+const gateSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 战场并发闸门（编排层 tasksPantao 使用；放本文件 = 纯逻辑可单测，tasksPantao 的
+ * import 链带 vite 专属的 import.meta.env，纯 node 测试碰不得）。
+ *
+ * 2026-11-01 master（100+ 号切号提速）：上限支持运行中抬升（setMax）——
+ * runPantaoRoles 会把它抬到 max(旧配置 maxActiveBattlefield, 每批并发)。
+ * 不抬的话 UI 把「每批并发」调到 20，战场闸门仍卡 setup 时的旧值 3，提速全被吃掉。
+ * setMax 调低不驱逐存量持有者，只挡新进入者。
+ */
+export function createGate(max) {
+  let active = 0;
+  let limit = Math.max(1, Math.floor(num(max, 1)));
+  return {
+    async acquire() {
+      while (active >= limit) await gateSleep(500);
+      active++;
+    },
+    release() {
+      if (active > 0) active--;
+    },
+    setMax(n) {
+      limit = Math.max(1, Math.floor(num(n, 1)));
+    },
+    get max() {
+      return limit;
+    },
+    get active() {
+      return active;
+    },
+  };
+}

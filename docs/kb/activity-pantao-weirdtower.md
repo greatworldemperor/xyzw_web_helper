@@ -9,6 +9,23 @@
 
 `planTurn` / `State` 有回归；任务领取产线正常。
 
+## 🔴 并发口径（2026-11-01 切号提速，master：100+ 号要打完比赛）
+
+**「每批并发」是唯一旋钮**（蟠桃页「执行参数」，localStorage `pantaoAutoSettings.concurrency`，1~50，默认 3），
+同时驱动三处，改一处其余自动跟随：
+
+| 节流点 | 位置 | 生效值 |
+|---|---|---|
+| 分批轮询批大小 | `runPantaoRoles`（planPollingBatches） | = concurrency |
+| 主连接槽位 | PantaoAuto.vue `batchSettings.maxActive`（原写死 3 → **getter 跟随**） | = concurrency |
+| 战场闸门 | `createGate`（pantaoPlan 纯逻辑层，`setMax` 运行中抬升） | max(配置 maxActiveBattlefield, concurrency) |
+
+- 坑史：原先 maxActive 写死 3 + gate 只在 setup 取值一次 ⇒ UI 并发调 20 也只有 3 个号同时建连，切号提速是空谈。
+- `connectionQueue` 计数器是跨页面共享单例（批量/盐场同源），但上限各页管各页；`ensureConnection` 幂等路径不占槽
+  而调用方 finally 无条件 release ⇒ active 向宽松漂移（有 >0 下限保护，只会放宽不会死锁）。
+- 批间间隔 = minIntervalMs × log₂(concurrency+1) 自动拉长，规避同 IP 限流；批次看门狗 batchWatchdogMs=180s 不随并发缩放。
+- `createGate` 单测在 test/pantaoTasks.test.js（放 pantaoPlan 是因为 tasksPantao import 链带 `import.meta.env`，纯 node 碰不得）。
+
 ## 命令清单
 
 | 命令 | 说明 |

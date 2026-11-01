@@ -1,11 +1,13 @@
 /**
- * 蟠桃编排层纯函数回归（只测 buildBattleTeamFromPreset —— 其余依赖网络/UI）
+ * 蟠桃编排层纯函数回归（buildBattleTeamFromPreset + 战场并发闸门 createGate——其余依赖网络/UI）
  * 数据结构照抄 2026-09-20 抓包 PresetTeam_GetInfoResp。
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildBattleTeamFromPreset } from "../src/utils/pantaoPlan.js";
+import { buildBattleTeamFromPreset, createGate } from "../src/utils/pantaoPlan.js";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const PRESET_RESP = {
   presetTeamInfo: {
@@ -61,4 +63,79 @@ test("buildBattleTeamFromPreset：空/缺阵容返回 null", () => {
   assert.equal(buildBattleTeamFromPreset(null), null);
   assert.equal(buildBattleTeamFromPreset({}), null);
   assert.equal(buildBattleTeamFromPreset({ presetTeamInfo: { useTeamId: 1, presetTeamInfo: {} } }), null, "找不到队伍 → null");
+});
+
+/* ---------- createGate：2026-11-01 切号提速（上限可运行中抬升） ---------- */
+
+test("createGate：默认上限内直接放行，超限等待 release", async () => {
+  const gate = createGate(2);
+  await gate.acquire();
+  await gate.acquire();
+  assert.equal(gate.active, 2);
+
+  let thirdDone = false;
+  const third = gate.acquire().then(() => {
+    thirdDone = true;
+  });
+  await sleep(600);
+  assert.equal(thirdDone, false, "上限 2 时第 3 个 acquire 必须等待");
+  assert.equal(gate.active, 2);
+
+  gate.release();
+  await Promise.race([third, sleep(2000)]);
+  assert.equal(thirdDone, true, "release 后等待者应放行");
+  assert.equal(gate.active, 2);
+  gate.release();
+  gate.release();
+  assert.equal(gate.active, 0);
+});
+
+test("createGate：setMax 运行中抬升上限，等待者放行", async () => {
+  const gate = createGate(1);
+  await gate.acquire();
+  let secondDone = false;
+  const second = gate.acquire().then(() => {
+    secondDone = true;
+  });
+  await sleep(600);
+  assert.equal(secondDone, false, "上限 1 时第 2 个 acquire 必须等待");
+
+  gate.setMax(2);
+  await Promise.race([second, sleep(2000)]);
+  assert.equal(secondDone, true, "抬升上限后等待者应立刻放行");
+  assert.equal(gate.max, 2);
+  gate.release();
+  gate.release();
+  assert.equal(gate.active, 0);
+});
+
+test("createGate：setMax 低于 active 不驱逐存量，只挡新进入者", async () => {
+  const gate = createGate(2);
+  await gate.acquire();
+  await gate.acquire();
+  gate.setMax(1);
+  assert.equal(gate.active, 2, "已持有者不被驱逐");
+
+  let thirdDone = false;
+  const third = gate.acquire().then(() => {
+    thirdDone = true;
+  });
+  await sleep(600);
+  assert.equal(thirdDone, false, "limit=1 且 active=2 时新进入者仍等待");
+
+  gate.release(); // active 2→1，仍 ≥ limit 1
+  await sleep(600);
+  assert.equal(thirdDone, false, "active 未降到 limit 以下前继续等待");
+
+  gate.release(); // active 1→0 < 1
+  await Promise.race([third, sleep(2000)]);
+  assert.equal(thirdDone, true);
+  gate.release();
+});
+
+test("createGate：非法/0 上限按 1 兜底", () => {
+  const gate = createGate(0);
+  assert.equal(gate.max, 1);
+  gate.setMax(-5);
+  assert.equal(gate.max, 1);
 });

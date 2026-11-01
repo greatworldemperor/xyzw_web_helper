@@ -132,15 +132,15 @@
             <div class="panel__header">
               <div>
                 <span class="panel__title">执行参数</span>
-                <span class="panel__sub">并发越大 → 批间间隔自动拉长（log₂）</span>
+                <span class="panel__sub">并发 = 同时切号/在线数，连接与战场槽位自动跟随 · 并发越大批间间隔越长（log₂）</span>
               </div>
             </div>
           </template>
 
           <div class="settings">
             <div class="setting">
-              <span>每批并发</span>
-              <n-input-number v-model:value="settings.concurrency" size="small" :min="1" :max="20" />
+              <span>每批并发（切号速度）</span>
+              <n-input-number v-model:value="settings.concurrency" size="small" :min="1" :max="50" />
             </div>
             <div class="setting">
               <span>批间最小间隔 (ms)</span>
@@ -294,7 +294,13 @@ const strategyOptions = [
 ];
 
 const batchSettings = {
-  maxActive: 3,
+  // 2026-11-01 master（100+ 号切号提速）：主连接槽位跟随「每批并发」，不再写死 3——
+  // 原先 UI 并发调到 20 也只有 3 个号能同时建连，其余在批内干等，切号提速是空谈。
+  // connectionQueue 计数器是跨页面共享的（批量/盐场同源），但上限各页管各页：
+  // 蟠桃这边只被自己的「每批并发」约束，不与批量页互相牵制。
+  get maxActive() {
+    return Math.max(1, Number(settings.value.concurrency) || 3);
+  },
   connectionTimeout: 15000,
   reconnectDelay: 2000,
   maxLogEntries: MAX_LOGS,

@@ -33,7 +33,11 @@ export const DEFAULT_SETTINGS = {
   probeTimeoutMs: 10000,
   /** 战场连接超时 */
   enterTimeoutMs: 15000,
-  /** 战场连接并发上限 */
+  /**
+   * 战场连接并发上限（下限兜底）。
+   * 2026-11-01 起 runPantaoRoles 实际生效值 = max(此值, 每批并发 concurrency)——
+   * 「每批并发」是唯一旋钮，同时驱动主连接槽位（PantaoAuto.vue maxActive）与战场闸门。
+   */
   maxActiveBattlefield: 3,
   /**
    * 批次看门狗（ms）：单批次超过此时长未完成即按失败计并继续下一批。
