@@ -18,6 +18,8 @@ class RateLimiter {
   private requests: number[] = [];
   private queueSize: number = 0;
   private onWaitCallback: WaitCallback | null = null;
+  // 正在倒计时等待的唤醒器（flushAll 时提前放行，不等倒计时走完）
+  private pendingWakes: Array<() => void> = [];
 
   constructor(maxRequests: number, windowMs: number) {
     this.maxRequests = maxRequests;
@@ -66,13 +68,33 @@ class RateLimiter {
       const intervalId = setInterval(updateCallback, updateInterval);
 
       try {
-        await new Promise((resolve) => setTimeout(resolve, totalWaitTime));
+        // 可被 flushAll() 提前唤醒（用户确认已更换 IP → 立刻放行，不等倒计时）
+        await new Promise<void>((resolve) => {
+          const wake = () => {
+            const idx = this.pendingWakes.indexOf(wake);
+            if (idx !== -1) this.pendingWakes.splice(idx, 1);
+            resolve();
+          };
+          this.pendingWakes.push(wake);
+          setTimeout(wake, totalWaitTime);
+        });
       } finally {
         clearInterval(intervalId);
       }
     }
 
     return this.waitForSlot();
+  }
+
+  // 用户确认已更换 IP → 清空滑动窗口并立刻放行所有排队中的等待者
+  // （2026-11-01 master 口径：「已更换 IP，立即重试」不该等客户端自限流倒计时走完）。
+  // 窗口清空后 waitForSlot 递归重查会立刻拿到空位，排队刷新全部并发执行；
+  // 若 IP 实际未换成功，刷新失败会走既有的限流可重试路径，不会卡死。
+  flushAll(): void {
+    this.requests = [];
+    const wakes = this.pendingWakes;
+    this.pendingWakes = [];
+    wakes.forEach((wake) => wake());
   }
 
   async schedule<T>(fn: () => Promise<T>): Promise<T> {
@@ -98,6 +120,11 @@ export const scheduleAuthUserRequest = <T>(
   fn: () => Promise<T>,
 ): Promise<T> => {
   return authUserRateLimiter.schedule(fn);
+};
+
+// 用户确认已更换 IP → 放行 Token 刷新限流器的全部排队等待（不等倒计时）
+export const flushAuthUserRateLimiter = (): void => {
+  authUserRateLimiter.flushAll();
 };
 
 export const validateEncryptedToken = (token: unknown): token is string => {

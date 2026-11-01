@@ -14,6 +14,7 @@ import {
   validateEncryptedToken,
   setAuthUserRateLimiterCallback,
   scheduleAuthUserRequest,
+  flushAuthUserRateLimiter,
 } from "@/utils/token";
 import {
   hasRefreshSource as hasTokenRefreshSource,
@@ -127,7 +128,7 @@ export const useTokenStore = defineStore("tokens", () => {
   //   · 立即弹出【全局唯一】的限流弹窗（提示用户「如方便请换 IP 立刻解除限流」），并每 5 秒重试一次、无次数上限；
   //   · 重试成功 → 自动关窗，继续执行；
   //   · 重试仍限流 → 弹窗维持（不新开窗、只刷新进度），后台继续重试；
-  //   · 用户点「已换 IP，立即重试」→ 重建 WS 后立刻重试（不等 5 秒）；
+  //   · 用户点「已换 IP，立即重试」→ 放行 Token 刷新限流器排队 + 重建 WS 后立刻重试（不等 5 秒）；
   //   · 任务被停止/页面卸载 → abort，抛 RATE_LIMIT_ABORTED 结束重试。
   // 弹窗只是「告知 + 可选加速」，不阻塞后台重试；IP 全局共享，故全局只有一份 rateLimitPauseInfo。
   const rateLimitPauseInfo = ref<{
@@ -213,9 +214,13 @@ export const useTokenStore = defineStore("tokens", () => {
     return err;
   };
 
-  // 用户点「已换 IP，立即重试」：断网换 IP 后所有 WS 已失效，
-  // 必须先重建连接，再唤醒等待者立即重试（否则会因 !connected 直接失败）。
+  // 用户点「已换 IP，立即重试」：
+  // ① 放行 Token 刷新限流器的排队等待（客户端自限流倒计时立刻作废，排队刷新并发执行）；
+  // ② 断网换 IP 后所有 WS 已失效，必须先重建连接；
+  // ③ 唤醒命令级限流等待者立即重试（否则会因 !connected 直接失败）。
   const resumeAfterRateLimit = async () => {
+    flushAuthUserRateLimiter();
+
     const existingTokenIds = Object.keys(wsConnections.value);
     wsLogger.info(
       `🚦 [限流重试] 用户确认已换 IP，正在为 ${existingTokenIds.length} 个 token 重建 WebSocket 连接...`,
@@ -2313,7 +2318,7 @@ export const useTokenStore = defineStore("tokens", () => {
     cleanupInvalidTokens,
 
     // 统一限流控制（UI 层订阅 rateLimitPauseInfo 弹窗提示用户换 IP）
-    // resumeAfterRateLimit：用户点「已换 IP，立即重试」→ 重建 WS + 立刻重试
+    // resumeAfterRateLimit：用户点「已换 IP，立即重试」→ 放行 Token 刷新排队 + 重建 WS + 立刻重试
     // abortRateLimitRetry：任务停止 / 页面卸载 → 终止等待中的重试
     // abandonRateLimitRetry：用户点弹窗「放弃」→ 终止本次限流等待
     rateLimitPauseInfo,
