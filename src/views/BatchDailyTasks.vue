@@ -930,6 +930,28 @@
                 >
                   一键竞技场补齐
                 </n-button>
+                <!-- 2026-11-01 新增：智能补齐（按每日任务底线倒推今日目标）。
+                     原「一键补齐」保持不动，两条口径并存，互不影响。 -->
+                <n-button
+                  size="small"
+                  type="primary"
+                  @click="batchSmartTopUpFish"
+                  :disabled="isRunning || selectedTokens.length === 0"
+                >
+                  智能钓鱼补齐
+                </n-button>
+                <n-button
+                  size="small"
+                  type="primary"
+                  @click="batchSmartTopUpArena"
+                  :disabled="
+                    isRunning ||
+                    selectedTokens.length === 0 ||
+                    !isarenaActivityOpen
+                  "
+                >
+                  智能竞技场补齐
+                </n-button>
                 <n-button
                   size="small"
                   @click="openWarGuessModal"
@@ -943,6 +965,13 @@
                   月赛助威
                 </n-button>
               </n-space>
+              <span class="xiaoyaojin-hint">
+                智能补齐 = 按<b>每日任务底线</b>倒推今天该到哪：钓鱼每日 3 次、竞技场每日 6
+                分（3 场全胜）。例：11 月 10 日还剩 20 天 ⇒ 钓鱼补到
+                <b>320 − 20×3 = 260</b>、竞技场补到 <b>240 − 20×6 = 120</b>，
+                剩下的交给每日任务自然完成；只在当前进度低于该底线时才补。
+                原「一键补齐」仍按日历平均摊平，口径不变。
+              </span>
             </n-tab-pane>
             <n-tab-pane name="temporary" tab="临时活动">
               <!-- 限时临时活动入口。2026-10-15 接入盐场「赛季淘汰赛助威」（天工投票）；
@@ -6024,7 +6053,12 @@ const taskGroupDefinitions = [
   {
     name: "monthly",
     label: "月度",
-    tasks: ["batchTopUpFish", "batchTopUpArena"],
+    tasks: [
+      "batchTopUpFish",
+      "batchTopUpArena",
+      "batchSmartTopUpFish",
+      "batchSmartTopUpArena",
+    ],
   },
   {
     name: "goldenfish",
@@ -7231,7 +7265,9 @@ const executeScheduledTask = async (task) => {
       }
 
       if (
-        ["batchTopUpArena", "batcharenafight"].includes(taskName) &&
+        ["batchTopUpArena", "batchSmartTopUpArena", "batcharenafight"].includes(
+          taskName,
+        ) &&
         !isarenaActivityOpen.value
       ) {
         addLog({
@@ -9341,7 +9377,13 @@ const { batchbaoku13, batchbaoku45, batchmengjing, batchBuyDreamItems } =
   tasksDungeon;
 
 const tasksArena = createTasksArena(createTaskDeps());
-const { batcharenafight, batchTopUpFish, batchTopUpArena } = tasksArena;
+const {
+  batcharenafight,
+  batchTopUpFish,
+  batchTopUpArena,
+  batchSmartTopUpFish,
+  batchSmartTopUpArena,
+} = tasksArena;
 
 const tasksStore = createTasksStore(createTaskDeps());
 const {
@@ -9785,7 +9827,9 @@ const getFlexibleTaskUnavailableReason = (taskId, settings) => {
     return "不在梦境开放时间";
   }
   if (
-    ["batchTopUpArena", "batcharenafight"].includes(taskId) &&
+    ["batchTopUpArena", "batchSmartTopUpArena", "batcharenafight"].includes(
+      taskId,
+    ) &&
     !isarenaActivityOpen.value
   ) {
     return "不在竞技场开放时间";

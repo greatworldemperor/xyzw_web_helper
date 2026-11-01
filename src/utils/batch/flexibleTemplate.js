@@ -135,6 +135,9 @@ export const flexibleTaskGroups = [
     tasks: [
       batchTask("batchTopUpFish", "一键钓鱼补齐"),
       batchTask("batchTopUpArena", "一键竞技场补齐"),
+      // 2026-11-01 新增：智能补齐（按每日任务底线倒推今日目标）
+      batchTask("batchSmartTopUpFish", "智能钓鱼补齐"),
+      batchTask("batchSmartTopUpArena", "智能竞技场补齐"),
       batchTask("batchWarGuessCheer", "月赛助威", { requires: "warGuess" }),
     ],
   },

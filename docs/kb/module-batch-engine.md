@@ -107,6 +107,22 @@ for 波次 (按 startIndex 推进):
 - **验证入口**：URL 加 `?monthEndCheck=1` 可无视「今天是否月底」强制体检一次（非月末实测提醒链路用，默认行为不变）。
   完整路径是 **`/admin/batch-daily-tasks?monthEndCheck=1`**（父路由 `/admin`，写 `/batch` 会落到 NotFound 页 ⇒ 看起来「没反应」）。
 
+### 5.2 智能补齐（月度，2026-11-01）
+
+「一键补齐」与「智能补齐」**并存**，共用同一执行体（`tasksArena.js` 的 `runTopUpFish` / `runTopUpArena`），只有 `shouldBe` 来源不同：
+
+| | 一键补齐（原，未改） | 智能补齐（新） |
+|---|---|---|
+| 目标 | `dayOfMonth / daysInMonth × 目标`（日历线性摊平） | `目标 − 剩余天数 × 每日量`（每日任务底线倒推） |
+| 11-10（30 天月） | 钓鱼 107 / 竞技场 80 | 钓鱼 **260**（320−20×3）/ 竞技场 **120**（240−20×6） |
+| 语义 | 追平均进度 | 只补到「剩下日子靠每日任务刚好做满」 |
+
+- 常量：`smartTopUp.js` 的 `FISH_PER_DAY = 3`（每日免费钓鱼）、`ARENA_POINTS_PER_DAY = 6`（3 场全胜 × 2 分）。
+- 剩余天数**不含当天**（当天还有一次每日任务机会）；最后一天剩余 0 ⇒ 回到满额 320/240；结果下限 0。
+- 接线五处照旧：`constants.js availableTasks` + `flexibleTemplate.js monthly 分组` + 页面按钮 + 页面解构（`eval` 路径）+ `taskGroupDefinitions monthly`；
+  另需把 `batchSmartTopUpArena` 加进两处竞技场开放时间校验（`taskName` / `taskId`）。
+- 测试：`test/smartTopUp.test.js`（master 的 260/120 例子、闰年 2 月、月底满额、目标小于日增长归零）。
+
 ## 6. 其它引擎组件
 
 | 文件 | 职责 |

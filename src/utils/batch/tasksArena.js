@@ -4,6 +4,7 @@
  */
 
 import { FISH_TARGET, ARENA_TARGET } from "./constants.js";
+import { calcSmartTopUpTargets } from "./smartTopUp.js";
 
 /**
  * 创建竞技场、补齐类任务执行器
@@ -250,8 +251,18 @@ export function createTasksArena(deps) {
 
   /**
    * 批量钓鱼补齐
+   *
+   * @param {object} [options]
+   * @param {boolean} [options.smart]
+   *   false（默认）= 原有口径：按日历线性摊平 `dayOfMonth / daysInMonth × 320`
+   *   true          = 智能口径：按每日 3 次免费钓鱼倒推今日底线（见 smartTopUp.js）
+   *
+   * ⚠️ 两个口径共用同一套执行体（补到 shouldBe 为止 + 自动领鱼竿累计奖励），
+   *   只有 shouldBe 的来源不同 —— 改执行细节时两条路一起受益，别复制成两份。
    */
-  const batchTopUpFish = async () => {
+  const runTopUpFish = async (options = {}) => {
+    const smart = !!options?.smart;
+    const taskLabel = smart ? "钓鱼智能补齐" : "钓鱼补齐";
     if (selectedTokens.value.length === 0) return;
     isRunning.value = true;
     shouldStop.value = false;
@@ -267,7 +278,7 @@ export function createTasksArena(deps) {
       try {
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `=== 开始钓鱼补齐: ${token.name} ===`,
+          message: `=== 开始${taskLabel}: ${token.name} ===`,
           type: "info",
         });
         await ensureConnection(tokenId);
@@ -298,21 +309,21 @@ export function createTasksArena(deps) {
 
         const monthProgress = calculateMonthProgress();
         const now = new Date();
-        const daysInMonth = new Date(
-          now.getFullYear(),
-          now.getMonth() + 1,
-          0,
-        ).getDate();
-        const dayOfMonth = now.getDate();
-        const remainingDays = Math.max(0, daysInMonth - dayOfMonth);
-        const shouldBe =
-          remainingDays === 0
+        const smartTargets = calcSmartTopUpTargets(now);
+        const { remainingDays } = smartTargets;
+        const shouldBe = smart
+          ? smartTargets.fishShouldBe
+          : remainingDays === 0
             ? FISH_TARGET
             : Math.min(FISH_TARGET, Math.ceil(monthProgress * FISH_TARGET));
         const need = Math.max(0, shouldBe - fishNum);
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `${token.name} 当前进度: ${fishNum}/${FISH_TARGET}，需要补齐: ${need}次`,
+          message: `${token.name} 当前进度: ${fishNum}/${FISH_TARGET}，需要补齐: ${need}次${
+            smart
+              ? `（智能口径：今日底线 ${shouldBe}，剩余 ${remainingDays} 天 × 每日 ${smartTargets.fishPerDay} 次由每日任务自然完成）`
+              : ""
+          }`,
           type: "info",
         });
         if (need <= 0) {
@@ -327,7 +338,7 @@ export function createTasksArena(deps) {
 
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `${token.name} 开始执行钓鱼补齐...`,
+          message: `${token.name} 开始执行${taskLabel}...`,
           type: "info",
         });
 
@@ -575,13 +586,28 @@ export function createTasksArena(deps) {
     await Promise.all(taskPromises);
     isRunning.value = false;
     currentRunningTokenId.value = null;
-    message.success("批量钓鱼补齐结束");
+    message.success(`批量${taskLabel}结束`);
   };
+
+  /** 一键钓鱼补齐（原有口径：按日历线性摊平，行为与本次改造前完全一致） */
+  const batchTopUpFish = () => runTopUpFish();
+
+  /** 智能钓鱼补齐（新增：按每日 3 次免费钓鱼倒推今日底线，只补到刚好够） */
+  const batchSmartTopUpFish = () => runTopUpFish({ smart: true });
 
   /**
    * 批量竞技场补齐
+   *
+   * @param {object} [options]
+   * @param {boolean} [options.smart]
+   *   false（默认）= 原有口径：按日历线性摊平 `dayOfMonth / daysInMonth × 240`
+   *   true          = 智能口径：按每日 6 分（3 场全胜）倒推今日底线
+   *
+   * ⚠️ 与钓鱼同理：共用执行体，只有 shouldBe 来源不同。
    */
-  const batchTopUpArena = async () => {
+  const runTopUpArena = async (options = {}) => {
+    const smart = !!options?.smart;
+    const taskLabel = smart ? "竞技场智能补齐" : "竞技场补齐";
     if (selectedTokens.value.length === 0) return;
     isRunning.value = true;
     shouldStop.value = false;
@@ -599,7 +625,7 @@ export function createTasksArena(deps) {
       try {
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `=== 开始竞技场补齐: ${token.name} ===`,
+          message: `=== 开始${taskLabel}: ${token.name} ===`,
           type: "info",
         });
         await ensureConnection(tokenId);
@@ -673,21 +699,21 @@ export function createTasksArena(deps) {
 
         const monthProgress = calculateMonthProgress();
         const now = new Date();
-        const daysInMonth = new Date(
-          now.getFullYear(),
-          now.getMonth() + 1,
-          0,
-        ).getDate();
-        const dayOfMonth = now.getDate();
-        const remainingDays = Math.max(0, daysInMonth - dayOfMonth);
-        const shouldBe =
-          remainingDays === 0
+        const smartTargets = calcSmartTopUpTargets(now);
+        const { remainingDays } = smartTargets;
+        const shouldBe = smart
+          ? smartTargets.arenaShouldBe
+          : remainingDays === 0
             ? ARENA_TARGET
             : Math.min(ARENA_TARGET, Math.ceil(monthProgress * ARENA_TARGET));
         const need = Math.max(0, shouldBe - arenaNum);
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `${token.name} 当前进度: ${arenaNum}/${ARENA_TARGET}，需要补齐: ${need}次`,
+          message: `${token.name} 当前进度: ${arenaNum}/${ARENA_TARGET}，需要补齐: ${need}次${
+            smart
+              ? `（智能口径：今日底线 ${shouldBe} 分，剩余 ${remainingDays} 天 × 每日 ${smartTargets.arenaPointsPerDay} 分由每日任务自然完成）`
+              : ""
+          }`,
           type: "info",
         });
         if (need <= 0) {
@@ -702,7 +728,7 @@ export function createTasksArena(deps) {
 
         addLog({
           time: new Date().toLocaleTimeString(),
-          message: `${token.name} 开始执行竞技场补齐...`,
+          message: `${token.name} 开始执行${taskLabel}...`,
           type: "info",
         });
 
@@ -950,12 +976,20 @@ export function createTasksArena(deps) {
     await Promise.all(taskPromises);
     isRunning.value = false;
     currentRunningTokenId.value = null;
-    message.success("批量竞技场补齐结束");
+    message.success(`批量${taskLabel}结束`);
   };
+
+  /** 一键竞技场补齐（原有口径：按日历线性摊平，行为与本次改造前完全一致） */
+  const batchTopUpArena = () => runTopUpArena();
+
+  /** 智能竞技场补齐（新增：按每日 6 分倒推今日底线，只补到刚好够） */
+  const batchSmartTopUpArena = () => runTopUpArena({ smart: true });
 
   return {
     batcharenafight,
     batchTopUpFish,
     batchTopUpArena,
+    batchSmartTopUpFish,
+    batchSmartTopUpArena,
   };
 }

@@ -88,6 +88,9 @@ test("flexible task catalog includes hidden daily tasks and every batch action",
     "batchLegacyGiftSendEnhanced",
     "batchTopUpFish",
     "batchTopUpArena",
+    // 2026-11-01 新增：智能补齐（按每日任务底线倒推今日目标），与上面两个并存
+    "batchSmartTopUpFish",
+    "batchSmartTopUpArena",
     "batchWarGuessCheer",
     // 2026-10-15 新增：盐场「赛季淘汰赛助威」（天工投票），落在「临时活动」分组。
     // 该分组因逍遥津下线而空壳，本次重新启用；活动结束后按先例移除任务项。

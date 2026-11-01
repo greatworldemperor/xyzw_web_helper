@@ -71,6 +71,10 @@ export const availableTasks = [
   { label: "一键竞技场战斗3次", value: "batcharenafight" },
   { label: "一键钓鱼补齐", value: "batchTopUpFish" },
   { label: "一键竞技场补齐", value: "batchTopUpArena" },
+  // 2026-11-01 新增：智能补齐 = 按「每日任务底线」倒推今日目标（钓鱼 3 次/天、竞技场 6 分/天），
+  // 只补到剩下的日子靠每日任务刚好做满为止。原「一键补齐」按日历线性摊平，两者并存。
+  { label: "智能钓鱼补齐", value: "batchSmartTopUpFish" },
+  { label: "智能竞技场补齐", value: "batchSmartTopUpArena" },
   { label: "一键领取怪异塔免费道具", value: "batchClaimFreeEnergy" },
   { label: "一键换皮闯关", value: "skinChallenge" },
   { label: "一键购买四圣碎片", value: "legion_storebuygoods" },
