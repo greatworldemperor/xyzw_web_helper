@@ -4342,6 +4342,80 @@
       </div>
     </n-modal>
 
+    <!-- 月度任务「月末强制提醒」（2026-11-01）：只有「我知道了」能关 ——
+         mask 不可点、无右上角 X、ESC 无效，保证每月最后一天没做完月度任务的人必须看见 -->
+    <n-modal
+      v-model:show="showMonthEndReminder"
+      preset="card"
+      title="⚠️ 今天是本月最后一天，月度任务还没做完"
+      style="max-width: 460px"
+      :mask-closable="false"
+      :closable="false"
+      :close-on-esc="false"
+      :block-scroll="true"
+      :auto-focus="true"
+    >
+      <div style="padding: 4px 2px 8px 2px; line-height: 1.7">
+        <p style="margin-bottom: 12px">
+          代表角色：
+          <strong>{{ monthEndReminder?.tokenName }}</strong>
+          <span style="color: #888">
+            （服务器 {{ monthEndReminder?.serverId }} / roleId
+            {{ monthEndReminder?.roleId }}）
+          </span>
+        </p>
+
+        <div
+          v-for="item in monthEndReminder?.items || []"
+          :key="item.key"
+          style="margin-bottom: 14px"
+        >
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              margin-bottom: 4px;
+            "
+          >
+            <strong>{{ item.label }}</strong>
+            <span
+              :style="{
+                color: item.done ? '#18a058' : '#d05050',
+                fontWeight: 600,
+              }"
+            >
+              {{ item.num }} / {{ item.target
+              }}{{ item.done ? "（已完成）" : "（未完成）" }}
+            </span>
+          </div>
+          <n-progress
+            type="line"
+            :percentage="item.percent"
+            :status="item.done ? 'success' : 'error'"
+            :show-indicator="false"
+            :height="8"
+          />
+        </div>
+
+        <p style="margin-top: 14px; color: #d05050">
+          <strong>未完成项：</strong>{{ monthEndMissingText }}
+        </p>
+        <p style="margin-top: 12px">
+          月度任务按<b>账号</b>统计，同账号下所有角色进度一致。请关闭本框后到上方
+          <b>「月度」</b>标签点 <b>「一键钓鱼补齐」</b> /
+          <b>「一键竞技场补齐」</b> 补齐。
+        </p>
+        <p style="margin-top: 8px; color: #888">
+          注：竞技场任务仅在 <b>6:00-22:00</b> 开放；若今天已过 22:00，竞技场本次将无法补齐。
+        </p>
+      </div>
+      <div style="text-align: right">
+        <n-button type="warning" @click="showMonthEndReminder = false">
+          我知道了
+        </n-button>
+      </div>
+    </n-modal>
+
     <!-- 金鱼限流弹框已统一到全局 400340 限流弹窗（见上方「🚦 遇到 IP 限流」），此处不再单独弹框 -->
   </div>
 </template>
@@ -4480,6 +4554,15 @@ import { summarizeFinishResults } from "@/utils/goldenfishFinishRun";
 import { selectTopSeasonOutLegions } from "@/utils/seasonOutCheer";
 
 import { merchantConfig, goldItemsConfig } from "@/utils/dreamConstants";
+
+// 月度任务「月末检查」：每月最后一天打开本页时，自动连 roleId 最小的角色判一次
+// 月度任务（钓鱼 320 / 竞技场 240）是否完成，未完成强制弹框提醒（2026-11-01 需求）
+import {
+  evaluateMonthlyProgress,
+  extractActivityPayload,
+  isLastDayOfMonth,
+  pickLowestRoleIdToken,
+} from "@/utils/batch/monthEndCheck.js";
 
 // Initialize token store, message service, and task runner
 const tokenStore = useTokenStore();
@@ -6733,6 +6816,147 @@ const handleTokenRefreshWaiting = (data) => {
   });
 };
 
+// ==================== 月度任务「月末检查」 ====================
+// 需求（master 2026-11-01）：每个自然月最后一天打开批量页时，自动连上 roleId 最小的
+// 角色，读一次 activity_get 判断月度任务（钓鱼 320 / 竞技场 240）是否完成；未完成则弹
+// **强制**提醒框（mask 不可点、无关闭按钮、无 ESC），必须点按钮关闭才能继续操作本页。
+// 纯判定逻辑（是否月底 / 选最小 roleId / 完成度）在 utils/batch/monthEndCheck.js。
+const monthEndChecking = ref(false);
+const showMonthEndReminder = ref(false);
+const monthEndReminder = ref(null); // { tokenName, serverId, roleId, items, missingItems, ... }
+let monthEndCheckTimer = null;
+
+/** 未完成项一句话摘要（弹框正文用，避免模板里塞 map/join） */
+const monthEndMissingText = computed(() =>
+  (monthEndReminder.value?.missingItems || [])
+    .map((item) => `${item.label}（还差 ${Math.max(0, item.target - item.num)} 次）`)
+    .join("、"),
+);
+
+const monthEndLog = (text, type = "info") =>
+  addLog({ time: new Date().toLocaleTimeString(), message: text, type });
+
+/**
+ * 验证入口：URL 带 `?monthEndCheck=1` 时无视「今天是不是月底」强制体检一次。
+ * 平时完全无感（默认行为不变），只为非月末时能实测提醒链路（今天 11-01 就不是月末）。
+ */
+const isMonthEndCheckForced = () => {
+  try {
+    return (
+      new URLSearchParams(window.location.search).get("monthEndCheck") === "1"
+    );
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * 跑一次月末检查。失败不拦人（只 warning），只有「明确读到未完成」才弹强制框 ——
+ * 查不到进度时锁住用户是最差体验。
+ */
+const checkMonthEndMonthlyTasks = async () => {
+  if (monthEndChecking.value) return;
+  const forced = isMonthEndCheckForced();
+  if (!forced && !isLastDayOfMonth()) return;
+  if (isRunning.value) {
+    monthEndLog(
+      "今天是本月最后一天，但批量任务正在运行，跳过月度任务自动检查",
+      "warning",
+    );
+    return;
+  }
+  const token = pickLowestRoleIdToken(tokenStore.gameTokens);
+  if (!token) return;
+
+  monthEndChecking.value = true;
+  let openedConnection = false;
+  const loading = message.loading(
+    `本月最后一天：正在检查 ${token.name || token.id} 的月度任务…`,
+    { duration: 0 },
+  );
+  try {
+    monthEndLog(
+      `${forced ? "（强制验证模式）" : ""}本月最后一天，开始检查月度任务（代表角色 ${token.name || token.id}，roleId ${token.roleId ?? "-"}）`,
+      "info",
+    );
+
+    const status = tokenStore.getWebSocketStatus(token.id);
+    if (status !== "connected") {
+      if (status === "connecting" || status === "reconnecting") {
+        // 已有别的流程在连这个角色：等它，别用 createWebSocketConnection 抢过来重连
+        if (!(await waitForConnection(token.id, 45000))) {
+          throw new Error("连接超时（等待已有连接）");
+        }
+      } else {
+        openedConnection = true;
+        await tokenStore.createWebSocketConnection(
+          token.id,
+          token.token,
+          token.wsUrl,
+          { monitorTimeout: false, autoRefresh: false },
+        );
+        // 45s：覆盖「BIN token 按需刷新 → 握手」全过程；页面默认 10s 对首连偏紧
+        if (!(await waitForConnection(token.id, 45000))) {
+          throw new Error("连接超时");
+        }
+      }
+    }
+
+    const result = await tokenStore.sendMessageWithPromise(
+      token.id,
+      "activity_get",
+      {},
+      15000,
+    );
+    const progress = evaluateMonthlyProgress(extractActivityPayload(result));
+
+    if (!progress.valid) {
+      monthEndLog(
+        "月度任务进度响应无法解析（可能活动未开放），本次不弹提醒",
+        "warning",
+      );
+      return;
+    }
+    if (progress.allDone) {
+      monthEndLog(
+        `月度任务已完成（钓鱼 ${progress.fishNum}/${progress.fishTarget}，竞技场 ${progress.arenaNum}/${progress.arenaTarget}）`,
+        "success",
+      );
+      return;
+    }
+
+    monthEndReminder.value = {
+      tokenName: token.name || token.id,
+      serverId: token.serverId ?? token.server ?? "-",
+      roleId: token.roleId ?? "-",
+      ...progress,
+    };
+    showMonthEndReminder.value = true;
+    monthEndLog(
+      `⚠️ 月度任务未完成（钓鱼 ${progress.fishNum}/${progress.fishTarget}，竞技场 ${progress.arenaNum}/${progress.arenaTarget}），已弹出强制提醒`,
+      "error",
+    );
+  } catch (error) {
+    const reason = error?.message || String(error);
+    monthEndLog(
+      `月度任务自动检查失败：${reason}（请到上方「月度」标签手动确认进度）`,
+      "warning",
+    );
+    message.warning(`月度任务自动检查失败：${reason}`);
+  } finally {
+    loading?.destroy?.();
+    monthEndChecking.value = false;
+    // 只为本次检查建立的连接用完即关；若已连接（用户本人在用）或任务已开跑则保留
+    if (openedConnection && !isRunning.value) {
+      try {
+        await tokenStore.closeWebSocketConnection(token.id);
+      } catch {
+        /* 关连接失败不影响提醒 */
+      }
+    }
+  }
+};
+
 // Debug: Log initial state when component mounts
 onMounted(() => {
   // Start the task scheduler after all functions are initialized
@@ -6743,6 +6967,12 @@ onMounted(() => {
   loadFlexibleTemplates();
   // 监听Token刷新等待事件
   $emit.on("token:refresh:waiting", handleTokenRefreshWaiting);
+  // 每月最后一天：延迟 1.2s 让页面初始化/调度器先落地，再自动检查月度任务
+  // （不 await，避免建连+token 刷新把首屏拖住）
+  monthEndCheckTimer = setTimeout(() => {
+    monthEndCheckTimer = null;
+    void checkMonthEndMonthlyTasks();
+  }, 1200);
 });
 
 // Cleanup countdown interval on unmount
@@ -6750,6 +6980,12 @@ onBeforeUnmount(() => {
   if (countdownInterval) {
     clearInterval(countdownInterval);
     countdownInterval = null;
+  }
+
+  // 月末检查的延迟触发器：组件已卸载就别再建连
+  if (monthEndCheckTimer) {
+    clearTimeout(monthEndCheckTimer);
+    monthEndCheckTimer = null;
   }
 
   // 移除Token刷新等待事件监听

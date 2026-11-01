@@ -94,6 +94,19 @@ for 波次 (按 startIndex 推进):
 **按钮绑定三套路径**：① 页面按钮直接绑作用域函数；② 定时任务经 `taskGroupDefinitions` 分 tab 勾选函数名后 `eval`；③ 自由模板经 `createFlexibleTaskHandlers` 映射。
 **相关弹窗**：自由模板管理(~:1744)、定时任务列表(~:2750)、任务编辑(~:2846)、自由模板编辑(~:3026)、黑市商品(~:2677)。
 
+### 5.1 月度任务「月末检查」（2026-11-01）
+
+页面挂载时若**当天是本自然月最后一天**，自动跑一次月度任务体检（弹窗是强制的，只留「我知道了」）：
+
+- 选角色：`pickLowestRoleIdToken()` 取 **roleId 最小**的 token；缺失 roleId 排最后，全部缺失才退化取第一个。
+- 判完成：`activity_get {}` → `myMonthInfo["2"].num ≥ 320`（钓鱼）/ `myArenaInfo.num ≥ 240`（竞技场），阈值来自 `constants.js` 的 `FISH_TARGET` / `ARENA_TARGET`。
+- 弹框条件：**只有明确读到未完成**才弹（`showMonthEndReminder`，`mask-closable/closable/close-on-esc` 全关 + `block-scroll`）；响应结构不认识 → `valid=false`，只 warning 不锁人。
+- 连接策略：已 `connected` 直接用；`connecting/reconnecting` 只等不抢；本次自建连接在检查结束（且无批量任务在跑）后关闭。
+- 纯逻辑在 `src/utils/batch/monthEndCheck.js`（月底判定 / 选最小 roleId / 完成度），页面只做编排，测试见 `test/monthEndCheck.test.js`。
+- 每次进入页面都会查一次（提醒强度优先）；任务运行中（`isRunning`）跳过并记日志。
+- **验证入口**：URL 加 `?monthEndCheck=1` 可无视「今天是否月底」强制体检一次（非月末实测提醒链路用，默认行为不变）。
+  完整路径是 **`/admin/batch-daily-tasks?monthEndCheck=1`**（父路由 `/admin`，写 `/batch` 会落到 NotFound 页 ⇒ 看起来「没反应」）。
+
 ## 6. 其它引擎组件
 
 | 文件 | 职责 |
@@ -110,7 +123,7 @@ for 波次 (按 startIndex 推进):
 
 ## 7. 相关测试（`test/`）
 
-`batchCmdRegistry` · `flexibleTemplate` · `helperTaskRunner` · `logRing` · `dailyTaskRunnerSelection` · `tasksHangUp` · `tasksTower` · `tasksXianMaster` · `tasksXiaoyaojinCoupon` · `fishMerge` · `tasksGoldenfishConsume`
+`batchCmdRegistry` · `flexibleTemplate` · `helperTaskRunner` · `logRing` · `dailyTaskRunnerSelection` · `tasksHangUp` · `tasksTower` · `tasksXianMaster` · `tasksXiaoyaojinCoupon` · `fishMerge` · `tasksGoldenfishConsume` · `monthEndCheck`（月度任务月末检查：月底判定 / 最小 roleId / 320·240 边界）
 
 ## 8. 引擎红线
 
