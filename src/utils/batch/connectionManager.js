@@ -187,6 +187,15 @@ export function createConnectionManager({ tokenStore, batchSettings, addLog }) {
     let connected = status === "connected";
 
     if (!connected) {
+      // 2026-11-01 master 紧急修复：建连前先按需刷新 role token——
+      // 把刷新（含 25/min 限流排队）挪到连接超时窗口之外，token 热了再建连；
+      // 否则高并发下几乎必然「首次连接超时 → 重连第二次才成」，每个号白吃一轮 15s+2s。
+      try {
+        await tokenStore.ensureTokenAvailable?.(tokenId);
+      } catch {
+        /* 刷新失败不挡建连：createWebSocketConnection 内部还有按需刷新兜底 */
+      }
+
       addLog({
         time: new Date().toLocaleTimeString(),
         message: `正在连接... (队列: ${connectionQueue.active}/${batchSettings.maxActive})`,
