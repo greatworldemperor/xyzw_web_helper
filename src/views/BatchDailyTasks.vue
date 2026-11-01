@@ -4347,7 +4347,7 @@
     <n-modal
       v-model:show="showMonthEndReminder"
       preset="card"
-      title="⚠️ 今天是本月最后一天，月度任务还没做完"
+      :title="monthEndReminderTitle"
       style="max-width: 460px"
       :mask-closable="false"
       :closable="false"
@@ -4397,15 +4397,27 @@
           />
         </div>
 
-        <p style="margin-top: 14px; color: #d05050">
+        <p
+          v-if="(monthEndReminder?.missingItems || []).length"
+          style="margin-top: 14px; color: #d05050"
+        >
           <strong>未完成项：</strong>{{ monthEndMissingText }}
         </p>
-        <p style="margin-top: 12px">
+        <p v-else style="margin-top: 14px; color: #18a058">
+          <strong>两项都已达标</strong>，本次无需补齐。
+        </p>
+        <p
+          v-if="!monthEndReminder?.allDone"
+          style="margin-top: 12px"
+        >
           月度任务按<b>账号</b>统计，同账号下所有角色进度一致。请关闭本框后到上方
           <b>「月度」</b>标签点 <b>「一键钓鱼补齐」</b> /
           <b>「一键竞技场补齐」</b> 补齐。
         </p>
-        <p style="margin-top: 8px; color: #888">
+        <p
+          v-if="!monthEndReminder?.allDone"
+          style="margin-top: 8px; color: #888"
+        >
           注：竞技场任务仅在 <b>6:00-22:00</b> 开放；若今天已过 22:00，竞技场本次将无法补齐。
         </p>
       </div>
@@ -6833,6 +6845,13 @@ const monthEndMissingText = computed(() =>
     .join("、"),
 );
 
+/** 弹框标题：已完成（仅 ?monthEndCheck=1 强体检查时会走到）与未完成分开 */
+const monthEndReminderTitle = computed(() =>
+  monthEndReminder.value?.allDone
+    ? "✅ 月度任务体检：两项都已达标"
+    : "⚠️ 今天是本月最后一天，月度任务还没做完",
+);
+
 const monthEndLog = (text, type = "info") =>
   addLog({ time: new Date().toLocaleTimeString(), message: text, type });
 
@@ -6863,10 +6882,18 @@ const checkMonthEndMonthlyTasks = async () => {
       "今天是本月最后一天，但批量任务正在运行，跳过月度任务自动检查",
       "warning",
     );
+    if (forced) {
+      message.warning(
+        "强制体检：批量任务正在运行，已跳过检查（等任务结束后再试）",
+      );
+    }
     return;
   }
   const token = pickLowestRoleIdToken(tokenStore.gameTokens);
-  if (!token) return;
+  if (!token) {
+    if (forced) message.warning("强制体检：本地没有可用角色，无法检查月度任务");
+    return;
+  }
 
   monthEndChecking.value = true;
   let openedConnection = false;
@@ -6915,6 +6942,11 @@ const checkMonthEndMonthlyTasks = async () => {
         "月度任务进度响应无法解析（可能活动未开放），本次不弹提醒",
         "warning",
       );
+      if (forced) {
+        message.warning(
+          "强制体检：月度任务进度响应无法解析（可能活动未开放或响应结构变化）",
+        );
+      }
       return;
     }
     if (progress.allDone) {
@@ -6922,6 +6954,17 @@ const checkMonthEndMonthlyTasks = async () => {
         `月度任务已完成（钓鱼 ${progress.fishNum}/${progress.fishTarget}，竞技场 ${progress.arenaNum}/${progress.arenaTarget}）`,
         "success",
       );
+      // 正常模式：已完成就静默（不打扰）。
+      // 强制验证模式：已完成也要弹出来，否则「什么都没弹」会被误判成功能没生效。
+      if (!forced) return;
+      monthEndReminder.value = {
+        tokenName: token.name || token.id,
+        serverId: token.serverId ?? token.server ?? "-",
+        roleId: token.roleId ?? "-",
+        forced: true,
+        ...progress,
+      };
+      showMonthEndReminder.value = true;
       return;
     }
 
@@ -6929,6 +6972,7 @@ const checkMonthEndMonthlyTasks = async () => {
       tokenName: token.name || token.id,
       serverId: token.serverId ?? token.server ?? "-",
       roleId: token.roleId ?? "-",
+      forced,
       ...progress,
     };
     showMonthEndReminder.value = true;
