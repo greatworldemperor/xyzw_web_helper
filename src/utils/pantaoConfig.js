@@ -8,6 +8,26 @@
  *     上船后敌人战力 < 我方 70% 才攻击，否则不动
  */
 
+/**
+ * 🔴 蟠桃会话专用首帧口径（2026-11-01 官方模拟器抓包 pantao_1101.pcap s01 主连接首帧实证）：
+ *   platform=hortor / platformExt=mix / clientVersion=0.36.0-android
+ *
+ * 为什么必须切：`payload_setbattleteam`（参赛布阵）只认 App（mix）口径——
+ * 2026-11-01 自动蟠桃 101 号实测：enterbf（查询）h5 放行、setbattleteam h5 会话
+ * 全部 3000070 拒绝（服务端按会话创建时的首帧口径判定）。
+ *
+ * 🔴 仅蟠桃会话使用（tokenStore.setRoleInfoOverride 按号注入）：全局 registry 仍是
+ *   h5/1.89.8-wx（金鱼 activity_claimtaskreward 双因素口径，**勿动**）。
+ * 真串可能随 App 版本更新——每次比赛前用 tools/mumu_capture.cmd 重抓 role_getroleinfo 校验。
+ */
+export const PANTAO_PLATFORM_OVERRIDE = Object.freeze({
+  platform: "hortor",
+  platformExt: "mix",
+  clientVersion: "0.36.0-android",
+  inviteUid: 0,
+  scene: "",
+});
+
 export const KEYS = {
   roles: "pantaoAutoRoleTokenIds",
   roleCache: "pantaoAutoRoleCache",

@@ -139,3 +139,18 @@ test("createGate：非法/0 上限按 1 兜底", () => {
   gate.setMax(-5);
   assert.equal(gate.max, 1);
 });
+
+// 2026-11-01：蟠桃会话专用首帧口径（3000070 根因修复）——
+// payload_setbattleteam 只认 App（mix）口径，官方真串取自 pantao_1101.pcap s01 主连接首帧。
+// 🔴 改这两个值前先重抓官方 role_getroleinfo 校验（App 版本周更，tools/mumu_capture.cmd）。
+import { PANTAO_PLATFORM_OVERRIDE } from "../src/utils/pantaoConfig.js";
+
+test("蟠桃会话口径覆盖 = 官方 App 真串（mix / 0.36.0-android，pantao_1101 实证）", () => {
+  assert.deepEqual({ ...PANTAO_PLATFORM_OVERRIDE }, {
+    platform: "hortor",
+    platformExt: "mix",
+    clientVersion: "0.36.0-android",
+    inviteUid: 0,
+    scene: "",
+  });
+});

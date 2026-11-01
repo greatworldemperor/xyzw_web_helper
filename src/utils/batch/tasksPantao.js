@@ -175,7 +175,13 @@ export function createTasksPantao(deps = {}) {
 
       let roleId = Number(cfg.getRoleCache()[String(tokenId)]?.roleId || 0);
       if (!roleId) {
-        const roleResp = await tokenStore.sendMessageWithPromise(tokenId, "role_getroleinfo", {}, 8000);
+        const roleResp = await tokenStore.sendMessageWithPromise(
+          tokenId,
+          "role_getroleinfo",
+          // 首帧口径对齐（mix/0.36.0-android，2026-11-01 定案）：会话口径由首帧决定
+          { ...cfg.PANTAO_PLATFORM_OVERRIDE },
+          8000,
+        );
         roleId = Number(pickRole(roleResp)?.roleId || 0);
       }
       if (!roleId) {

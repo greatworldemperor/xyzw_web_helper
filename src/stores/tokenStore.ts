@@ -121,6 +121,10 @@ export const tokenGroups = useLocalStorage<TokenGroup[]>("tokenGroups", []);
  */
 export const useTokenStore = defineStore("tokens", () => {
   const wsConnections = ref<WebCtx>({}); // WebSocket连接状态
+  // 🔴 per-token role_getroleinfo 首帧口径覆盖（蟠桃专用）：payload_setbattleteam 只认
+  // App（mix）口径——见 pantaoConfig.PANTAO_PLATFORM_OVERRIDE（2026-11-01 定案）。
+  // 仅显式 setRoleInfoOverride 的 token 生效；closeWebSocketConnection 自动清除。
+  const roleInfoOverrides = ref<Record<string, Record<string, unknown>>>({});
   const connectionLocks = ref<LockCtx>({}); // 连接操作锁，防止竞态条件
 
   // ===== 统一限流处理控制器（2026-09-28 master 口径）=====
@@ -1226,7 +1230,8 @@ export const useTokenStore = defineStore("tokens", () => {
         releaseConnectionLock(tokenId, "connect");
         localStorage.removeItem("xyzw_chat_msg_list");
         try {
-          wsClient.send("role_getroleinfo");
+          // 首帧口径：有 per-token 覆盖（如蟠桃 mix）则用覆盖值，否则走 registry 默认（h5）
+          wsClient.send("role_getroleinfo", roleInfoOverrides.value[tokenId] ?? {});
         } catch (error) {
           wsLogger.warn(`初始化角色信息请求失败 [${tokenId}]`, error);
         }
@@ -1354,7 +1359,26 @@ export const useTokenStore = defineStore("tokens", () => {
   };
 
   // 同步版本的关闭连接（保持向后兼容）
+  /**
+   * 设置/清除 per-token role_getroleinfo 首帧口径覆盖（蟠桃 mix 口径专用，2026-11-01）。
+   * params=null 表示清除。覆盖只在 onConnect 首帧生效；closeWebSocketConnection 自动清除。
+   */
+  const setRoleInfoOverride = (
+    tokenId: string,
+    params: Record<string, unknown> | null,
+  ) => {
+    if (params) {
+      roleInfoOverrides.value[tokenId] = params;
+    } else {
+      delete roleInfoOverrides.value[tokenId];
+    }
+  };
+
   const closeWebSocketConnection = (tokenId: string) => {
+    // 连接关闭即清除口径覆盖：避免串到该 token 之后的其他用途连接（如批量日常 h5）
+    if (roleInfoOverrides.value[tokenId]) {
+      delete roleInfoOverrides.value[tokenId];
+    }
     return closeWebSocketConnectionAsync(tokenId).catch((error) => {
       wsLogger.error(`关闭连接异步操作失败 [${tokenId}]:`, error);
     });
@@ -2247,6 +2271,7 @@ export const useTokenStore = defineStore("tokens", () => {
 
     // WebSocket方法
     createWebSocketConnection,
+    setRoleInfoOverride,
     closeWebSocketConnection,
     getWebSocketStatus,
     getWebSocketClient,

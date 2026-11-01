@@ -312,7 +312,14 @@ const tasks = createTasksPantao({
   tokens: computed(() => tokenStore.gameTokens || []),
   isRunning,
   shouldStop,
-  ensureConnection: (tokenId) => coordinator.ensureConnection(tokenId, tokenStore.gameTokens || []),
+  // 🔴 蟠桃会话专用口径（mix/0.36.0-android，2026-11-01 定案）：payload_setbattleteam 只认
+  // App 口径，h5 会话 3000070 全拒 ⇒ 建连前强制关旧连 + 注入首帧口径覆盖。
+  // closeWebSocketConnection 会自动清覆盖，故每次 ensureConnection 前重设。
+  ensureConnection: async (tokenId) => {
+    await tokenStore.closeWebSocketConnection(tokenId);
+    tokenStore.setRoleInfoOverride(tokenId, { ...cfg.PANTAO_PLATFORM_OVERRIDE });
+    await coordinator.ensureConnection(tokenId, tokenStore.gameTokens || []);
+  },
   releaseConnectionSlot: coordinator.releaseConnectionSlot,
   tokenStore,
   addLog,

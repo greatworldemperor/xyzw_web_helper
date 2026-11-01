@@ -48,8 +48,8 @@
 
 ## ⚠️ 卡点
 
-- `payload_setbattleteam` 在 **h5/1.89.8 口径被 3000070 拒绝**；**官方模拟器同场景已实测通过（10-04 定稿）**：09-13 batch3 与 09-20 wssa5 官方客户端（MuMu 模拟器；**版本串未捕获**，platform 推定 mix）布阵均 `state:idle` 成功（09-20 还是与 h5 被拒**同一战场 13059**、晚 76 分钟），官方全程 0 次 3000070 ⇒ 被拒的不是命令本身而是口径；工具为 mix 口径（现已升 2.48.2，f5332a8e）⇒ 预期通过。证据：`local-data/pantao/pantao_success_extract/` + `_wssa_decoded.txt`/`_batch_decoded.txt`。**注意：工具串 `2.48.2-fa918e1997301834-wx` 中段 hash 身份未定（AppID/每周构建 hash/静态标识三选一，见 pantao-protocol-catalog §7.5），若实测被拒，第一动作=抓模拟器登录首帧拿真串。**
-- `payload_startmarch` / `payload_startbattle` 请求体**未抓到**（按响应反推，实现提供了覆写口）。
+- ✅ **2026-11-01 根因定案（自动蟠桃 101 号全拒 3000070）**：`payload_setbattleteam` 是**参赛动作，只认 App（mix）口径**——`enterbf`（查询）h5 放行、`setbattleteam` h5 必拒。批量页账号走 tokenStore 主连接 = **h5/1.89.8-wx 口径**（`xyzwWebSocket.js:117`，金鱼双因素口径，勿全局改），f5332a8e 的 mix 伪装只在多开游戏页，蟠桃批跑没吃到。**官方 App 真串（11-01 模拟器抓包 `pantao_1101.pcap` s01 首帧）**：`platform=hortor / platformExt=mix / clientVersion=0.36.0-android`（此前 2.48.2-…-wx 是 wx 格式混搭，非真串）。修复方向：蟠桃会话的主连接首帧临时切 `mix/0.36.0-android`（不动全局 registry，防污染金鱼 h5 双因素）；真串可能随 App 周更，赛前重抓确认。当天 101 发 0 成，唯一 code=0 的 setbattleteamresp 是官方玩家 703935668（petUId "92-3i4"）的广播——工具号 petUId 全发空串，是否也是因素待验。战场请求体已补全（10-29/11-01 抓包：march 带 path、battle 带 targetId、bfId=日期:实例）。
+- `payload_startmarch` / `payload_startbattle` 请求体 ✅ 已补全（2026-10-29/11-01 官方模拟器抓包 `pantao_1101.pcap`）：`startmarch {bfId, carId, path:[{x,y}…]}`（逐格路径）、`startbattle {bfId, targetId}`；响应**广播式**（无 resp 匹配，错误信封例外：10000120 目标战斗中 / 10000130 自己战斗中）；`payload_startbattle` **无 3000070 拦截**。
 
 ## 相关源码脚本（协议线索，非主项目封装）
 
