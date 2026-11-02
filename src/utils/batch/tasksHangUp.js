@@ -5,9 +5,9 @@
 
 import {
   getErrorMessage,
+  getRateLimitRetryMs,
   isRateLimitError,
   RATE_LIMIT_MAX_RETRIES,
-  RATE_LIMIT_RETRY_DELAY_MS,
   runWithRateLimitRetry,
 } from "../helperTaskRunner.js";
 import {
@@ -56,7 +56,7 @@ export function createTasksHangUp(deps) {
 
   const hangUpRetryDelayMs = Number.isFinite(Number(delayConfig?.retry))
     ? Number(delayConfig.retry)
-    : RATE_LIMIT_RETRY_DELAY_MS;
+    : getRateLimitRetryMs();
 
   const sendHangUpCommand = (
     tokenId,

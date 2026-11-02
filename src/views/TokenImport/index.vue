@@ -13,15 +13,6 @@
         </div>
       </div>
 
-      <!-- 限流等待提示 -->
-      <n-alert
-        v-if="rateLimitWaiting"
-        type="warning"
-        style="margin-bottom: 16px"
-      >
-        {{ rateLimitMessage }}
-      </n-alert>
-
       <!-- Token导入区域 -->
       <a-modal
         class="token-import-modal"
@@ -1167,7 +1158,7 @@ import { NIcon, NAlert, useDialog, useMessage } from "naive-ui";
 import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useLocalStorage } from "@vueuse/core";
-import { transformToken, scheduleAuthUserRequest, getStableTokenKey } from "@/utils/token";
+import { transformToken, getStableTokenKey } from "@/utils/token";
 import { $emit } from "@/stores/events/index.ts";
 import useIndexedDB from "@/hooks/useIndexedDB";
 import { prepareMultiGameLaunch } from "@/utils/gameLauncher";
@@ -1214,10 +1205,6 @@ const router = useRouter();
 const message = useMessage();
 const dialog = useDialog();
 const tokenStore = useTokenStore();
-
-// 限流等待状态
-const rateLimitWaiting = ref(false);
-const rateLimitMessage = ref("");
 
 // 响应式数据
 const showImportForm = ref(false);
@@ -2044,8 +2031,8 @@ const refreshToken = async (token) => {
 
   try {
     if (token.importMethod === "url") {
-      // 有源URL的token - 从URL重新获取（使用限流）
-      const data = await scheduleAuthUserRequest(async () => {
+      // 有源URL的token - 从URL重新获取（本地预限流器已删，master 2026-11-03 口径）
+      const data = await (async () => {
         let response;
 
         const isLocalUrl =
@@ -2085,7 +2072,7 @@ const refreshToken = async (token) => {
         }
 
         return result;
-      });
+      })();
 
       // 更新token信息
       tokenStore.updateToken(token.id, {
@@ -2172,8 +2159,6 @@ const refreshToken = async (token) => {
     message.error(error.message || "Token刷新失败");
   } finally {
     refreshingTokens.value.delete(token.id);
-    // 关闭限流等待提示
-    rateLimitWaiting.value = false;
   }
 };
 
@@ -2508,9 +2493,6 @@ const refreshAllTokens = async () => {
 
         // 关闭进度提示
         loadingMessage.destroy();
-
-        // 关闭限流等待提示
-        rateLimitWaiting.value = false;
 
         // 显示结果
         if (failCount === 0) {
@@ -2989,12 +2971,6 @@ const handleUrlParams = async () => {
 // 监听路由参数变化
 watch(() => [props.token, props.api], handleUrlParams, { immediate: false });
 
-// 限流等待事件处理
-const handleRateLimitWaiting = (data) => {
-  rateLimitWaiting.value = true;
-  rateLimitMessage.value = `Token刷新限流等待中，预计等待 ${data.waitSeconds} 秒（队列: ${data.queueSize}）`;
-};
-
 const handleTokenRefreshFailure = ({ tokenName, reason }) => {
   dialog.error({
     title: "Token自动刷新失败",
@@ -3007,8 +2983,6 @@ const handleTokenRefreshFailure = ({ tokenName, reason }) => {
 onMounted(async () => {
   tokenStore.initTokenStore();
 
-  // 监听限流等待事件
-  $emit.on("token:refresh:waiting", handleRateLimitWaiting);
   $emit.on("token:refresh:failed", handleTokenRefreshFailure);
 
   // 处理URL参数
@@ -3021,8 +2995,6 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  // 移除限流等待事件监听
-  $emit.off("token:refresh:waiting", handleRateLimitWaiting);
   $emit.off("token:refresh:failed", handleTokenRefreshFailure);
 });
 </script>

@@ -3810,6 +3810,25 @@
                   align-items: center;
                 "
               >
+                <label class="setting-label">限流重试间隔(秒)</label>
+                <n-input-number
+                  v-model:value="rateLimitRetrySec"
+                  :min="5"
+                  :max="600"
+                  :step="5"
+                  size="small"
+                  style="width: 100px"
+                  @update:value="saveRateLimitRetrySec"
+                />
+              </div>
+              <div
+                class="setting-item"
+                style="
+                  flex-direction: row;
+                  justify-content: space-between;
+                  align-items: center;
+                "
+              >
                 <label class="setting-label">重连等待(ms)</label>
                 <n-input-number
                   v-model:value="batchSettings.reconnectDelay"
@@ -4478,10 +4497,10 @@ import { $emit } from "@/stores/events/index.ts";
 import { DailyTaskRunner } from "@/utils/dailyTaskRunner";
 import {
   getErrorDetails,
+  getRateLimitRetryMs,
   is400340Error,
   isRateLimitError,
   RATE_LIMIT_MAX_RETRIES,
-  RATE_LIMIT_RETRY_DELAY_MS,
   runWithRateLimitRetry,
   wrapTokenStoreWithConnectionRetry,
 } from "@/utils/helperTaskRunner";
@@ -5912,6 +5931,21 @@ const LEGACY_DELAY_DEFAULTS = {
   battleDelay: 500,
 };
 
+// 限流重试间隔（秒，master 2026-11-03 口径）：默认 60s —— 切 IP 需要时间，
+// 切换过程有短暂断网，间隔太短（5~10s）会把「切 IP 中的瞬断」误判成连接失败。
+// 自动跑批（人不在场）时可以把间隔调短避免浪费。独立 localStorage 键
+// rateLimitRetrySec，helperTaskRunner.getRateLimitRetryMs() 全局读取。
+const rateLimitRetrySec = ref(Math.round(getRateLimitRetryMs() / 1000));
+const saveRateLimitRetrySec = (value) => {
+  const sec = Math.min(600, Math.max(5, Math.trunc(Number(value) || 60)));
+  rateLimitRetrySec.value = sec;
+  try {
+    localStorage.setItem("rateLimitRetrySec", String(sec));
+  } catch (error) {
+    console.error("Failed to save rate limit retry interval:", error);
+  }
+};
+
 const loadBatchSettings = () => {
   try {
     const saved = localStorage.getItem("batchSettings");
@@ -6853,15 +6887,6 @@ const startScheduler = () => {
   }, 10000); // Check every 10 seconds
 };
 
-// Token刷新等待处理函数
-const handleTokenRefreshWaiting = (data) => {
-  addLog({
-    time: new Date().toLocaleTimeString(),
-    message: `认证刷新限流器已实际进入等待，预计还需 ${data.waitSeconds} 秒（队列: ${data.queueSize}）；当前批次不启动其他角色`,
-    type: "warning",
-  });
-};
-
 // ==================== 月度任务「月末检查」 ====================
 // 需求（master 2026-11-01）：每个自然月最后一天打开批量页时，自动连上 roleId 最小的
 // 角色，读一次 activity_get 判断月度任务（钓鱼 320 / 竞技场 240）是否完成；未完成则弹
@@ -7043,8 +7068,6 @@ onMounted(() => {
   startCountdown();
   loadTaskTemplates();
   loadFlexibleTemplates();
-  // 监听Token刷新等待事件
-  $emit.on("token:refresh:waiting", handleTokenRefreshWaiting);
   // 每月最后一天：延迟 1.2s 让页面初始化/调度器先落地，再自动检查月度任务
   // （不 await，避免建连+token 刷新把首屏拖住）
   monthEndCheckTimer = setTimeout(() => {
@@ -7065,9 +7088,6 @@ onBeforeUnmount(() => {
     clearTimeout(monthEndCheckTimer);
     monthEndCheckTimer = null;
   }
-
-  // 移除Token刷新等待事件监听
-  $emit.off("token:refresh:waiting", handleTokenRefreshWaiting);
 
   // Cleanup task scheduler intervals
   if (intervalId.value) {
@@ -8792,12 +8812,14 @@ const refreshTokenUntilSuccess = async (
       throw new Error(`Token自动刷新失败，无法建立连接: ${result?.reason || "未知错误"}`);
     }
 
+    // 限流重试间隔统一走可调参数（默认 60s，master 2026-11-03 口径）：
+    // 正常情况下 attemptTokenRefreshWithResult 内部已吸收限流等待，这里只是兜底。
     addLog({
       time: new Date().toLocaleTimeString(),
-      message: `服务器返回可重试限流，保留当前批次槽位，1秒后重试刷新：${result.reason || "未知原因"}`,
+      message: `服务器返回可重试限流，保留当前批次槽位，${Math.round(getRateLimitRetryMs() / 1000)}秒后重试刷新：${result.reason || "未知原因"}`,
       type: "warning",
     });
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    await new Promise((resolve) => setTimeout(resolve, getRateLimitRetryMs()));
   }
 
   throw new Error("批量任务已停止，取消Token刷新");
@@ -8929,13 +8951,13 @@ const sendRoleInfo = async (
             params,
             timeout,
           ),
-        retryDelayMs: RATE_LIMIT_RETRY_DELAY_MS,
+        retryDelayMs: getRateLimitRetryMs(),
         maxRetries: RATE_LIMIT_MAX_RETRIES,
         onRetry: ({ retryCount }) => {
           addLog({
             time: new Date().toLocaleTimeString(),
             message: `${operation}触发限流，${
-              RATE_LIMIT_RETRY_DELAY_MS / 1000
+              Math.round(getRateLimitRetryMs() / 1000)
             }秒后重试（第${retryCount}次）`,
             type: "warning",
           });
@@ -8985,13 +9007,13 @@ const initializeGameData = async (tokenId) => {
     runWithRateLimitRetry({
       execute: () =>
         tokenStore.sendMessageWithPromise(tokenId, command, {}, 5000),
-      retryDelayMs: RATE_LIMIT_RETRY_DELAY_MS,
+      retryDelayMs: getRateLimitRetryMs(),
       maxRetries: RATE_LIMIT_MAX_RETRIES,
       onRetry: ({ retryCount }) => {
         addLog({
           time: new Date().toLocaleTimeString(),
           message: `${operation}触发限流（400340或其他限流错误），${
-            RATE_LIMIT_RETRY_DELAY_MS / 1000
+            Math.round(getRateLimitRetryMs() / 1000)
           }秒后重试（第${retryCount}次）`,
           type: "warning",
         });
@@ -9251,7 +9273,7 @@ const createTaskDeps = () => ({
     action: batchSettings.actionDelay,
     battle: batchSettings.battleDelay,
     long: batchSettings.longDelay,
-    retry: RATE_LIMIT_RETRY_DELAY_MS,
+    retry: getRateLimitRetryMs(),
   },
   // 其他特定依赖
   logs,
@@ -10449,17 +10471,17 @@ const startBatch = async () => {
             break;
           }
 
-          // 400340 已由 tokenStore 统一处理（弹窗 + 每 5 秒重试，成功自关）；
+          // 400340 已由 tokenStore 统一处理（弹窗 + 按可调间隔重试，成功自关）；
           // 这里只在其它限流码上兜底重试。
           if (isRateLimitError(error)) {
             addLog({
               time: new Date().toLocaleTimeString(),
               message: `${tokenName} 触发服务器限流或屏蔽: ${errorDetails}，${
-                RATE_LIMIT_RETRY_DELAY_MS / 1000
+                Math.round(getRateLimitRetryMs() / 1000)
               }秒后重试当前账号...`,
               type: "warning",
             });
-            await new Promise((r) => setTimeout(r, RATE_LIMIT_RETRY_DELAY_MS));
+            await new Promise((r) => setTimeout(r, getRateLimitRetryMs()));
           } else {
             tokenStatus.value[tokenId] = "failed";
             addLog({

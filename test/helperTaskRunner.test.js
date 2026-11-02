@@ -71,7 +71,7 @@ test("exhausted 400340 retries are not retried by outer rate-limit wrappers", as
   assert.equal(sleeps, 0);
 });
 
-test("runWithRateLimitRetry waits the unified 5s interval for throttling and retries", async () => {
+test("runWithRateLimitRetry waits the unified 60s default interval for throttling and retries", async () => {
   const events = [];
   let attempts = 0;
 
@@ -87,7 +87,8 @@ test("runWithRateLimitRetry waits the unified 5s interval for throttling and ret
   });
 
   assert.equal(attempts, 2);
-  assert.deepEqual(events, [5000]);
+  // 2026-11-03 master 口径：默认间隔 5s → 60s（可调，见 getRateLimitRetryMs）
+  assert.deepEqual(events, [60000]);
 });
 
 test("runWithRateLimitRetry retries without an upper bound by default", async () => {
@@ -108,7 +109,7 @@ test("runWithRateLimitRetry retries without an upper bound by default", async ()
   assert.equal(result, "ok");
   assert.equal(attempts, 151);
   assert.equal(events.length, 150);
-  assert.ok(events.every((ms) => ms === 5000));
+  assert.ok(events.every((ms) => ms === 60000));
 });
 
 test("runWithRateLimitRetry does not retry non-throttling errors", async () => {
@@ -149,7 +150,7 @@ test("runWithRateLimitRetry supports operation-specific retry errors", async () 
   });
 
   assert.equal(attempts, 2);
-  assert.deepEqual(events, [5000]);
+  assert.deepEqual(events, [60000]);
 });
 
 test("runWithRateLimitRetry stops after the configured retry limit", async () => {

@@ -5,9 +5,9 @@
 
 import {
   getErrorMessage,
+  getRateLimitRetryMs,
   isRateLimitError,
   RATE_LIMIT_MAX_RETRIES,
-  RATE_LIMIT_RETRY_DELAY_MS,
   runWithRateLimitRetry,
 } from "../helperTaskRunner.js";
 
@@ -95,7 +95,7 @@ export function createTasksBottle(deps) {
               {},
               5000,
             ),
-          retryDelayMs: RATE_LIMIT_RETRY_DELAY_MS,
+          retryDelayMs: getRateLimitRetryMs(),
           maxRetries: RATE_LIMIT_MAX_RETRIES,
           shouldRetry: (error) =>
             isRateLimitError(error) || isBottleStartTimeoutError(error),
@@ -103,7 +103,7 @@ export function createTasksBottle(deps) {
             addLog({
               time: new Date().toLocaleTimeString(),
               message: `${token.name} 开始计时失败: ${getErrorMessage(error)}，${
-                Math.round(RATE_LIMIT_RETRY_DELAY_MS / 1000)
+                Math.round(getRateLimitRetryMs() / 1000)
               }秒后重试（第${retryCount}次）`,
               type: "warning",
             });

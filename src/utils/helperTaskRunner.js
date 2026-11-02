@@ -4,11 +4,28 @@ export const HELPER_COMMAND_TIMEOUT_MS = 5000;
 export const HELPER_RETRY_DELAY_MS = 1000;
 export const HELPER_MAX_RETRIES = 2;
 
-// 统一限流重试口径（2026-09-28 master 口径）：
-//   命中服务器限流 → 每 5 秒重试一次，且不再设次数上限（持续重试到成功为止）。
+// 统一限流重试口径（2026-09-28 master 口径，2026-11-03 修订）：
+//   命中服务器限流 → 按可调间隔（默认 60 秒）重试，不再设次数上限（持续重试到成功为止）。
 //   400340 的弹窗/自动关窗由 tokenStore 统一控制器负责，这里只是兜底的间隔与上限。
-export const RATE_LIMIT_RETRY_DELAY_MS = 5000;
 export const RATE_LIMIT_MAX_RETRIES = Infinity;
+
+// ===== 限流重试间隔（可调，master 2026-11-03 口径）=====
+// 默认 60s：切 IP 需要时间，切换过程有短暂断网，间隔太短（5~10s）会把
+// 「切 IP 中的瞬断」误判成连接失败引发新问题。批量页设置面板可调
+// （自动跑批、人不在场时可调短避免浪费）。localStorage 键 = rateLimitRetrySec，
+// 单位秒，夹紧 5~600；node 测试环境无 localStorage → 用默认值。
+export const RATE_LIMIT_RETRY_DEFAULT_MS = 60000;
+
+export const getRateLimitRetryMs = () => {
+  try {
+    if (typeof localStorage === "undefined") return RATE_LIMIT_RETRY_DEFAULT_MS;
+    const sec = Number(localStorage.getItem("rateLimitRetrySec"));
+    if (!Number.isFinite(sec) || sec <= 0) return RATE_LIMIT_RETRY_DEFAULT_MS;
+    return Math.min(600, Math.max(5, sec)) * 1000;
+  } catch {
+    return RATE_LIMIT_RETRY_DEFAULT_MS;
+  }
+};
 
 // 统一连接类错误重试口径（2026-09-29 master 口径扩展）：
 //   「除了 token 明确无效、服务器明确拒绝（业务错误码），其余连接失败类型
@@ -129,12 +146,15 @@ export function isRateLimitError(error) {
 
 export async function runWithRateLimitRetry({
   execute,
-  retryDelayMs = RATE_LIMIT_RETRY_DELAY_MS,
+  retryDelayMs,
   maxRetries = RATE_LIMIT_MAX_RETRIES,
   sleepFn = sleep,
   shouldRetry = isRateLimitError,
   onRetry,
 }) {
+  // 未显式传间隔时读可调参数（默认 60s，见 getRateLimitRetryMs）
+  const delayMs =
+    Number(retryDelayMs) > 0 ? Number(retryDelayMs) : getRateLimitRetryMs();
   // Infinity 表示不限次数（持续重试到成功为止）
   const retryLimit =
     maxRetries === Infinity
@@ -156,9 +176,31 @@ export async function runWithRateLimitRetry({
         retryCount: attempt + 1,
         maxRetries: retryLimit,
       });
-      await sleepFn(retryDelayMs);
+      await sleepFn(delayMs);
     }
   }
+}
+
+/**
+ * Token 刷新（authuser / 刷新接口）失败是否应重试（master 2026-11-03 口径）：
+ * 限流与连接类错误一律重试——切 IP 过程中的短暂断网是常态，不许判死账号；
+ * 只有明确判死的场景（无刷新来源 / 无 BIN / 服务器明确拒绝业务）返回 false。
+ * 判死名单由调用方按 reason 白名单处理，本函数只回答「可重试吗」。
+ */
+export function isRetryableRefreshError(error) {
+  if (isRateLimitError(error)) return true;
+  if (isConnectionError(error)) return true;
+
+  const message = getErrorSearchText(error);
+  // axios 的 "Network Error"（带空格，isConnectionError 的 "NetworkError" 匹配不到）
+  // / AbortSignal.timeout 的 "aborted due to timeout"
+  if (/network error|aborted due to timeout|timeouterror/i.test(message)) {
+    return true;
+  }
+  // HTTP 5xx（网关抖动）：axios error 形态 或 刷新接口抛的 "请求失败: 5xx" 文案
+  if (Number(error?.response?.status) >= 500) return true;
+  if (/请求失败: ?5\d\d/.test(message)) return true;
+  return false;
 }
 
 export function isWebSocketNotConnectedError(error) {

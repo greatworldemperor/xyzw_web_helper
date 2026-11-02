@@ -12,9 +12,6 @@ import {
   getStableTokenKey,
   transformToken,
   validateEncryptedToken,
-  setAuthUserRateLimiterCallback,
-  scheduleAuthUserRequest,
-  flushAuthUserRateLimiter,
 } from "@/utils/token";
 import {
   hasRefreshSource as hasTokenRefreshSource,
@@ -22,8 +19,9 @@ import {
   shouldRefreshTokenOnDemand,
 } from "@/utils/tokenRefreshPolicy.js";
 import {
+  getRateLimitRetryMs,
   isRateLimitError,
-  RATE_LIMIT_RETRY_DELAY_MS,
+  isRetryableRefreshError,
 } from "@/utils/helperTaskRunner";
 import { emitPlus, $emit } from "./events/index.js";
 import router from "@/router";
@@ -127,12 +125,15 @@ export const useTokenStore = defineStore("tokens", () => {
   const roleInfoOverrides = ref<Record<string, Record<string, unknown>>>({});
   const connectionLocks = ref<LockCtx>({}); // 连接操作锁，防止竞态条件
 
-  // ===== 统一限流处理控制器（2026-09-28 master 口径）=====
-  // 任何命令命中服务器限流（400340 / 400312 / 200400「操作太快」/ 429 / 限流文案…）→
-  //   · 立即弹出【全局唯一】的限流弹窗（提示用户「如方便请换 IP 立刻解除限流」），并每 5 秒重试一次、无次数上限；
+  // ===== 统一限流处理控制器（master 2026-11-03 口径：让服务器来限）=====
+  // 本地 authuser 预限流器已删除（25/60s 是拍的，批量切号下队列积压滚雪球，
+  // 见 2026-11-02 一键竞技场事故）。现在任何命令/刷新命中服务器限流
+  // （400340 / 400312 / 200400「操作太快」/ 429 / 限流文案…）→
+  //   · 立即弹出【全局唯一】的限流弹窗（提示用户「如方便请换 IP 立刻解除限流」）；
+  //   · 按【可调间隔】（默认 60 秒，批量页设置「限流重试间隔」）重试，无次数上限、
+  //     无 15 分钟强制放弃——用户不在就等满间隔再试，弹窗「放弃」可手动解除；
   //   · 重试成功 → 自动关窗，继续执行；
-  //   · 重试仍限流 → 弹窗维持（不新开窗、只刷新进度），后台继续重试；
-  //   · 用户点「已换 IP，立即重试」→ 放行 Token 刷新限流器排队 + 重建 WS 后立刻重试（不等 5 秒）；
+  //   · 用户点「已更换 IP，立即重试」→ 重建 WS + 唤醒所有等待者立即重试（不等间隔）；
   //   · 任务被停止/页面卸载 → abort，抛 RATE_LIMIT_ABORTED 结束重试。
   // 弹窗只是「告知 + 可选加速」，不阻塞后台重试；IP 全局共享，故全局只有一份 rateLimitPauseInfo。
   const rateLimitPauseInfo = ref<{
@@ -172,11 +173,10 @@ export const useTokenStore = defineStore("tokens", () => {
     }
   };
 
-  // 等待下一次重试：5 秒到点，或被「确认 / 中止」提前唤醒
-  const waitNextRateLimitRetry = (
-    delayMs = RATE_LIMIT_RETRY_DELAY_MS,
-  ): Promise<"timeout" | "wake" | "abort"> =>
+  // 等待下一次重试：间隔到点，或被「确认 / 中止」提前唤醒
+  const waitNextRateLimitRetry = (delayMs?: number): Promise<"timeout" | "wake" | "abort"> =>
     new Promise((resolve) => {
+      const waitMs = Number(delayMs) > 0 ? Number(delayMs) : getRateLimitRetryMs();
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const waiter = (reason: "timeout" | "wake" | "abort") => {
@@ -190,7 +190,7 @@ export const useTokenStore = defineStore("tokens", () => {
       };
       timer = setTimeout(
         () => waiter("timeout"),
-        Math.max(0, Number(delayMs) || 0),
+        Math.max(0, Number(waitMs) || 0),
       );
       rateLimitRetryWaiters.push(waiter);
     });
@@ -207,24 +207,10 @@ export const useTokenStore = defineStore("tokens", () => {
     return err;
   };
 
-  // 单次限流重试的最长持续时间：超过则强制放弃该命令（master 口径 15 分钟）
-  const RATE_LIMIT_MAX_WAIT_MS = 15 * 60 * 1000;
-
-  const rateLimitTimeoutError = () => {
-    const err = new Error(
-      "限流重试已超过 15 分钟，强制放弃该命令",
-    ) as Error & { code?: string };
-    err.code = "RATE_LIMIT_TIMEOUT";
-    return err;
-  };
-
   // 用户点「已换 IP，立即重试」：
-  // ① 放行 Token 刷新限流器的排队等待（客户端自限流倒计时立刻作废，排队刷新并发执行）；
-  // ② 断网换 IP 后所有 WS 已失效，必须先重建连接；
-  // ③ 唤醒命令级限流等待者立即重试（否则会因 !connected 直接失败）。
+  // ① 断网换 IP 后所有 WS 已失效，必须先重建连接；
+  // ② 唤醒所有等待者（命令级限流 + Token 刷新限流重试）立即重试。
   const resumeAfterRateLimit = async () => {
-    flushAuthUserRateLimiter();
-
     const existingTokenIds = Object.keys(wsConnections.value);
     wsLogger.info(
       `🚦 [限流重试] 用户确认已换 IP，正在为 ${existingTokenIds.length} 个 token 重建 WebSocket 连接...`,
@@ -585,8 +571,8 @@ export const useTokenStore = defineStore("tokens", () => {
   // 这是唯一一处真正去「刷 token」的实现，连接前的按需刷新与失败自动刷新共用它
   const resolveRefreshedToken = async (gameToken: any): Promise<string> => {
     if (gameToken.importMethod === "url" && gameToken.sourceUrl) {
-      // URL形式token刷新
-      const token = await scheduleAuthUserRequest(async () => {
+      // URL形式token刷新（本地预限流器已删，限流交由 attemptTokenRefreshWithResult 统一等待重试）
+      const token = await (async () => {
         // 🔴 带 15s 超时：刷新接口悬挂时快速失败（走 ensureTokenAvailable 的兜底）
         const response = await fetch(gameToken.sourceUrl, {
           signal: AbortSignal.timeout(15000),
@@ -599,7 +585,7 @@ export const useTokenStore = defineStore("tokens", () => {
           throw new Error("刷新接口返回的Token不是有效的加密Token");
         }
         return data.token;
-      });
+      })();
       return token;
     }
 
@@ -648,7 +634,11 @@ export const useTokenStore = defineStore("tokens", () => {
     throw new Error("未找到可用的Token刷新来源");
   };
 
-  // 执行一次Token刷新，并返回失败是否可重试的原因
+  // Token 刷新（统一限流等待版，master 2026-11-03 口径）：
+  // 刷新失败若是限流 / 连接类错误（切 IP 过程中的瞬断是常态），进入全局限流等待：
+  // 弹窗提示换 IP + 按可调间隔（默认 60s）重试；用户点「已更换 IP，立即重试」
+  // 会唤醒本等待立即重试；用户点「放弃」/任务停止 → 抛 RATE_LIMIT_ABORTED 路径按失败返回。
+  // 只有明确判死的错误（无刷新来源 / 无 BIN / 服务器明确拒绝）才立即返回 retryable=false。
   const attemptTokenRefreshWithResult = async (
     tokenId: string,
     forceReconnect = false,
@@ -676,49 +666,77 @@ export const useTokenStore = defineStore("tokens", () => {
       };
     }
 
-    wsLogger.info(`尝试自动刷新Token [${tokenId}]`);
-    let refreshSuccess = false;
-    let failureReason = "未找到可用的Token刷新来源";
-
-    try {
-      const token = await resolveRefreshedToken(gameToken);
-      updateToken(tokenId, { ...gameToken, token });
-      refreshSuccess = true;
-    } catch (error: any) {
-      failureReason = error instanceof Error ? error.message : String(error);
-      wsLogger.error(`Token刷新过程出错 [${tokenId}]:`, error);
-    }
-
-    if (refreshSuccess) {
-      wsLogger.info(`Token刷新成功 [${tokenId}]`);
-      // Token 刷新成功 → 限流窗口（若因刷新限流器弹出）自动关闭
-      clearRateLimitPause();
-
-      const currentPath = router.currentRoute.value.path;
-      const shouldReconnect =
-        !options.skipReconnect &&
-        (forceReconnect ||
-          currentPath === "/tokens" ||
-          currentPath === "/admin/game-features");
-
-      if (shouldReconnect) {
-        wsLogger.info(`触发自动重连 [${tokenId}]`);
-        // 重置重连状态以允许立即重连
-        if (wsConnections.value[tokenId]) {
-          wsConnections.value[tokenId].reconnectAttempts = 0;
-        }
-        selectToken(tokenId, true);
-      }
-      return { success: true, retryable: false, reason: "" };
-    } else {
-      const retryable = isRateLimitError(new Error(failureReason));
-      wsLogger.error(
-        `Token刷新失败 [${tokenId}]${retryable ? "，检测为限流，可重试" : "，请手动重新导入"}: ${failureReason}`,
+    for (let refreshAttempt = 1; ; refreshAttempt++) {
+      wsLogger.info(
+        `尝试自动刷新Token [${tokenId}]${refreshAttempt > 1 ? `（第 ${refreshAttempt} 次尝试）` : ""}`,
       );
-      if (options.notifyFailure !== false && !retryable) {
-        reportTokenRefreshFailure(tokenId, failureReason);
+      let failureReason = "未找到可用的Token刷新来源";
+
+      try {
+        const token = await resolveRefreshedToken(gameToken);
+        updateToken(tokenId, { ...gameToken, token });
+
+        wsLogger.info(
+          `Token刷新成功 [${tokenId}]${refreshAttempt > 1 ? `（第 ${refreshAttempt} 次尝试）` : ""}`,
+        );
+        // Token 刷新成功 → 限流窗口自动关闭
+        clearRateLimitPause();
+
+        const currentPath = router.currentRoute.value.path;
+        const shouldReconnect =
+          !options.skipReconnect &&
+          (forceReconnect ||
+            currentPath === "/tokens" ||
+            currentPath === "/admin/game-features");
+
+        if (shouldReconnect) {
+          wsLogger.info(`触发自动重连 [${tokenId}]`);
+          // 重置重连状态以允许立即重连
+          if (wsConnections.value[tokenId]) {
+            wsConnections.value[tokenId].reconnectAttempts = 0;
+          }
+          selectToken(tokenId, true);
+        }
+        return { success: true, retryable: false, reason: "" };
+      } catch (error: any) {
+        failureReason = error instanceof Error ? error.message : String(error);
+        wsLogger.error(`Token刷新过程出错 [${tokenId}]:`, error);
+
+        if (!isRetryableRefreshError(error)) {
+          wsLogger.error(
+            `Token刷新失败 [${tokenId}]，无法重试，请手动重新导入: ${failureReason}`,
+          );
+          if (options.notifyFailure !== false) {
+            reportTokenRefreshFailure(tokenId, failureReason);
+          }
+          return { success: false, retryable: false, reason: failureReason };
+        }
       }
-      return { success: false, retryable, reason: failureReason };
+
+      // 可重试（限流 / 切 IP 断网 / 网关抖动）→ 全局弹窗 + 等待后重试
+      notifyRateLimit({
+        tokenId,
+        tokenName: gameToken.name,
+        cmd: `Token 刷新失败（${failureReason}）`,
+        retryCount: refreshAttempt,
+        code: null,
+      });
+      // 间隔加 ±10% 抖动：多线程同时进入等待时避免同一瞬间集体重试（波状冲击）
+      const delayMs = Math.round(
+        getRateLimitRetryMs() * (0.9 + Math.random() * 0.2),
+      );
+      wsLogger.warn(
+        `🚦 [限流] Token 刷新失败 [${tokenId}]（${failureReason}），${Math.round(delayMs / 1000)} 秒后重试（第 ${refreshAttempt} 次）`,
+      );
+      const reason = await waitNextRateLimitRetry(delayMs);
+      if (reason === "abort") {
+        wsLogger.warn(`🚦 [限流] Token 刷新等待被中止 [${tokenId}]，按失败处理`);
+        if (options.notifyFailure !== false) {
+          reportTokenRefreshFailure(tokenId, "限流重试已中止");
+        }
+        return { success: false, retryable: false, reason: "限流重试已中止" };
+      }
+      // timeout / wake（用户确认已换 IP）→ 立即进入下一轮重试
     }
   };
 
@@ -1469,7 +1487,7 @@ export const useTokenStore = defineStore("tokens", () => {
     }
 
     let retryCount = 0;
-    let rateLimitStartedAt = 0; // 本轮限流重试的起点（用于 15 分钟上限）
+    let rateLimitStartedAt = 0; // 本轮限流等待的起点（仅用于日志展示已等多久）
     let lastDeadConnNotifyAt = 0; // 限流恢复中连接死亡时的上次通报时刻（60s 节流）
 
     while (true) {
@@ -1480,21 +1498,11 @@ export const useTokenStore = defineStore("tokens", () => {
         if (retryCount === 0) {
           return Promise.reject(new Error(`WebSocket未连接 [${tokenId}]`));
         }
-        // 限流恢复中连接正在重建：等下一轮再试。
-        // 🔴 此路径原先没有 15 分钟上限（cap 只存在于下方 catch 里）——限流等待期间
-        //    连接一旦死亡，每轮只在 status 检查处 continue，永远到不了 cap，
-        //    形成「无限静默循环」（2026-10-04 蟠桃 19 分钟零日志事故的根因）。
-        //    现与 catch 路径共用同一截止时刻，并把状态持续通报到限流弹窗。
-        if (
-          rateLimitStartedAt &&
-          Date.now() - rateLimitStartedAt >= RATE_LIMIT_MAX_WAIT_MS
-        ) {
-          clearRateLimitPause();
-          wsLogger.error(
-            `🚦 [限流] ${cmd} [${tokenId}] 限流恢复等待超过 15 分钟且连接未恢复，强制放弃该命令`,
-          );
-          throw rateLimitTimeoutError();
-        }
+        // 限流恢复中连接正在重建：持续等下去（master 2026-11-03 口径：
+        // 取消 15 分钟强制放弃——用户不在就等满间隔再试，「放弃」按钮可手动解除）。
+        // 🔴 此路径历史上曾因「cap 只在下方 catch 里」形成无限静默循环
+        //    （2026-10-04 蟠桃 19 分钟零日志事故根因）——现保留 60s 节流通报弹窗，
+        //    保证等待期间有迹可循；无限等是显式口径，不再视为事故。
         if (Date.now() - (lastDeadConnNotifyAt ?? 0) >= 60_000) {
           lastDeadConnNotifyAt = Date.now();
           notifyRateLimit({
@@ -1505,10 +1513,10 @@ export const useTokenStore = defineStore("tokens", () => {
             code: "conn-lost",
           });
           wsLogger.warn(
-            `🚦 [限流] ${cmd} [${tokenId}] 限流恢复等待中连接已断开，持续等待重建（已等 ${Math.round((Date.now() - rateLimitStartedAt) / 1000)}s / 上限 15min）`,
+            `🚦 [限流] ${cmd} [${tokenId}] 限流恢复等待中连接已断开，持续等待重建（已等 ${Math.round((Date.now() - (rateLimitStartedAt || Date.now())) / 1000)}s）`,
           );
         }
-        const reason = await waitNextRateLimitRetry(RATE_LIMIT_RETRY_DELAY_MS);
+        const reason = await waitNextRateLimitRetry();
         if (reason === "abort") throw rateLimitAbortError();
         continue;
       }
@@ -1536,7 +1544,7 @@ export const useTokenStore = defineStore("tokens", () => {
         return result;
       } catch (error: any) {
         // 服务器限流（400340 / 200400 操作太快 / 400312 / 429…）：
-        // 立即弹【全局唯一】限流窗提示换 IP，后台每 5 秒重试一次，直到成功
+        // 立即弹【全局唯一】限流窗提示换 IP，按可调间隔（默认 60s）重试直到成功
         if (!isRateLimitError(error)) {
           // 特殊日志：fight_starttower 错误
           if (cmd === "fight_starttower") {
@@ -1553,15 +1561,6 @@ export const useTokenStore = defineStore("tokens", () => {
           rateLimitStartedAt = Date.now();
         }
 
-        // 15 分钟上限：超过则强制放弃该命令（master 口径）
-        if (Date.now() - rateLimitStartedAt >= RATE_LIMIT_MAX_WAIT_MS) {
-          clearRateLimitPause();
-          wsLogger.error(
-            `🚦 [限流] ${cmd} [${tokenId}] 连续限流已超过 15 分钟，强制放弃该命令`,
-          );
-          throw rateLimitTimeoutError();
-        }
-
         const code = error?.code ?? error?.errorCode ?? null;
         notifyRateLimit({
           tokenId,
@@ -1570,13 +1569,17 @@ export const useTokenStore = defineStore("tokens", () => {
           retryCount,
           code: code ?? rateLimitPauseInfo.value?.code ?? null,
         });
+        // 间隔加 ±10% 抖动：多线程同时撞限流时避免同一瞬间集体重试（波状冲击）
+        const delayMs = Math.round(
+          getRateLimitRetryMs() * (0.9 + Math.random() * 0.2),
+        );
         wsLogger.warn(
           `🚦 [限流] 请求触发服务器限流 [${tokenId}] ${cmd}（${code ?? "未知码"}），弹窗提示换 IP，${
-            Math.round(RATE_LIMIT_RETRY_DELAY_MS / 1000)
+            Math.round(delayMs / 1000)
           } 秒后重试（第 ${retryCount} 次）`,
         );
 
-        const reason = await waitNextRateLimitRetry(RATE_LIMIT_RETRY_DELAY_MS);
+        const reason = await waitNextRateLimitRetry(delayMs);
         if (reason === "abort") throw rateLimitAbortError();
       }
     }
@@ -2062,24 +2065,8 @@ export const useTokenStore = defineStore("tokens", () => {
     // 设置跨标签页监听
     setupCrossTabListener();
 
-    // 设置限流等待回调
-    setAuthUserRateLimiterCallback((waitTimeMs: number, queueSize: number) => {
-      const waitSeconds = Math.ceil(waitTimeMs / 1000);
-      // 非命令类限流（Token 刷新限流器）也统一走全局限流弹窗
-      notifyRateLimit({
-        tokenId: "",
-        tokenName: "Token刷新限流器",
-        cmd: `Token 刷新排队（队列 ${queueSize}，约 ${waitSeconds}s）`,
-        retryCount: queueSize,
-        code: null,
-      });
-      $emit.emit("token:refresh:waiting", {
-        waitTimeMs,
-        waitSeconds,
-        queueSize,
-        timestamp: Date.now(),
-      });
-    });
+    // 🔴 本地 authuser 限流器回调已删（master 2026-11-03 口径：让服务器来限），
+    // 刷新限流等待统一在 attemptTokenRefreshWithResult 内处理（弹窗 + 可调间隔重试）。
 
     tokenLogger.info("Token Store 初始化完成，连接监控已启动");
   };
@@ -2343,7 +2330,7 @@ export const useTokenStore = defineStore("tokens", () => {
     cleanupInvalidTokens,
 
     // 统一限流控制（UI 层订阅 rateLimitPauseInfo 弹窗提示用户换 IP）
-    // resumeAfterRateLimit：用户点「已换 IP，立即重试」→ 放行 Token 刷新排队 + 重建 WS + 立刻重试
+    // resumeAfterRateLimit：用户点「已换 IP，立即重试」→ 重建 WS + 唤醒全部等待者（命令级 + Token 刷新）立即重试
     // abortRateLimitRetry：任务停止 / 页面卸载 → 终止等待中的重试
     // abandonRateLimitRetry：用户点弹窗「放弃」→ 终止本次限流等待
     rateLimitPauseInfo,
