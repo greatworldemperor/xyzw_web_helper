@@ -9025,6 +9025,17 @@ const initializeGameData = async (tokenId) => {
     message: `[连接诊断] ${tokenLabel} 开始初始化 role_getroleinfo/fight_startlevel`,
     type: "info",
   });
+  // 🔴 会话初始化去重（2026-11-03 军团BOSS事故）：role_getroleinfo 每连接只发一次，
+  //    同连接第二发必撞 200350「登录异常」→ 曾引发「关连→刷新→重连」风暴漏打 BOSS。
+  //    connectionManager.initSessionData 已初始化过（打标）时直接跳过。
+  if (tokenStore.isSessionInited?.(tokenId)) {
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `[连接诊断] ${tokenLabel} 本连接已初始化过会话数据，跳过重复 role_getroleinfo（防 200350）`,
+      type: "info",
+    });
+    return;
+  }
   await sendInitializationCommand("role_getroleinfo", "初始化角色数据");
 
   const res = await sendInitializationCommand(
@@ -9034,6 +9045,7 @@ const initializeGameData = async (tokenId) => {
   if (res?.battleData?.version) {
     tokenStore.setBattleVersion(res.battleData.version);
   }
+  tokenStore.markSessionInited?.(tokenId);
   addLog({
     time: new Date().toLocaleTimeString(),
     message: `[连接诊断] ${tokenLabel} 初始化完成，battleVersion=${res?.battleData?.version ?? "-"}`,

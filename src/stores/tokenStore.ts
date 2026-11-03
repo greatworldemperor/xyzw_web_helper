@@ -125,13 +125,30 @@ export const useTokenStore = defineStore("tokens", () => {
   const roleInfoOverrides = ref<Record<string, Record<string, unknown>>>({});
   const connectionLocks = ref<LockCtx>({}); // 连接操作锁，防止竞态条件
 
+  // ===== 会话初始化去重（2026-11-03 军团BOSS事故）=====
+  // 🔴 role_getroleinfo 是会话初始化帧，同一 WS 会话内发第二次会被服务器
+  //    200350「登录异常，请稍后再试」拒绝。而初始化代码有两处
+  //    （connectionManager.initSessionData / Batch.initializeGameData），叠加执行时
+  //    第二发必撞 200350 → 上层误判连接故障 → 「关连→刷新→重连」风暴
+  //    （实测 42s 45 次 connect、3 波、军团BOSS 18 号只跑出 6 次 = 漏打）。
+  //    以 client 实例为键打标：连接重建（client 更换）后自动失效，新连接第一发照发。
+  const sessionInitClients = new Map<string, unknown>();
+  const isSessionInited = (tokenId: string): boolean => {
+    const client = wsConnections.value[tokenId]?.client;
+    return !!client && sessionInitClients.get(tokenId) === client;
+  };
+  const markSessionInited = (tokenId: string): void => {
+    const client = wsConnections.value[tokenId]?.client;
+    if (client) sessionInitClients.set(tokenId, client);
+  };
+
   // ===== 统一限流处理控制器（master 2026-11-03 口径：让服务器来限）=====
   // 本地 authuser 预限流器已删除（25/60s 是拍的，批量切号下队列积压滚雪球，
   // 见 2026-11-02 一键竞技场事故）。现在任何命令/刷新命中服务器限流
   // （400340 / 400312 / 200400「操作太快」/ 429 / 限流文案…）→
   //   · 立即弹出【全局唯一】的限流弹窗（提示用户「如方便请换 IP 立刻解除限流」）；
-  //   · 按【可调间隔】（默认 60 秒，批量页设置「限流重试间隔」）重试，无次数上限、
-  //     无 15 分钟强制放弃——用户不在就等满间隔再试，弹窗「放弃」可手动解除；
+  //   · 按【可调间隔】（默认 60 秒，批量页设置「限流重试间隔」）重试；重试总上限
+  //     15 分钟（游戏内冷却最长不超 15 分钟，爬塔极长也在内），到点放弃按失败处理；
   //   · 重试成功 → 自动关窗，继续执行；
   //   · 用户点「已更换 IP，立即重试」→ 重建 WS + 唤醒所有等待者立即重试（不等间隔）；
   //   · 任务被停止/页面卸载 → abort，抛 RATE_LIMIT_ABORTED 结束重试。
@@ -2370,6 +2387,10 @@ export const useTokenStore = defineStore("tokens", () => {
     validateConnectionUniqueness,
     connectionMonitor,
     currentSessionId: () => currentSessionId,
+
+    // 会话初始化去重（role_getroleinfo 每连接只发一次，见 sessionInitClients 注释）
+    isSessionInited,
+    markSessionInited,
 
     // Token分组管理方法
     tokenGroups,

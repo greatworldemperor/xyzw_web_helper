@@ -108,8 +108,14 @@ export function createConnectionManager({ tokenStore, batchSettings, addLog }) {
   /**
    * 初始化会话数据（role_getroleinfo → fight_startlevel）。
    * 从 ensureConnection 中提出，供「新建连接」和「已连接复用」两条路径共用。
+   * 🔴 会话初始化去重（2026-11-03 军团BOSS事故）：role_getroleinfo 是会话初始化帧，
+   *    同一连接发第二次必撞 200350「登录异常」（服务器拒绝），曾导致「关连→刷新→
+   *    重连」风暴（42s 45 connect、BOSS 18 号漏打 12）。已初始化的连接直接跳过。
    */
   const initSessionData = async (tokenId) => {
+    if (tokenStore.isSessionInited?.(tokenId)) {
+      return;
+    }
     addLog({
       time: new Date().toLocaleTimeString(),
       message: `连接成功，初始化会话数据（role_getroleinfo → fight_startlevel）……若长时间停留在此条 = 命中服务器限流恢复循环，请看限流弹窗`,
@@ -134,6 +140,8 @@ export function createConnectionManager({ tokenStore, batchSettings, addLog }) {
       if (res?.battleData?.version) {
         tokenStore.setBattleVersion(res.battleData.version);
       }
+      // 全部成功才打标：同连接后续初始化调用直接跳过（防 200350）
+      tokenStore.markSessionInited?.(tokenId);
     } catch (e) {
       addLog({
         time: new Date().toLocaleTimeString(),
