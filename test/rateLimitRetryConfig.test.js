@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   getRateLimitRetryMs,
+  isRateLimitError,
   isRetryableRefreshError,
   RATE_LIMIT_RETRY_DEFAULT_MS,
 } from "../src/utils/helperTaskRunner.js";
@@ -44,6 +45,26 @@ test("isRetryableRefreshError: 限流类错误可重试", () => {
   assert.equal(isRetryableRefreshError(new Error("服务器限流（响应码 400340）")), true);
   assert.equal(isRetryableRefreshError(new Error("Request failed with status code 429")), true);
   assert.equal(isRetryableRefreshError(new Error("操作太快，请稍后再试")), true);
+});
+
+test("isRetryableRefreshError: 登录限流形态可重试（2026-11-03 实锤）", () => {
+  // token.ts 转换后的可识别错误
+  assert.equal(
+    isRetryableRefreshError(
+      new Error("登录限流：authuser 响应未返回 roleToken（服务器返回: null）"),
+    ),
+    true,
+  );
+  // 历史裸 TypeError 形态
+  assert.equal(
+    isRetryableRefreshError(
+      new Error("Cannot read properties of undefined (reading 'roleToken')"),
+    ),
+    true,
+  );
+  // 200350 属于 isRateLimitError（登录通道限流，切 IP 有效）
+  assert.equal(isRetryableRefreshError(new Error("服务器错误: 200350 - 登录异常，请稍后再试")), true);
+  assert.equal(isRateLimitError(new Error("服务器错误: 200350 - 登录异常，请稍后再试")), true);
 });
 
 test("isRetryableRefreshError: 连接类错误（切 IP 瞬断）可重试", () => {

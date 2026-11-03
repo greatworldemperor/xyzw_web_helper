@@ -55,7 +55,26 @@ export const transformToken = async (arrayBuffer: ArrayBuffer) => {
     },
   );
   const msg = g_utils.parse(res.data);
-  const data = msg.getData();
+  const data = msg.getData() as { roleToken?: string } | undefined;
+
+  // 🔴 登录限流的形态是「HTTP 200 + 响应体无 roleToken」（2026-11-03 实锤：批量 21:27
+  //    85 连败，先 200350「登录异常，请稍后再试」、随后 authuser 全部返回异常体）。
+  //    必须在这里转成【可识别】的错误（关键词 roleToken/登录限流），让
+  //    isRetryableRefreshError 能分类为「可重试」走统一限流等待；否则裸 TypeError
+  //    "Cannot read properties of undefined (reading 'roleToken')" 会被判死 + 弹窗轰炸。
+  if (!data || !data.roleToken) {
+    const preview = (() => {
+      try {
+        return JSON.stringify(data) ?? String(data);
+      } catch {
+        return String(data);
+      }
+    })();
+    throw new Error(
+      `登录限流：authuser 响应未返回 roleToken（服务器返回: ${preview?.slice(0, 120) ?? "空"}）`,
+    );
+  }
+
   const currentTime = Date.now();
   const sessId = currentTime * 100 + Math.floor(Math.random() * 100);
   const connId = currentTime + Math.floor(Math.random() * 10);
@@ -66,7 +85,7 @@ export const transformToken = async (arrayBuffer: ArrayBuffer) => {
   // 从不发送 roleId；此前 `...data` 把 authuser 响应里的 roleId(=uid) 也塞进 p=，
   // 是批量页与游戏本体会话在握手 URL 上的唯一差异。manual.vue 手动导入格式本就是四字段。
   return JSON.stringify({
-    roleToken: (data as { roleToken?: string }).roleToken,
+    roleToken: data.roleToken,
     sessId,
     connId,
     isRestore: 0,

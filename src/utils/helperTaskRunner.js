@@ -135,6 +135,11 @@ export function isRateLimitError(error) {
     message.includes("200400") ||
     message.includes("12400000") ||
     message.includes("429") ||
+    // 🔴 200350「登录异常，请稍后再试」= 登录通道限流（2026-11-03 实锤：批量启动 2s
+    //    即出现，切 IP 有效）。此前不在判定表 → role_getroleinfo 撞上后走「初始化失败
+    //    → 再刷新 Token → 重连」恶性循环，越撞越死。
+    message.includes("200350") ||
+    message.includes("登录异常") ||
     message.includes("操作过快") ||
     message.includes("操作太快") ||
     message.includes("请求频繁") ||
@@ -192,6 +197,15 @@ export function isRetryableRefreshError(error) {
   if (isConnectionError(error)) return true;
 
   const message = getErrorSearchText(error);
+  // 🔴 登录限流的两种形态（2026-11-03 实锤）：authuser HTTP 200 但响应体无 roleToken
+  //    （token.ts 已转为「登录限流：authuser 响应未返回 roleToken…」可识别错误），
+  //    以及历史遗留的裸 TypeError 形态——一律可重试，不许判死。
+  if (
+    message.includes("authuser 响应未返回 roleToken") ||
+    /reading ['"]roleToken['"]/.test(message)
+  ) {
+    return true;
+  }
   // axios 的 "Network Error"（带空格，isConnectionError 的 "NetworkError" 匹配不到）
   // / AbortSignal.timeout 的 "aborted due to timeout"
   if (/network error|aborted due to timeout|timeouterror/i.test(message)) {

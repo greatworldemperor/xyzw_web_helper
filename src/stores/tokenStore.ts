@@ -713,7 +713,7 @@ export const useTokenStore = defineStore("tokens", () => {
         }
       }
 
-      // 可重试（限流 / 切 IP 断网 / 网关抖动）→ 全局弹窗 + 等待后重试
+      // 可重试（限流 / 登录限流 / 切 IP 断网 / 网关抖动）→ 全局弹窗 + 等待后重试
       notifyRateLimit({
         tokenId,
         tokenName: gameToken.name,
@@ -721,12 +721,18 @@ export const useTokenStore = defineStore("tokens", () => {
         retryCount: refreshAttempt,
         code: null,
       });
+      // 🔴 连败退避（master 2026-11-03 口径修订）：连续失败 ≥3 次时间隔翻倍
+      //    （上限 4× 基础间隔），防止登录限流惩罚窗内无脑撞墙（21:27 实测 85 连败
+      //    全部 ~50ms 间隔打墙，反而延长惩罚）。成功后由循环自然重置（新一轮）。
+      const baseMs = getRateLimitRetryMs();
+      const backoffFactor =
+        refreshAttempt >= 3 ? Math.min(4, 2 ** (refreshAttempt - 3)) : 1;
       // 间隔加 ±10% 抖动：多线程同时进入等待时避免同一瞬间集体重试（波状冲击）
       const delayMs = Math.round(
-        getRateLimitRetryMs() * (0.9 + Math.random() * 0.2),
+        baseMs * backoffFactor * (0.9 + Math.random() * 0.2),
       );
       wsLogger.warn(
-        `🚦 [限流] Token 刷新失败 [${tokenId}]（${failureReason}），${Math.round(delayMs / 1000)} 秒后重试（第 ${refreshAttempt} 次）`,
+        `🚦 [限流] Token 刷新失败 [${tokenId}]（${failureReason}），${Math.round(delayMs / 1000)} 秒后重试（第 ${refreshAttempt} 次${backoffFactor > 1 ? `，连败退避 ×${backoffFactor}` : ""}）`,
       );
       const reason = await waitNextRateLimitRetry(delayMs);
       if (reason === "abort") {
