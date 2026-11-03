@@ -207,6 +207,18 @@ export const useTokenStore = defineStore("tokens", () => {
     return err;
   };
 
+  // 🔴 限流重试总上限（master 2026-11-03 晚口径恢复）：游戏内限流冷却最长不超过
+  //    15 分钟（爬塔冷却极长也在 15 分钟内），无人值守重试最多 15 分钟，到点放弃。
+  const RATE_LIMIT_MAX_WAIT_MS = 15 * 60 * 1000;
+
+  const rateLimitTimeoutError = () => {
+    const err = new Error(
+      "限流重试已超过 15 分钟，强制放弃该命令",
+    ) as Error & { code?: string };
+    err.code = "RATE_LIMIT_TIMEOUT";
+    return err;
+  };
+
   // 用户点「已换 IP，立即重试」：
   // ① 断网换 IP 后所有 WS 已失效，必须先重建连接；
   // ② 唤醒所有等待者（命令级限流 + Token 刷新限流重试）立即重试。
@@ -666,6 +678,7 @@ export const useTokenStore = defineStore("tokens", () => {
       };
     }
 
+    let refreshWaitStartedAt = 0; // 首次进入限流等待的时刻（15 分钟上限）
     for (let refreshAttempt = 1; ; refreshAttempt++) {
       wsLogger.info(
         `尝试自动刷新Token [${tokenId}]${refreshAttempt > 1 ? `（第 ${refreshAttempt} 次尝试）` : ""}`,
@@ -714,6 +727,25 @@ export const useTokenStore = defineStore("tokens", () => {
       }
 
       // 可重试（限流 / 登录限流 / 切 IP 断网 / 网关抖动）→ 全局弹窗 + 等待后重试
+      // 🔴 15 分钟总上限（master 2026-11-03 晚口径）：游戏内冷却最长不超 15 分钟，
+      //    无人值守重试到点放弃本次刷新，按失败处理，不空转
+      if (!refreshWaitStartedAt) {
+        refreshWaitStartedAt = Date.now();
+      }
+      if (Date.now() - refreshWaitStartedAt >= RATE_LIMIT_MAX_WAIT_MS) {
+        clearRateLimitPause();
+        wsLogger.error(
+          `🚦 [限流] Token 刷新 [${tokenId}] 重试已超过 15 分钟仍未成功，放弃本次刷新`,
+        );
+        if (options.notifyFailure !== false) {
+          reportTokenRefreshFailure(tokenId, "限流重试已超过 15 分钟");
+        }
+        return {
+          success: false,
+          retryable: false,
+          reason: "限流重试已超过 15 分钟",
+        };
+      }
       notifyRateLimit({
         tokenId,
         tokenName: gameToken.name,
@@ -721,18 +753,13 @@ export const useTokenStore = defineStore("tokens", () => {
         retryCount: refreshAttempt,
         code: null,
       });
-      // 🔴 连败退避（master 2026-11-03 口径修订）：连续失败 ≥3 次时间隔翻倍
-      //    （上限 4× 基础间隔），防止登录限流惩罚窗内无脑撞墙（21:27 实测 85 连败
-      //    全部 ~50ms 间隔打墙，反而延长惩罚）。成功后由循环自然重置（新一轮）。
-      const baseMs = getRateLimitRetryMs();
-      const backoffFactor =
-        refreshAttempt >= 3 ? Math.min(4, 2 ** (refreshAttempt - 3)) : 1;
-      // 间隔加 ±10% 抖动：多线程同时进入等待时避免同一瞬间集体重试（波状冲击）
+      // 间隔加 ±10% 抖动：多线程同时进入等待时避免同一瞬间集体重试（波状冲击）。
+      // master 口径（2026-11-03）：严格等同一可调间隔（默认 60s）重试，与普通限流一致。
       const delayMs = Math.round(
-        baseMs * backoffFactor * (0.9 + Math.random() * 0.2),
+        getRateLimitRetryMs() * (0.9 + Math.random() * 0.2),
       );
       wsLogger.warn(
-        `🚦 [限流] Token 刷新失败 [${tokenId}]（${failureReason}），${Math.round(delayMs / 1000)} 秒后重试（第 ${refreshAttempt} 次${backoffFactor > 1 ? `，连败退避 ×${backoffFactor}` : ""}）`,
+        `🚦 [限流] Token 刷新失败 [${tokenId}]（${failureReason}），${Math.round(delayMs / 1000)} 秒后重试（第 ${refreshAttempt} 次）`,
       );
       const reason = await waitNextRateLimitRetry(delayMs);
       if (reason === "abort") {
@@ -1493,7 +1520,7 @@ export const useTokenStore = defineStore("tokens", () => {
     }
 
     let retryCount = 0;
-    let rateLimitStartedAt = 0; // 本轮限流等待的起点（仅用于日志展示已等多久）
+    let rateLimitStartedAt = 0; // 本轮限流等待的起点（15 分钟上限 + 日志展示已等多久）
     let lastDeadConnNotifyAt = 0; // 限流恢复中连接死亡时的上次通报时刻（60s 节流）
 
     while (true) {
@@ -1504,11 +1531,22 @@ export const useTokenStore = defineStore("tokens", () => {
         if (retryCount === 0) {
           return Promise.reject(new Error(`WebSocket未连接 [${tokenId}]`));
         }
-        // 限流恢复中连接正在重建：持续等下去（master 2026-11-03 口径：
-        // 取消 15 分钟强制放弃——用户不在就等满间隔再试，「放弃」按钮可手动解除）。
+        // 限流恢复中连接正在重建：继续等，但受 15 分钟总上限约束
+        // （master 2026-11-03 晚口径：游戏内限流冷却最长不超过 15 分钟——爬塔冷却
+        //   极长但也在 15 分钟内；无人值守重试最多 15 分钟，到点放弃该命令按失败处理。
         // 🔴 此路径历史上曾因「cap 只在下方 catch 里」形成无限静默循环
-        //    （2026-10-04 蟠桃 19 分钟零日志事故根因）——现保留 60s 节流通报弹窗，
-        //    保证等待期间有迹可循；无限等是显式口径，不再视为事故。
+        //    （2026-10-04 蟠桃 19 分钟零日志事故根因）——现两路径共用同一截止时刻，
+        //    60s 节流通报弹窗保证等待期间有迹可循。）
+        if (
+          rateLimitStartedAt &&
+          Date.now() - rateLimitStartedAt >= RATE_LIMIT_MAX_WAIT_MS
+        ) {
+          clearRateLimitPause();
+          wsLogger.error(
+            `🚦 [限流] ${cmd} [${tokenId}] 限流重试已超过 15 分钟仍未恢复，强制放弃该命令`,
+          );
+          throw rateLimitTimeoutError();
+        }
         if (Date.now() - (lastDeadConnNotifyAt ?? 0) >= 60_000) {
           lastDeadConnNotifyAt = Date.now();
           notifyRateLimit({
@@ -1519,7 +1557,7 @@ export const useTokenStore = defineStore("tokens", () => {
             code: "conn-lost",
           });
           wsLogger.warn(
-            `🚦 [限流] ${cmd} [${tokenId}] 限流恢复等待中连接已断开，持续等待重建（已等 ${Math.round((Date.now() - (rateLimitStartedAt || Date.now())) / 1000)}s）`,
+            `🚦 [限流] ${cmd} [${tokenId}] 限流恢复等待中连接已断开，持续等待重建（已等 ${Math.round((Date.now() - (rateLimitStartedAt || Date.now())) / 1000)}s / 上限 15min）`,
           );
         }
         const reason = await waitNextRateLimitRetry();
@@ -1565,6 +1603,16 @@ export const useTokenStore = defineStore("tokens", () => {
         retryCount++;
         if (!rateLimitStartedAt) {
           rateLimitStartedAt = Date.now();
+        }
+
+        // 15 分钟总上限（master 2026-11-03 晚口径）：游戏内冷却最长不超 15 分钟，
+        // 到点放弃该命令按失败处理（无人值守不空转）
+        if (Date.now() - rateLimitStartedAt >= RATE_LIMIT_MAX_WAIT_MS) {
+          clearRateLimitPause();
+          wsLogger.error(
+            `🚦 [限流] ${cmd} [${tokenId}] 连续限流已超过 15 分钟，强制放弃该命令`,
+          );
+          throw rateLimitTimeoutError();
         }
 
         const code = error?.code ?? error?.errorCode ?? null;

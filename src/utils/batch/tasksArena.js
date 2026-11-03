@@ -5,6 +5,7 @@
 
 import { FISH_TARGET, ARENA_TARGET } from "./constants.js";
 import { calcSmartTopUpTargets } from "./smartTopUp.js";
+import { getRateLimitRetryMs } from "../helperTaskRunner.js";
 
 /**
  * 创建竞技场、补齐类任务执行器
@@ -148,7 +149,37 @@ export function createTasksArena(deps) {
 
         for (let i = 0; i < fights; i++) {
           if (shouldStop.value) break;
-          await tokenStore.sendMessageWithPromise(tokenId, "arena_startarea", {});
+          // 🔴 arena_startarea 的 200020（「出了点小问题」）= 会话占用/暂态（2026-11-03
+          //    一轮事故 22 号全中：切号后旧会话未及释放，新会话 startarea 被拒）。
+          //    master 口径：限流/暂态类不判死，按可调间隔重试（默认 60s，与普通限流
+          //    同一逻辑），最多重试 2 次仍失败才放弃该账号本轮（0 战力资格型号也会在
+          //    这里被自然过滤，不会卡死批次）。
+          let startareaOk = false;
+          for (let sa = 0; sa <= 2; sa++) {
+            try {
+              await tokenStore.sendMessageWithPromise(
+                tokenId,
+                "arena_startarea",
+                {},
+              );
+              startareaOk = true;
+              break;
+            } catch (startErr) {
+              const isTransient200020 =
+                String(startErr?.message || startErr).includes("200020");
+              if (!isTransient200020 || sa >= 2 || shouldStop.value) {
+                throw startErr;
+              }
+              const waitMs = getRateLimitRetryMs();
+              addLog({
+                time: new Date().toLocaleTimeString(),
+                message: `${token.name} 进入竞技场赛区被拒（200020，会话占用/暂态），${Math.round(waitMs / 1000)}秒后重试（第${sa + 1}/2次）`,
+                type: "warning",
+              });
+              await new Promise((r) => setTimeout(r, waitMs));
+            }
+          }
+          if (!startareaOk) continue;
           let targets;
           try {
             targets = await tokenStore.sendMessageWithPromise(
