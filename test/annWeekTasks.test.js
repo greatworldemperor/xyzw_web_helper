@@ -28,6 +28,8 @@ import {
   ANN_PUZZLE_PIECE_COST,
   listClaimableWeekMissions,
   readPuzzleState,
+  planYExchange,
+  planXShopPurchases,
   createTasksAnnWeek,
 } from "../src/utils/batch/tasksAnnWeek.js";
 
@@ -590,4 +592,90 @@ test("批量拼图：无拼图指针（本期完成/未开）→ 只发查询帧
   assert.equal(commands.filter((c) => c.command === "activity_photo").length, 0);
   assert.equal(commands.filter((c) => c.command === "activity_claimphotoreward").length, 0);
   assert.ok(logs.some((l) => l.message.includes("无进行中的块")));
+});
+
+// ── ③ 商店兑换（2026-11-05 抓包 xyzw_20261105_225125.pcap 逐字回归）───────────────
+// 证据：A 号 980 X 花到 0（序列 217/211/213/212/216/215/214 = 5/5/10/20/10/18/1）；
+//       B 号 780 X 花剩 5（215×5 止步，214 单价 10 买不起）；单价 25/5/10/10/25/15/10。
+
+test("商店计划：余额 980 → 逐字复现 A 号序列（花到 0）", () => {
+  assert.deepEqual(planXShopPurchases(980), [
+    { goodsId: 261016217, quantity: 5 },
+    { goodsId: 261016211, quantity: 5 },
+    { goodsId: 261016213, quantity: 10 },
+    { goodsId: 261016212, quantity: 20 },
+    { goodsId: 261016216, quantity: 10 },
+    { goodsId: 261016215, quantity: 18 },
+    { goodsId: 261016214, quantity: 1 },
+  ]);
+});
+
+test("商店计划：余额 780 → 逐字复现 B 号序列（215×5 止步，214 买不起）", () => {
+  assert.deepEqual(planXShopPurchases(780), [
+    { goodsId: 261016217, quantity: 5 },
+    { goodsId: 261016211, quantity: 5 },
+    { goodsId: 261016213, quantity: 10 },
+    { goodsId: 261016212, quantity: 20 },
+    { goodsId: 261016216, quantity: 10 },
+    { goodsId: 261016215, quantity: 5 },
+  ]);
+});
+
+test("商店计划：余额买不起任何一格 → 空计划", () => {
+  assert.deepEqual(planXShopPurchases(0), []);
+  assert.deepEqual(planXShopPurchases(4), []);
+});
+
+test("Y 兑换计划：≥7 兑皮肤、余数折算（A 号 7→皮肤 / B 号 5→折算）", () => {
+  assert.deepEqual(planYExchange(7), { skinQty: 1, y2xQty: 0 });
+  assert.deepEqual(planYExchange(5), { skinQty: 0, y2xQty: 5 });
+  assert.deepEqual(planYExchange(9), { skinQty: 1, y2xQty: 2 });
+  assert.deepEqual(planYExchange(0), { skinQty: 0, y2xQty: 0 });
+});
+
+test("批量周奖励整合：Y=5 先折算 50X 再进 X 商店（复现 B 号全序列）", async () => {
+  let x = 730;
+  let y = 5;
+  const COSTS = {
+    261016217: 25, 261016211: 5, 261016213: 10,
+    261016212: 10, 261016216: 25, 261016215: 15, 261016214: 10,
+  };
+  const { tasks, commands, logs } = makeTasks({
+    send: (command, body) => {
+      if (command === "activity_warorderget") return {}; // 无战令状态 → 周任务跳过
+      if (command === "activity_get") return {}; // 无拼图指针 → 拼图跳过
+      if (command === "role_getroleinfo") {
+        return { role: { items: { 5291: { quantity: y }, 5293: { quantity: x } } } };
+      }
+      if (command === "activity_exchange") {
+        if (body.goodsId === 261016147) {
+          y -= body.quantity;
+          x += body.quantity * 10;
+        } else {
+          x -= body.quantity * COSTS[body.goodsId];
+        }
+        return { role: { items: { 5293: { quantity: x } } } };
+      }
+      return {};
+    },
+  });
+
+  await tasks.batchAnnWeekReward();
+
+  const exchanges = commands.filter((c) => c.command === "activity_exchange");
+  assert.deepEqual(
+    exchanges.map((c) => `${c.body.goodsId}x${c.body.quantity}`),
+    [
+      "261016147x5",
+      "261016217x5",
+      "261016211x5",
+      "261016213x10",
+      "261016212x20",
+      "261016216x10",
+      "261016215x5",
+    ],
+  );
+  assert.equal(x, 5); // 与 B 号实测一致：花剩 5
+  assert.equal(y, 0);
+  assert.equal(logs.filter((l) => l.type === "error").length, 0);
 });

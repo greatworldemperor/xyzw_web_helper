@@ -39,6 +39,16 @@
  *   - 错误分类复用 tasksAnnBoss 导出的 classifyClaimError / rewardText / readItemQuantity；
  *   - 限流(400340)立即停本账号剩余动作；超时/断连走 sendWithRecovery（刷新Token重发）；
  *   - 连接生命周期与 daily/boss 模块同口径：ensureConnection → finally close + releaseSlot。
+ *
+ * 2026-11-05 抓包（xyzw_20261105_225125.pcap，活动最后一天，master 手动操作双号）新增③商店兑换：
+ *   - X=5293（拼图领奖产出）资源商店 actId 26101611，7 种商品限购，兑换顺序 = 优先级
+ *     （A/B 两号顺序完全一致）：217→211→213→212→216→215→214；
+ *     单价由 B 号余额差实证（217×5 花费 125 ⇒ 25/个）：25/5/10/10/25/15/10；
+ *     A 号 980 X 全花到 0、B 号 780 花剩 5（214 单价 10 > 5 买不起）——纯函数逐字复现两号序列；
+ *   - Y=5291 皮肤商店 actId 26101610：7 Y → 1 皮肤（A 号 goodsId 261016145 → 皮肤 11905，
+ *     master 指定就兑这个）；不足 7 个时 1 Y → 10 X（B 号 goodsId 261016147 ×5 → 5293+50，
+ *     B 号先折算再进 X 商店）；余数逻辑：先兑皮肤(floor(Y/7))，余数 <7 全部折算成 X；
+ *   - 兑换响应 = Common_RewardResp（role.items 快照），已注册 + 已有响应映射，零协议改动。
  */
 
 import {
@@ -94,6 +104,40 @@ export const ANN_PUZZLE_PIECE_COST = 10;
 /** 拼图块总数保险丝（2026-10-29 实证序列已到 61+；留多周追赶余量） */
 export const ANN_PUZZLE_MAX_PIECES = 16;
 
+// ── 商店兑换常量（2026-11-05 抓包实证，活动最后一天 master 手动操作双号）─────────
+
+/** X 资源商店（5293 兑资源）与 Y 皮肤商店（5291 兑皮肤/折算）活动实例 ID */
+export const ANN_SHOP_X_ACT_ID = 26101611;
+export const ANN_SHOP_Y_ACT_ID = 26101610;
+
+/** X/Y 货币 item ID（X=拼图领奖产出 5293；Y=每周第 3 块拼图产出 5291） */
+export const ANN_SHOP_X_ITEM_ID = 5293;
+export const ANN_SHOP_Y_ITEM_ID = 5291;
+
+/** Y 兑皮肤：goodsId 261016145 → 皮肤 11905（A 号实证），7 Y/个（master 指定兑这个） */
+export const ANN_SKIN_GOODS_ID = 261016145;
+export const ANN_SKIN_COST_Y = 7;
+
+/** Y 不足 7 个时按 1 Y → 10 X 折算（B 号实证 goodsId 261016147） */
+export const ANN_Y2X_GOODS_ID = 261016147;
+export const ANN_Y2X_X_GAIN = 10;
+
+/**
+ * X 商店优先级表（master 口径：抓包兑换顺序 = 优先级，上一格兑满兑下一格）。
+ * qty = 抓包购买量 —— 服务端已实证收得下 ⇒ 真实限购 ≥ qty（保守方向安全）；
+ *   215/214 的 qty 受余额所限（18/1），是限购已知下界，超高余额账号可能剩零头。
+ * cost = 5293 单价（B 号余额差实证：217×5 花费 125 ⇒ 25/个）。
+ */
+export const ANN_X_GOODS_PLAN = Object.freeze([
+  { goodsId: 261016217, cost: 25, qty: 5 },
+  { goodsId: 261016211, cost: 5, qty: 5 },
+  { goodsId: 261016213, cost: 10, qty: 10 },
+  { goodsId: 261016212, cost: 10, qty: 20 },
+  { goodsId: 261016216, cost: 25, qty: 10 },
+  { goodsId: 261016215, cost: 15, qty: 18 },
+  { goodsId: 261016214, cost: 10, qty: 1 },
+]);
+
 const ACTION_INTERVAL_MS = 500;
 
 // ── 纯函数（导出给测试）─────────────────────────────────────────────────────────
@@ -137,6 +181,35 @@ export function readPuzzleState(body) {
 
 /** 领奖响应里的下一块指针（可能缺 activity 快照 → null） */
 export const readNextPuzzleState = readPuzzleState;
+
+/**
+ * Y(5291) 兑换计划（2026-11-05 master 口径）：
+ * ≥7 的部分按 7:1 兑皮肤（goodsId 261016145），余数（<7）全部按 1Y→10X 折算。
+ * 返回 { skinQty, y2xQty }。
+ */
+export function planYExchange(yBalance) {
+  const skinQty = Math.floor(yBalance / ANN_SKIN_COST_Y);
+  return { skinQty, y2xQty: yBalance - skinQty * ANN_SKIN_COST_Y };
+}
+
+/**
+ * X 商店购买计划：按优先级逐格，买 min(限购, floor(余额/单价))；
+ * 余额买不起一格（cost）时跳下一格。
+ * 逐字复现 2026-11-05 抓包：余额 980 → A 号序列(5/5/10/20/10/18/1，花到 0)；
+ * 余额 780 → B 号序列(5/5/10/20/10/5，剩 5 止步)。
+ */
+export function planXShopPurchases(xBalance, plan = ANN_X_GOODS_PLAN) {
+  const out = [];
+  let left = xBalance;
+  for (const { goodsId, cost, qty } of plan) {
+    const n = Math.min(qty, Math.floor(left / cost));
+    if (n > 0) {
+      out.push({ goodsId, quantity: n });
+      left -= n * cost;
+    }
+  }
+  return out;
+}
 
 // ── 批量任务 ───────────────────────────────────────────────────────────────────
 
@@ -537,13 +610,161 @@ export function createTasksAnnWeek(deps) {
       "周年庆拼图兑换结束",
     );
 
-  // ── ③ 合并：领取周年庆每周奖励（一周一次，master 2026-10-29 口径）────────────
-  //    同一连接先领周任务（攒 5290）→ 再「放入胶卷」用光 5290（含部分投入+掉卡读卡）
+  // ── ③ 商店兑换（2026-11-05 新增：Y 皮肤/折算 → X 资源按优先级）────────────────
+  //    顺序跟随 B 号实测：Y 先处理（≥7 兑皮肤、余数折 10X/个），折出来的 X 进 X 商店预算
+  const exchangeShopForToken = async ({ tokenId, token }) => {
+    const tokenName = token?.name || tokenId;
+    let hardFailed = false;
+    let didSomething = false;
+
+    // 3.1 读 X/Y 余额（role_getroleinfo → role.items；缺键 = 0）
+    const roleInfo = await sendWithRecovery(
+      tokenId,
+      tokenName,
+      "role_getroleinfo",
+      {},
+      15000,
+      "周年庆商店余额查询",
+    );
+    const yBalance = readItemQuantity(roleInfo, ANN_SHOP_Y_ITEM_ID) ?? 0;
+    let xBalance = readItemQuantity(roleInfo, ANN_SHOP_X_ITEM_ID) ?? 0;
+    if (yBalance <= 0 && xBalance <= 0) {
+      log(tokenName, "周年庆商店：X/Y 余额均为 0，无兑换可做");
+      return "nothing";
+    }
+    log(tokenName, `周年庆商店：Y(5291)=${yBalance}，X(5293)=${xBalance}`);
+
+    // 3.2 皮肤：7 Y → 1 个（goodsId 261016145 = 皮肤 11905，A 号 2026-11-05 实证）
+    const { skinQty, y2xQty } = planYExchange(yBalance);
+    if (skinQty > 0) {
+      try {
+        const resp = await sendWithRecovery(
+          tokenId,
+          tokenName,
+          "activity_exchange",
+          { activityId: ANN_SHOP_Y_ACT_ID, goodsId: ANN_SKIN_GOODS_ID, quantity: skinQty },
+          8000,
+          "周年庆皮肤兑换",
+        );
+        didSomething = true;
+        log(
+          tokenName,
+          `周年庆皮肤兑换成功（${skinQty} 个 × 7Y → 皮肤 11905，${rewardText(resp)}）`,
+          "success",
+        );
+      } catch (error) {
+        const kind = classifyClaimError(error);
+        if (kind === "ratelimit") {
+          log(tokenName, "触发限流(400340)，周年庆商店下次再兑", "warning");
+          return didSomething ? "claimed" : "nothing";
+        }
+        if (kind === "hard") {
+          log(tokenName, `周年庆皮肤兑换失败：${errorText(error)}`, "error");
+          hardFailed = true;
+        } else {
+          // 皮肤已拥有 / 活动限制等 benign：跳过，不影响后续折算与 X 商店
+          log(tokenName, `周年庆皮肤兑换被拒（${errorText(error)}），跳过`, "warning");
+        }
+      }
+      await sleep(ACTION_INTERVAL_MS);
+    }
+
+    // 3.3 余数 Y → 10X/个（goodsId 261016147，B 号实证 5Y → 5293+50）
+    if (y2xQty > 0) {
+      try {
+        const resp = await sendWithRecovery(
+          tokenId,
+          tokenName,
+          "activity_exchange",
+          { activityId: ANN_SHOP_Y_ACT_ID, goodsId: ANN_Y2X_GOODS_ID, quantity: y2xQty },
+          8000,
+          "周年庆 Y 折算",
+        );
+        didSomething = true;
+        const shown = readItemQuantity(resp, ANN_SHOP_X_ITEM_ID);
+        if (shown !== null) xBalance = shown;
+        log(
+          tokenName,
+          `周年庆 Y 折算成功（${y2xQty} Y → ${y2xQty * ANN_Y2X_X_GAIN} X，X 余额 ${xBalance}）`,
+          "success",
+        );
+      } catch (error) {
+        const kind = classifyClaimError(error);
+        if (kind === "ratelimit") {
+          log(tokenName, "触发限流(400340)，周年庆商店下次再兑", "warning");
+          return didSomething ? "claimed" : "nothing";
+        }
+        if (kind === "hard") {
+          log(tokenName, `周年庆 Y 折算失败：${errorText(error)}（继续 X 商店）`, "error");
+        } else {
+          log(tokenName, `周年庆 Y 折算被拒（${errorText(error)}）`, "warning");
+        }
+      }
+      await sleep(ACTION_INTERVAL_MS);
+    }
+
+    // 3.4 X 商店：纯函数出计划（优先级 + min(限购, 买得起)），逐笔发送，余额以响应快照为准
+    const purchases = planXShopPurchases(xBalance);
+    if (purchases.length === 0) {
+      log(tokenName, `周年庆 X 商店：余额 ${xBalance} 买不起任何一格，跳过`);
+    }
+    for (const { goodsId, quantity } of purchases) {
+      if (shouldStop.value) break;
+      try {
+        const resp = await sendWithRecovery(
+          tokenId,
+          tokenName,
+          "activity_exchange",
+          { activityId: ANN_SHOP_X_ACT_ID, goodsId, quantity },
+          8000,
+          `周年庆商店 ${goodsId}`,
+        );
+        didSomething = true;
+        const shown = readItemQuantity(resp, ANN_SHOP_X_ITEM_ID);
+        if (shown !== null) xBalance = shown;
+        log(
+          tokenName,
+          `周年庆商店 ${goodsId} ×${quantity} 成功（X 余额 ${xBalance}，${rewardText(resp)}）`,
+          "success",
+        );
+      } catch (error) {
+        const kind = classifyClaimError(error);
+        if (kind === "ratelimit") {
+          log(tokenName, "触发限流(400340)，周年庆商店下次再兑", "warning");
+          break;
+        }
+        if (kind === "hard") {
+          log(tokenName, `周年庆商店 ${goodsId} 失败：${errorText(error)}，停止本账号商店`, "error");
+          hardFailed = true;
+          break;
+        }
+        // benign/boundary（限购已满等）→ 计划里的量都是抓包实证发得出的，被拒只记日志继续
+        log(tokenName, `周年庆商店 ${goodsId} 被拒（${errorText(error)}），继续下一格`, "warning");
+      }
+      await sleep(ACTION_INTERVAL_MS);
+    }
+
+    if (hardFailed) return "failed";
+    return didSomething ? "claimed" : "nothing";
+  };
+
+  // ── ④ 合并：领取周年庆每周奖励（一周一次，master 2026-10-29 口径；2026-11-05 加③）──
+  //    同一连接先领周任务（攒 5290）→ 再「放入胶卷」用光 5290 → 最后商店兑换
+  //    （X=5293 按优先级花光 + Y=5291 兑皮肤/折算）
   const weekRewardForToken = async ({ tokenId, token }) => {
     const outcomeClaim = await claimWeekForToken({ tokenId, token });
     const outcomePuzzle = await exchangePuzzleForToken({ tokenId, token });
-    if (outcomeClaim === "failed" || outcomePuzzle === "failed") return "failed";
-    return outcomeClaim === "claimed" || outcomePuzzle === "claimed"
+    const outcomeShop = await exchangeShopForToken({ tokenId, token });
+    if (
+      outcomeClaim === "failed" ||
+      outcomePuzzle === "failed" ||
+      outcomeShop === "failed"
+    ) {
+      return "failed";
+    }
+    return outcomeClaim === "claimed" ||
+      outcomePuzzle === "claimed" ||
+      outcomeShop === "claimed"
       ? "claimed"
       : "nothing";
   };
