@@ -3,9 +3,12 @@ import { test } from "node:test";
 
 import {
   buildTenBatchPlan,
+  classifyArenaError,
+  enterArena,
   getClaimableBoxPoints,
   getItemQuantity,
   is400340Error,
+  isArenaRejectedError,
   isConnectionError,
   isModuleUnavailableError,
   isOfflineSendError,
@@ -901,4 +904,138 @@ test("wrapTokenStoreWithConnectionRetry passes business rejections straight thro
     wrapped.sendMessageWithPromise("t1", "hero_recruit", {}, 8000),
     /200020/,
   );
+});
+
+// ===== 竞技场入场错误三分（master 2026-11-06 口径）=====
+// 200020 = 「不能打的号」→ 跳过；限流 = 「打得动的号」→ 等待重试，绝不跳过。
+
+test("classifyArenaError: 200020 判 rejected，限流判 rate-limit", () => {
+  const byCode = Object.assign(new Error("服务器错误"), { code: 200020 });
+  const byText = new Error(
+    "服务器错误: 200020 - 出了点小问题，请尝试重启游戏解决～",
+  );
+  const byHint = new Error("出了点小问题，请尝试重启游戏解决～");
+  for (const error of [byCode, byText, byHint]) {
+    assert.equal(isArenaRejectedError(error), true);
+    assert.equal(classifyArenaError(error), "rejected");
+  }
+
+  // 竞技场打得太频繁 → 限流，必须继续等待/重试
+  const throttled = [
+    new Error("服务器错误: 200400 - 操作太快，请稍后再试"),
+    new Error("服务器错误: 400340 - 未知错误"),
+    new Error("服务器错误: 200350 - 登录异常，请稍后再试"),
+    { response: { status: 429 } },
+  ];
+  for (const error of throttled) {
+    assert.equal(classifyArenaError(error), "rate-limit");
+  }
+
+  // 限流优先于 200020：宁可重试，也不能把能打的号误跳过
+  assert.equal(
+    classifyArenaError(new Error("200020 出了点小问题 / 操作过快")),
+    "rate-limit",
+  );
+
+  assert.equal(
+    classifyArenaError(new Error("服务器错误: 200160 - 模块未开启")),
+    "other",
+  );
+  assert.equal(classifyArenaError(new Error("请求超时")), "other");
+  assert.equal(isArenaRejectedError(new Error("请求超时")), false);
+});
+
+test("enterArena: 200020 立即跳过，一次都不等待", async () => {
+  let sends = 0;
+  let sleeps = 0;
+  const rejected = [];
+  const result = await enterArena({
+    send: async () => {
+      sends += 1;
+      throw new Error("服务器错误: 200020 - 出了点小问题");
+    },
+    retryDelayMs: 60000,
+    sleepFn: async () => {
+      sleeps += 1;
+    },
+    onRejected: (info) => rejected.push(info),
+  });
+
+  assert.equal(result, "skipped");
+  assert.equal(sends, 1);
+  assert.equal(sleeps, 0);
+  assert.equal(rejected.length, 1);
+});
+
+test("enterArena: 限流按间隔重试直到成功，不跳过", async () => {
+  let sends = 0;
+  const waits = [];
+  const result = await enterArena({
+    send: async () => {
+      sends += 1;
+      if (sends <= 2) throw new Error("服务器错误: 200400 - 操作太快");
+      return "entered";
+    },
+    retryDelayMs: 60000,
+    sleepFn: async (ms) => {
+      waits.push(ms);
+    },
+  });
+
+  assert.equal(result, "ok");
+  assert.equal(sends, 3);
+  assert.deepEqual(waits, [60000, 60000]);
+});
+
+test("enterArena: 限流重试耗尽与其它错误原样抛出（不是跳过）", async () => {
+  let sends = 0;
+  let sleeps = 0;
+  await assert.rejects(
+    enterArena({
+      send: async () => {
+        sends += 1;
+        throw new Error("200400 操作太快");
+      },
+      retryDelayMs: 60000,
+      sleepFn: async () => {
+        sleeps += 1;
+      },
+    }),
+    /200400/,
+  );
+  assert.equal(sends, 3);
+  assert.equal(sleeps, 2);
+
+  let otherSends = 0;
+  await assert.rejects(
+    enterArena({
+      send: async () => {
+        otherSends += 1;
+        throw new Error("请求超时");
+      },
+      sleepFn: async () => {
+        throw new Error("不该等待");
+      },
+    }),
+    /请求超时/,
+  );
+  assert.equal(otherSends, 1);
+});
+
+test("enterArena: 用户停止时不再等待限流重试", async () => {
+  let sends = 0;
+  await assert.rejects(
+    enterArena({
+      send: async () => {
+        sends += 1;
+        throw new Error("200400 操作太快");
+      },
+      shouldStop: () => true,
+      sleepFn: async () => {
+        throw new Error("不该等待");
+      },
+    }),
+    /200400/,
+  );
+  assert.equal(sends, 1);
 });

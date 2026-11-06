@@ -149,6 +149,86 @@ export function isRateLimitError(error) {
   );
 }
 
+/**
+ * 竞技场「拒绝入场」= 业务码 200020（「出了点小问题，请尝试重启游戏解决～」）。
+ *
+ * 服务端错误信封不保证带 code（营地排查时踩过），所以同时认：
+ *   error.code / error.errorCode / 文本里的 200020 / 服务端文案「出了点小问题」。
+ * ⚠️ 本函数只回答「是不是 200020」，不负责区分限流 —— 用 classifyArenaError。
+ */
+export function isArenaRejectedError(error) {
+  const text = getErrorSearchText(error);
+  return (
+    Number(error?.code) === 200020 ||
+    Number(error?.errorCode) === 200020 ||
+    /\b200020\b/.test(text) ||
+    text.includes("出了点小问题")
+  );
+}
+
+/**
+ * 竞技场错误三分（master 2026-11-06 口径）：
+ *   "rate-limit" 打得太频繁（200400 / 400340 / 200350 / 429 …）→ **绝不跳过**，按限流等待重试；
+ *   "rejected"   200020 没资格打 → 确定性拒绝，**立即跳过该账号本轮**，不重试、不进失败清单；
+ *   "other"      其余错误 → 交给调用方按原逻辑处理（通常抛出标 failed）。
+ *
+ * 🔴 限流判定必须排在 200020 前面：宁可把「疑似限流的 200020」拿去重试，
+ *    也不能把一个真正被限流、稍等就能打的号当成「不能打的号」跳过。
+ */
+export function classifyArenaError(error) {
+  if (isRateLimitError(error)) return "rate-limit";
+  if (isArenaRejectedError(error)) return "rejected";
+  return "other";
+}
+
+/**
+ * 竞技场入场统一编排（「一键打三次」与「一键/智能竞技场补齐」共用）。
+ *
+ * send() 发送 arena_startarea；返回 "ok" 表示入场成功，"skipped" 表示被 200020 拒绝、
+ * 调用方应立即跳过该账号本轮（恢复阵容、标 completed、释放槽位）。
+ * 限流按 getRateLimitRetryMs()（默认 60s）最多重试 maxRateLimitRetries 次；
+ * 其它错误原样抛出，由调用方标 failed。shouldStop 命中时不再等待，直接抛。
+ */
+export async function enterArena({
+  send,
+  maxRateLimitRetries = 2,
+  retryDelayMs,
+  sleepFn = sleep,
+  shouldStop,
+  onRejected,
+  onRateLimitRetry,
+}) {
+  const delayMs =
+    Number(retryDelayMs) > 0 ? Number(retryDelayMs) : getRateLimitRetryMs();
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await send();
+      return "ok";
+    } catch (error) {
+      const kind = classifyArenaError(error);
+      if (kind === "rejected") {
+        onRejected?.({ error, attempt });
+        return "skipped";
+      }
+      if (
+        kind !== "rate-limit" ||
+        attempt >= maxRateLimitRetries ||
+        shouldStop?.()
+      ) {
+        throw error;
+      }
+      onRateLimitRetry?.({
+        error,
+        attempt: attempt + 1,
+        maxRateLimitRetries,
+        delayMs,
+      });
+      await sleepFn(delayMs);
+    }
+  }
+}
+
 export async function runWithRateLimitRetry({
   execute,
   retryDelayMs,

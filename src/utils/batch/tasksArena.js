@@ -5,7 +5,7 @@
 
 import { FISH_TARGET, ARENA_TARGET } from "./constants.js";
 import { calcSmartTopUpTargets } from "./smartTopUp.js";
-import { getRateLimitRetryMs } from "../helperTaskRunner.js";
+import { classifyArenaError, enterArena } from "../helperTaskRunner.js";
 
 /**
  * 创建竞技场、补齐类任务执行器
@@ -45,6 +45,72 @@ export function createTasksArena(deps) {
             "role_getroleinfo",
             params,
           ));
+
+  /**
+   * 竞技场入场统一入口（「一键打三次」与「一键/智能补齐」共用）。
+   *
+   * master 2026-11-06 口径：
+   *   · 200020「拒绝入场」= **不能打的号**，返回 "skipped"：立即跳过该账号本轮，
+   *     不重试、不计失败、不进失败清单（一键重跑只补「漏打」，不补「不能打」）；
+   *   · 限流（竞技场打得太频繁：200400/400340/200350/429…）= **打得动的号**，
+   *     按 getRateLimitRetryMs()（默认 60s）等待重试，绝不跳过；
+   *   · 其它错误原样抛出，交给调用方标 failed。
+   *
+   * ⚠️ 11-03 曾把 200020 当暂态一起塞进限流重试，导致被拒账号空等 120s 后仍被
+   *    标 failed。分流逻辑在 helperTaskRunner.classifyArenaError（限流优先判定）。
+   */
+  const tryEnterArena = (tokenId, tokenName, timeoutMs) =>
+    enterArena({
+      send: () => {
+        const args = [tokenId, "arena_startarea", {}];
+        if (timeoutMs) args.push(timeoutMs);
+        return tokenStore.sendMessageWithPromise(...args);
+      },
+      shouldStop: () => shouldStop.value,
+      onRateLimitRetry: ({ attempt, maxRateLimitRetries, delayMs, error }) => {
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${tokenName} 进入竞技场赛区遇限流（${error?.message || error}），${Math.round(delayMs / 1000)}秒后重试（第${attempt}/${maxRateLimitRetries}次）`,
+          type: "warning",
+        });
+      },
+    });
+
+  /**
+   * 200020 跳过的统一收尾：记日志 → 标 completed（不进失败清单）→ 恢复原阵容。
+   * 调用方随后 return，由 finally 关连接、释放连接槽位。
+   * 恢复阵容失败只记 warning，绝不把「不能打的号」翻成 failed。
+   */
+  const skipArena = async ({
+    tokenId,
+    tokenName,
+    taskLabel,
+    reason,
+    restoreFormation,
+  }) => {
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `${tokenName} ${reason} → 跳过本账号本轮${taskLabel}（200020：无参赛资格，不重试、不计失败、不进失败清单）`,
+      type: "warning",
+    });
+    tokenStatus.value[tokenId] = "completed";
+    if (restoreFormation) {
+      try {
+        await restoreFormation();
+      } catch (e) {
+        addLog({
+          time: new Date().toLocaleTimeString(),
+          message: `${tokenName} 跳过后恢复原阵容失败: ${e?.message || "未知错误"}（不影响跳过结论）`,
+          type: "warning",
+        });
+      }
+    }
+    addLog({
+      time: new Date().toLocaleTimeString(),
+      message: `=== ${tokenName} ${taskLabel}已跳过（200020 拒绝入场）===`,
+      type: "warning",
+    });
+  };
 
   /**
    * 一键竞技场战斗3次
@@ -147,39 +213,31 @@ export function createTasksArena(deps) {
           });
         }
 
+        // 本账号本轮跳过（200020）的统一收尾；恢复阵容只在切过阵容时需要。
+        const skipCurrentArena = (reason) =>
+          skipArena({
+            tokenId,
+            tokenName: token.name,
+            taskLabel: "一键竞技场战斗",
+            reason,
+            restoreFormation: Isswitching
+              ? () =>
+                  tokenStore.sendMessageWithPromise(
+                    tokenId,
+                    "presetteam_saveteam",
+                    { teamId: currentFormation },
+                    5000,
+                  )
+              : null,
+          });
+
         for (let i = 0; i < fights; i++) {
           if (shouldStop.value) break;
-          // 🔴 arena_startarea 的 200020（「出了点小问题」）= 会话占用/暂态（2026-11-03
-          //    一轮事故 22 号全中：切号后旧会话未及释放，新会话 startarea 被拒）。
-          //    master 口径：限流/暂态类不判死，按可调间隔重试（默认 60s，与普通限流
-          //    同一逻辑），最多重试 2 次仍失败才放弃该账号本轮（0 战力资格型号也会在
-          //    这里被自然过滤，不会卡死批次）。
-          let startareaOk = false;
-          for (let sa = 0; sa <= 2; sa++) {
-            try {
-              await tokenStore.sendMessageWithPromise(
-                tokenId,
-                "arena_startarea",
-                {},
-              );
-              startareaOk = true;
-              break;
-            } catch (startErr) {
-              const isTransient200020 =
-                String(startErr?.message || startErr).includes("200020");
-              if (!isTransient200020 || sa >= 2 || shouldStop.value) {
-                throw startErr;
-              }
-              const waitMs = getRateLimitRetryMs();
-              addLog({
-                time: new Date().toLocaleTimeString(),
-                message: `${token.name} 进入竞技场赛区被拒（200020，会话占用/暂态），${Math.round(waitMs / 1000)}秒后重试（第${sa + 1}/2次）`,
-                type: "warning",
-              });
-              await new Promise((r) => setTimeout(r, waitMs));
-            }
+          const entry = await tryEnterArena(tokenId, token.name);
+          if (entry === "skipped") {
+            await skipCurrentArena("进入竞技场赛区被拒");
+            return;
           }
-          if (!startareaOk) continue;
           let targets;
           try {
             targets = await tokenStore.sendMessageWithPromise(
@@ -188,6 +246,10 @@ export function createTasksArena(deps) {
               {},
             );
           } catch (err) {
+            if (classifyArenaError(err) === "rejected") {
+              await skipCurrentArena("获取竞技场目标被拒");
+              return;
+            }
             message.error(`获取竞技场目标失败：${err.message}`);
             break;
           }
@@ -233,6 +295,10 @@ export function createTasksArena(deps) {
             });
             await new Promise((r) => setTimeout(r, delayConfig.battle));
           } catch (e) {
+            if (classifyArenaError(e) === "rejected") {
+              await skipCurrentArena("竞技场对决被拒");
+              return;
+            }
             addLog({
               time: new Date().toLocaleTimeString(),
               message: `${token.name} 竞技场对决失败: ${e.message || "未知错误"}`,
@@ -801,21 +867,45 @@ export function createTasksArena(deps) {
            return;
         }
 
-        try {
-          await tokenStore.sendMessageWithPromise(
+        // 本账号本轮跳过（200020）的统一收尾；恢复阵容只在切过阵容时需要。
+        const skipCurrentArena = (reason) =>
+          skipArena({
             tokenId,
-            "arena_startarea",
-            {},
-            6000,
-          );
+            tokenName: token.name,
+            taskLabel,
+            reason,
+            restoreFormation: Isswitching
+              ? () =>
+                  tokenStore.sendMessageWithPromise(
+                    tokenId,
+                    "presetteam_saveteam",
+                    { teamId: currentFormation },
+                    5000,
+                  )
+              : null,
+          });
+
+        let entry;
+        try {
+          entry = await tryEnterArena(tokenId, token.name, 6000);
         } catch (error) {
+          // 非 200020（含限流重试耗尽）：保持原有「记 warning 后继续补齐」的行为，
+          // 绝不跳过 —— 竞技场限流只是打得频繁，等一会还能打。
           addLog({
             time: new Date().toLocaleTimeString(),
-            message: `${token.name} 开始竞技场失败: ${error.message}`,
+            message: `${token.name} 开始竞技场失败: ${error.message || error}（继续尝试补齐）`,
             type: "warning",
           });
+          entry = "ok";
+        }
+        if (entry === "skipped") {
+          await skipCurrentArena("进入竞技场赛区被拒");
+          return;
         }
 
+        // 循环内任一帧命中 200020 即停：没资格打的号再试多少场都打不了，
+        // 不能让它把 planFights / 100 场上限空转完。
+        let arenaRejectedReason = null;
         let safetyCounter = 0;
         const safetyMaxFights = 100;
         let round = 1;
@@ -849,6 +939,10 @@ export function createTasksArena(deps) {
                 8000,
               );
             } catch (err) {
+              if (classifyArenaError(err) === "rejected") {
+                arenaRejectedReason = "获取竞技场目标被拒";
+                break;
+              }
               addLog({
                 time: new Date().toLocaleTimeString(),
                 message: `${token.name} 获取竞技场目标失败：${err.message}`,
@@ -884,6 +978,10 @@ export function createTasksArena(deps) {
                 type: "info",
               });
             } catch (e) {
+              if (classifyArenaError(e) === "rejected") {
+                arenaRejectedReason = "竞技场对决被拒";
+                break;
+              }
               addLog({
                 time: new Date().toLocaleTimeString(),
                 message: `${token.name} 竞技场对决失败：${e.message}`,
@@ -894,6 +992,9 @@ export function createTasksArena(deps) {
             safetyCounter++;
             await new Promise((r) => setTimeout(r, delayConfig.refresh));
           }
+
+          // 200020 立即收尾，不再做 activity_get 复查 / 下一轮计划。
+          if (arenaRejectedReason) break;
 
           const updatedResult = await tokenStore.sendMessageWithPromise(
             tokenId,
@@ -945,6 +1046,11 @@ export function createTasksArena(deps) {
           });
 
           round++;
+        }
+
+        if (arenaRejectedReason) {
+          await skipCurrentArena(arenaRejectedReason);
+          return;
         }
 
         const finalResult = await tokenStore.sendMessageWithPromise(
