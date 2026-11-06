@@ -10,7 +10,7 @@
 | **黑市（智能 + 黑市周）** | `smartBlackMarket.js` · `batch/tasksStore.js` | `store_purchase{}` · `store_buy{goodsId:1}`（日任12）· `activity_get` · `activity_buystoregoods`（黑市周 9 / 金砖 5） | 已上线（智能黑市购物 + 黑市周商品勾选弹窗）；黑市周抓包 15/15、58/58 复现 | 金砖不足/超限错误码未抓（两号金砖均充足）；`buyDiamond` 语义仍属推测。文档 `docs/weekly-event-blackmarket-analysis.md` |
 | **宝箱（智能开箱）** | `smartOpenBox.js` · `batch/tasksItem.js` | `item_claimboxpointreward` · `item_openbox`（日任7） | 已上线（`batchSmartOpenBox`） | 逻辑 = 钻石优先、**兑满 9 档得钻石**、回退木箱。🔴 **与金鱼宝箱口径不同**（金鱼是活动积分消耗）⇒ **互不通用，别照金鱼口径改它** |
 | **逐鹿盐山竞猜** | `batch/tasksApex.js` | `apex_getroleinfo` · `apex_getguesslist` · `apex_guess` | 已上线 | — |
-| **竞技场** | `batch/tasksArena.js` | `arena_startarea` · `arena_getareatarget` · `fight_startareaarena` · `presetteam_*` · `artifact_lottery` | 已上线 | 智能选敌只支持 `lowestPower`（默认）；候选 `roleList` **最多 4 个**，用 `info.power` 升序；`info.rank` 恒 0 不可当排名；服务端顺序视为随机 |
+| **竞技场** | `batch/tasksArena.js` | `arena_startarea` · `arena_getareatarget` · `fight_startareaarena` · `presetteam_*` · `artifact_lottery` | 已上线 | 智能选敌只支持 `lowestPower`（默认）；候选 `roleList` **最多 4 个**，用 `info.power` 升序；`info.rank` 恒 0 不可当排名；服务端顺序视为随机；🔴 200020 跳过 vs 限流重试必须分开（见下方「竞技场」） |
 | **盐杯竞猜** | `batch/tasksFootball.js` | `saltcup26_getbetinfo` · `saltcup26_placebet` | 已上线 | 默认客胜 `pick=3` |
 | **盐罐** | `batch/tasksBottle.js` | `bottlehelper_stop` / `start` / `claim` | 已上线 | — |
 | **宝库/梦境** | `batch/tasksDungeon.js` · `dreamConstants.js` | `bosstower_getinfo` / `startboss` / `startbox` · `dungeon_selecthero` · `dungeon_buymerchant` | 已上线 | 梦境仅开放日（`dreamConstants`） |
@@ -38,6 +38,28 @@
 - `smartOpenBox.js` = **日常开箱**：钻石优先，**兑满 9 档拿钻石**，回退木箱。
 - 金鱼的宝箱 = **活动积分消耗**（`activity_get.task.2`），走 `goldenfishConsumePlan`。
 - 🔴 **两者口径不同，互不通用**。master 明确：**别照金鱼那套去改 `smartOpenBox.js`**。
+
+### 竞技场（200020 与限流必须分开，2026-11-06 定案）
+
+- 🔴 **`arena_startarea` 的 200020 =「不能打的号」**：确定性拒绝（当前角色无参赛资格），
+  **立即跳过该账号本轮** —— 恢复原阵容、标 `completed`、不计失败、**不进失败清单 / 一键重跑清单**、
+  不重试、不再打任何一场、正常释放连接槽位。
+  master 口径：被 200020 拒绝的号不属于「漏打的号」；代码本身没问题的话，是不会出现漏打的号的。
+- 🔴 **竞技场限流（`200400` / `400340` / `200350` / `429` / 操作过快…）=「打得动的号」**：
+  只是打得频繁，**绝不跳过**，按 `getRateLimitRetryMs()`（默认 60s，localStorage `rateLimitRetrySec` 可调）
+  最多重试 2 次。分流时**限流判定优先于 200020**：宁可把疑似限流的 200020 拿去重试，
+  也不能把真限流号误判成「不能打」而跳过。
+- 实现：`helperTaskRunner.js` 的 `classifyArenaError` / `enterArena`（纯函数 + 单测）；
+  `batch/tasksArena.js` 的 `tryEnterArena` + `skipArena`，**一键打三次**与**一键/智能竞技场补齐**
+  共用同一口径；补齐循环内 `arena_getareatarget` / `fight_startareaarena` 命中 200020 也立即停，
+  避免把 100 场上限空转完。
+- 200020 判定同时认 `error.code`、文本 `200020`、文案「出了点小问题」（错误信封不保证带 code）。
+- 依据：`dailyTaskRunner.js` 同一个 `arena_startarea` 早有 `skipErrorCodes: [200020]`；
+  `tasksCampChallengeStrategy.js` / `tasksAnnDaily.js` / `tasksAnnBoss.js` 均把 200020 当确定性
+  结论跳过；`isRateLimitError` 判定表里根本不含 200020。
+- ⚠️ **历史**：11-03 提交 `9e596ec` 曾把 200020 当「会话占用/暂态」塞进 60s 限流重试，
+  结果被拒号空等 120s 后仍标 `failed`、还占着连接槽位拖住整波；11-06 提交 `081c9d2` 撤销该口径。
+  `05-redlines.md` §B-15 的「会话冷却导致 200020 泛滥」是**通用建连语义，不适用于竞技场入场**。
 
 ### 主线推关（重要区分）
 - **重方案（已上线）**：官方无头引擎（`headless` iframe 经 `sh1` 登录进主城）内**真实打赢**后才生成 `ClientBattleResult` 并提交 → 服务端接受。里程碑：首场官方无头战斗（1841 关）生成完整结果，本地按文档公式复算 digest 与官方**完全一致**（`serializedLen=2805`，样本 `local-data/headless_result_1841.json` + `verify_official_1841.mjs`）。
