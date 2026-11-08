@@ -19,7 +19,7 @@ import {
   getMyRole,
   summarizePantao,
 } from "./pantaoState.js";
-import { ACTION, planTurn } from "./pantaoPlan.js";
+import { ACTION, planTurn, toBonIntKeyBattleTeam } from "./pantaoPlan.js";
 
 /** 兜底地址：真实地址取自 legion_getpayloadbf 的 info.domainName */
 export const PAYLOAD_WS_FALLBACK = "wss://xxz-xyzw-new.hortorgames.com/agent";
@@ -283,7 +283,9 @@ export class PantaoSession {
   async setBattleTeam({ battleTeam, lordWeaponId, petUId }, timeoutMs = 10000) {
     this.client.send("payload_setbattleteam", {
       bfId: this.bfId,
-      battleTeam,
+      // 🔴 2026-11-08：官方帧 battleTeam 键是 BON Int(0~4)，普通对象会编成 String("0"~"4")。
+      //    转 Map(number→number) 走 encodeMap，与官方抓包逐字节一致（详见 pantaoPlan）。
+      battleTeam: toBonIntKeyBattleTeam(battleTeam),
       lordWeaponId,
       petUId,
     });

@@ -12,9 +12,14 @@
  * 🔴 蟠桃会话专用首帧口径（2026-11-01 官方模拟器抓包 pantao_1101.pcap s01 主连接首帧实证）：
  *   platform=hortor / platformExt=mix / clientVersion=0.36.0-android
  *
- * 为什么必须切：`payload_setbattleteam`（参赛布阵）只认 App（mix）口径——
- * 2026-11-01 自动蟠桃 101 号实测：enterbf（查询）h5 放行、setbattleteam h5 会话
- * 全部 3000070 拒绝（服务端按会话创建时的首帧口径判定）。
+ * 为什么切：`payload_setbattleteam`（参赛布阵）在 h5 会话被 3000070 拒，官方 App 首帧
+ * 是 mix 口径（2026-11-01 抓包实证），故 11-01 `a6c6fc1` 做会话级覆盖。
+ *
+ * ⚠️ **2026-11-08 实机 A/B 证伪「口径是根因」**：换成下面的官方真串、甚至叠加 36 帧
+ *    进主城序列，30 个号的 `payload_setbattleteam` **仍全部 3000070**；改 URL / 票据 /
+ *    body / 登录头 / 换角色也无效。3000070 是该命令专属的客户端校验，判据尚未确定
+ *    （见 `docs/kb/activity-pantao-weirdtower.md` 卡点段）。此覆盖目前无害但**不足以修好**，
+ *    保留仅为与官方首帧对齐，别再把它当成已解决问题。
  *
  * 🔴 仅蟠桃会话使用（tokenStore.setRoleInfoOverride 按号注入）：全局 registry 仍是
  *   h5/1.89.8-wx（金鱼 activity_claimtaskreward 双因素口径，**勿动**）。

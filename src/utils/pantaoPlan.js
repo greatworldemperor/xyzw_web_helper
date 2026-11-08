@@ -416,6 +416,21 @@ export function batchIntervalMs({ concurrency = 1, minIntervalMs = 1200 } = {}) 
   return Math.max(num(minIntervalMs, 1200), Math.round(num(minIntervalMs, 1200) * Math.log2(c + 1)));
 }
 
+/**
+ * 🔴 2026-11-08 逐字节实证（pantao_1101.pcap s00 #00030，官方 payload_setbattleteam）：
+ *   battleTeam 的键在官方帧里是 **BON Int 0~4**（tag 1），而 JS 普通对象的数字键会被
+ *   BonEncoder.encodeObject 编成 String("0"~"4")（tag 5），body 因此短 10 字节
+ *   （官方 121B / 字符串键 111B）。Map(number → number) 走 encodeMap 才能逐字节复现官方。
+ *   ⚠️ 实机 A/B 证明此差异**不是 3000070 的判据**，但属确定的协议偏差，必须对齐。
+ *   ⚠️ 别改 buildBattleTeamFromPreset 的返回结构（调用方用 Object.values 展示阵容）。
+ */
+export function toBonIntKeyBattleTeam(team) {
+  if (team instanceof Map) return team;
+  return new Map(
+    Object.entries(team || {}).map(([slot, heroId]) => [Number(slot), Number(heroId)]),
+  );
+}
+
 const gateSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**

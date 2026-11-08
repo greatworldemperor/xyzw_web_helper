@@ -29,7 +29,38 @@ import {
   planTurn,
   resolveMyLegionId,
   shouldAttack,
+  toBonIntKeyBattleTeam,
 } from "../src/utils/pantaoPlan.js";
+import { g_utils } from "../src/utils/bonProtocol.js";
+
+/* ---------- battleTeam 键类型（2026-11-08 官方抓包逐字节回归） ---------- */
+// fixture 逐字抄自 local-data/pantao/pantao_1101.pcap_streams/s00_c2s.frames.txt #00030
+// （官方 App payload_setbattleteam 的 BON body，121 字节）
+const OFFICIAL_SETBATTLETEAM_BODY_HEX =
+  "0804050462664964050b3236313130313a38393839050a626174746c655465616d080501000000000174000000010100000001700000000102000000016b000000010300000001680000000104000000016a000000050c6c6f7264576561706f6e49640109000000050670657455496405073239382d635035";
+
+test("toBonIntKeyBattleTeam: 普通对象 → number 键 Map", () => {
+  const t = toBonIntKeyBattleTeam({ 0: 116, 1: 112, 2: 107, 3: 104, 4: 106 });
+  assert.ok(t instanceof Map);
+  assert.deepEqual([...t.entries()], [[0, 116], [1, 112], [2, 107], [3, 104], [4, 106]]);
+  for (const k of t.keys()) assert.equal(typeof k, "number");
+});
+
+test("toBonIntKeyBattleTeam: Map 原样返回 / 空值兜底", () => {
+  const m = new Map([[0, 1]]);
+  assert.equal(toBonIntKeyBattleTeam(m), m);
+  assert.equal(toBonIntKeyBattleTeam(null).size, 0);
+  assert.equal(toBonIntKeyBattleTeam({}).size, 0);
+});
+
+test("toBonIntKeyBattleTeam: BON 编码与官方帧逐字节一致（字符串键会短 10 字节）", () => {
+  const team = { 0: 116, 1: 112, 2: 107, 3: 104, 4: 106 };
+  const base = (t) => ({ bfId: "261101:8989", battleTeam: t, lordWeaponId: 9, petUId: "298-cP5" });
+  const asMap = Buffer.from(g_utils.bon.encode(base(toBonIntKeyBattleTeam(team)))).toString("hex");
+  const asObj = Buffer.from(g_utils.bon.encode(base(team)));
+  assert.equal(asMap, OFFICIAL_SETBATTLETEAM_BODY_HEX);
+  assert.equal(asObj.length, 111); // 官方 121B，5 个键各差 2 字节
+});
 
 const MY_LEGION = 7199227;
 const FOE_LEGION = 1183999;
